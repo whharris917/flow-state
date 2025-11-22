@@ -1,0 +1,17 @@
+# Python compilation
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environment folders
+env/
+venv/
+.conda/
+
+# OS Metadata
+.DS_Store
+Thumbs.db
+
+# IDE settings
+.vscode/
+.idea/
