@@ -1,7 +1,7 @@
 import pygame
 import config
 import math
-import sys  # Added sys to handle recursion limit
+import sys
 from camera import Camera
 from simulation import Simulation
 from renderer import Renderer
@@ -12,9 +12,9 @@ MODE_PIPE = 'pipe'
 MODE_VALVE = 'valve'
 MODE_SOURCE = 'source'
 MODE_SINK = 'sink'
+MODE_INSPECT = 'inspect' # New Mode
 
 def main():
-    # Increase recursion depth to allow deepcopying long pipe chains
     sys.setrecursionlimit(5000) 
 
     pygame.init()
@@ -30,10 +30,11 @@ def main():
     renderer = Renderer(screen, camera)
     
     current_mode = MODE_SELECT 
-    active_material = 'Red' # Default material for placement
+    active_material = 'Red' 
     
     buttons = [
         {'label': 'SELECT (V)', 'mode': MODE_SELECT, 'rect': None},
+        {'label': 'INSPECT (K)', 'mode': MODE_INSPECT, 'rect': None},
         {'label': 'PIPE (P)',   'mode': MODE_PIPE,   'rect': None},
         {'label': 'VALVE (O)',  'mode': MODE_VALVE,  'rect': None},
         {'label': 'SOURCE (I)', 'mode': MODE_SOURCE, 'rect': None},
@@ -70,12 +71,12 @@ def main():
             
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_v: current_mode = MODE_SELECT
+                if event.key == pygame.K_k: current_mode = MODE_INSPECT
                 if event.key == pygame.K_p: current_mode = MODE_PIPE
                 if event.key == pygame.K_o: current_mode = MODE_VALVE
                 if event.key == pygame.K_i: current_mode = MODE_SOURCE
                 if event.key == pygame.K_u: current_mode = MODE_SINK
                 
-                # Material Selection
                 if event.key == pygame.K_1: active_material = 'Red'
                 if event.key == pygame.K_2: active_material = 'Green'
                 if event.key == pygame.K_3: active_material = 'Blue'
@@ -115,6 +116,9 @@ def main():
                                     sim.toggle_valve(target)
                                 elif target.kind == 'source':
                                     sim.cycle_source_material(target)
+                        
+                        elif current_mode == MODE_INSPECT:
+                            pass
 
                         elif current_mode == MODE_VALVE:
                             target, target_type = sim.get_snap_target(wx, wy, scaled_interact_dist)
@@ -168,14 +172,12 @@ def main():
                     elif event.button == 2: 
                         camera.drag_start = pygame.mouse.get_pos()
                     
-                    # Scroll Wheel for Zoom OR Rate Adjust
                     elif event.button == 4: # Scroll Up
                         handled = False
                         if current_mode == MODE_SELECT:
                             wx, wy = camera.screen_to_world(mouse_pos[0], mouse_pos[1])
                             target, target_type = sim.get_snap_target(wx, wy, scaled_interact_dist, nodes_only=True)
                             if target_type == 'node' and target.kind == 'source':
-                                # Increased Steps: 50 / 500
                                 delta = 500.0 if (pygame.key.get_mods() & pygame.KMOD_SHIFT) else 50.0
                                 sim.adjust_source_rate(target, delta)
                                 handled = True
@@ -309,10 +311,19 @@ def main():
         if valve_preview:
             renderer.draw_valve_preview((valve_preview[0], valve_preview[1]), valve_preview[2])
         
-        if current_mode == MODE_SELECT:
-            target, target_type = sim.get_snap_target(wx, wy, scaled_interact_dist, nodes_only=True)
-            if target_type == 'node':
-                renderer.draw_telemetry(target, mouse_pos)
+        # INSPECT OVERLAY
+        if current_mode == MODE_INSPECT:
+            # Generous hit testing for inspection
+            target, target_type = sim.get_snap_target(wx, wy, scaled_interact_dist)
+            if target:
+                if target_type == 'segment':
+                    # For segments, inspect the first node of the pair
+                    cp_x, cp_y, node_a, _ = target
+                    # Pass the click point (cp_x, cp_y) as the world_pos for the pointer
+                    renderer.draw_inspector_tooltip(node_a, mouse_pos, world_pos=(cp_x, cp_y))
+                else:
+                    # For nodes, pass the node's position
+                    renderer.draw_inspector_tooltip(target, mouse_pos, world_pos=(target.x, target.y))
         
         renderer.draw_toolbar(buttons, current_mode, mouse_pos, active_material)
         renderer.draw_ui(camera.screen_to_world(mouse_pos[0], mouse_pos[1]))
