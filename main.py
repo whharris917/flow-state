@@ -1,6 +1,7 @@
 import pygame
 import config
 import math
+import sys  # Added sys to handle recursion limit
 from camera import Camera
 from simulation import Simulation
 from renderer import Renderer
@@ -13,6 +14,9 @@ MODE_SOURCE = 'source'
 MODE_SINK = 'sink'
 
 def main():
+    # Increase recursion depth to allow deepcopying long pipe chains
+    sys.setrecursionlimit(5000) 
+
     pygame.init()
     screen = pygame.display.set_mode((config.SCREEN_WIDTH, config.SCREEN_HEIGHT), pygame.RESIZABLE)
     pygame.display.set_caption("The Synthetic Era - Pipe Dream")
@@ -106,8 +110,11 @@ def main():
                     elif event.button == 1: 
                         if current_mode == MODE_SELECT:
                             target, target_type = sim.get_snap_target(wx, wy, scaled_interact_dist, nodes_only=True)
-                            if target_type == 'node' and target.kind == 'valve':
-                                sim.toggle_valve(target)
+                            if target_type == 'node':
+                                if target.kind == 'valve':
+                                    sim.toggle_valve(target)
+                                elif target.kind == 'source':
+                                    sim.cycle_source_material(target)
 
                         elif current_mode == MODE_VALVE:
                             target, target_type = sim.get_snap_target(wx, wy, scaled_interact_dist)
@@ -160,12 +167,36 @@ def main():
 
                     elif event.button == 2: 
                         camera.drag_start = pygame.mouse.get_pos()
-                    elif event.button == 4: 
-                        new_zoom = min(camera.zoom * 1.1, 5.0)
-                        camera.zoom_towards(new_zoom, config.SCREEN_WIDTH/2, config.SCREEN_HEIGHT/2)
-                    elif event.button == 5: 
-                        new_zoom = max(camera.zoom * 0.9, 0.2)
-                        camera.zoom_towards(new_zoom, config.SCREEN_WIDTH/2, config.SCREEN_HEIGHT/2)
+                    
+                    # Scroll Wheel for Zoom OR Rate Adjust
+                    elif event.button == 4: # Scroll Up
+                        handled = False
+                        if current_mode == MODE_SELECT:
+                            wx, wy = camera.screen_to_world(mouse_pos[0], mouse_pos[1])
+                            target, target_type = sim.get_snap_target(wx, wy, scaled_interact_dist, nodes_only=True)
+                            if target_type == 'node' and target.kind == 'source':
+                                # Increased Steps: 50 / 500
+                                delta = 500.0 if (pygame.key.get_mods() & pygame.KMOD_SHIFT) else 50.0
+                                sim.adjust_source_rate(target, delta)
+                                handled = True
+                        
+                        if not handled:
+                            new_zoom = min(camera.zoom * 1.1, 5.0)
+                            camera.zoom_towards(new_zoom, config.SCREEN_WIDTH/2, config.SCREEN_HEIGHT/2)
+
+                    elif event.button == 5: # Scroll Down
+                        handled = False
+                        if current_mode == MODE_SELECT:
+                            wx, wy = camera.screen_to_world(mouse_pos[0], mouse_pos[1])
+                            target, target_type = sim.get_snap_target(wx, wy, scaled_interact_dist, nodes_only=True)
+                            if target_type == 'node' and target.kind == 'source':
+                                delta = 500.0 if (pygame.key.get_mods() & pygame.KMOD_SHIFT) else 50.0
+                                sim.adjust_source_rate(target, -delta)
+                                handled = True
+
+                        if not handled:
+                            new_zoom = max(camera.zoom * 0.9, 0.2)
+                            camera.zoom_towards(new_zoom, config.SCREEN_WIDTH/2, config.SCREEN_HEIGHT/2)
 
             elif event.type == pygame.MOUSEBUTTONUP:
                 if event.button == 1 and drag_source_node:
