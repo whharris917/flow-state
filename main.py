@@ -742,8 +742,18 @@ def main():
                                 last_mouse_pos = (mx, my) # Update for next delta
                                 
                                 w = sim.walls[wall_idx]
-                                new_s = (w['start'][0] + dx, w['start'][1] + dy)
-                                new_e = (w['end'][0] + dx, w['end'][1] + dy)
+                                anchors = w.get('anchored', [False, False])
+                                
+                                # RESPECT ANCHORS: Only move if not anchored
+                                # If anchored, delta for that point is 0
+                                d_start_x = 0 if anchors[0] else dx
+                                d_start_y = 0 if anchors[0] else dy
+                                d_end_x = 0 if anchors[1] else dx
+                                d_end_y = 0 if anchors[1] else dy
+                                
+                                new_s = (w['start'][0] + d_start_x, w['start'][1] + d_start_y)
+                                new_e = (w['end'][0] + d_end_x, w['end'][1] + d_end_y)
+                                
                                 sim.update_wall(wall_idx, new_s, new_e)
                                 
                                 # Just apply constraints; the temporary LENGTH constraint handles rigidity
@@ -762,6 +772,8 @@ def main():
                             for w_i in current_group_indices:
                                 if w_i < len(sim.walls):
                                     w = sim.walls[w_i]
+                                    # Group move is only allowed for unanchored groups, so we don't check per-point anchors here
+                                    # (The check is done in MOUSEBUTTONDOWN)
                                     new_s = (w['start'][0] + dx, w['start'][1] + dy)
                                     new_e = (w['end'][0] + dx, w['end'][1] + dy)
                                     sim.update_wall(w_i, new_s, new_e)
