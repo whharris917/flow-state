@@ -17,6 +17,47 @@ TOP_MENU_H = 30
 MODE_SIM = 0
 MODE_EDITOR = 1
 
+# --- Helper Functions for Group Movement ---
+def get_connected_group(sim, start_wall_idx):
+    """
+    Returns a set of wall indices that are topologically connected 
+    to the start_wall_idx via COINCIDENT constraints.
+    """
+    group = {start_wall_idx}
+    queue = [start_wall_idx]
+    
+    # Build an adjacency map for faster lookup 
+    adjacency = {}
+    for c in sim.constraints:
+        if c['type'] == 'COINCIDENT':
+            # c['indices'] is typically [(w1, p1), (w2, p2)]
+            idx_list = c['indices']
+            w1, w2 = idx_list[0][0], idx_list[1][0]
+            
+            if w1 not in adjacency: adjacency[w1] = []
+            if w2 not in adjacency: adjacency[w2] = []
+            adjacency[w1].append(w2)
+            adjacency[w2].append(w1)
+
+    while queue:
+        current = queue.pop(0)
+        if current in adjacency:
+            for neighbor in adjacency[current]:
+                if neighbor not in group:
+                    group.add(neighbor)
+                    queue.append(neighbor)
+                    
+    return group
+
+def is_group_anchored(sim, group_indices):
+    """Checks if any wall in the group has an anchored point."""
+    for idx in group_indices:
+        w = sim.walls[idx]
+        anchors = w.get('anchored', [False, False])
+        if anchors[0] or anchors[1]:
+            return True
+    return False
+
 def sim_to_screen(x, y, zoom, pan_x, pan_y, world_size, layout):
     cx_world = world_size / 2.0
     cy_world = world_size / 2.0
@@ -276,6 +317,7 @@ def main():
     # Drag State
     drag_start_length = None
     temp_constraint_active = False
+    current_group_indices = [] # For group movement
 
     def enter_editor_mode():
         nonlocal app_mode, zoom, pan_x, pan_y, status_msg, status_time, sim_backup_state
@@ -623,24 +665,33 @@ def main():
                                                 if hit_wall in selected_walls: selected_walls.remove(hit_wall)
                                                 else: selected_walls.add(hit_wall)
                                             
-                                            # Prepare Drag
-                                            wall_mode = 'MOVE_WALL'; wall_idx = hit_wall
-                                            sim.snapshot()
-                                            last_mouse_pos = event.pos # Capture start position
+                                            # NEW: Group Move Logic
+                                            target_group = get_connected_group(sim, hit_wall)
                                             
-                                            # Capture start length for Rigid Drag Check
-                                            w = sim.walls[hit_wall]
-                                            drag_start_length = math.hypot(w['end'][0]-w['start'][0], w['end'][1]-w['start'][1])
-                                            
-                                            # Add temporary length constraint for rigidity
-                                            if app_mode == MODE_EDITOR:
-                                                sim.constraints.append({
-                                                    'type': 'LENGTH', 
-                                                    'indices': [hit_wall], 
-                                                    'value': drag_start_length,
-                                                    'temp': True
-                                                })
-                                                temp_constraint_active = True
+                                            if not is_group_anchored(sim, target_group):
+                                                wall_mode = 'MOVE_GROUP'
+                                                current_group_indices = list(target_group)
+                                                sim.snapshot()
+                                                last_mouse_pos = event.pos
+                                            else:
+                                                # Standard Single Wall Drag (PBD Deformation)
+                                                wall_mode = 'MOVE_WALL'; wall_idx = hit_wall
+                                                sim.snapshot()
+                                                last_mouse_pos = event.pos # Capture start position
+                                                
+                                                # Capture start length for Rigid Drag Check
+                                                w = sim.walls[hit_wall]
+                                                drag_start_length = math.hypot(w['end'][0]-w['start'][0], w['end'][1]-w['start'][1])
+                                                
+                                                # Add temporary length constraint for rigidity
+                                                if app_mode == MODE_EDITOR:
+                                                    sim.constraints.append({
+                                                        'type': 'LENGTH', 
+                                                        'indices': [hit_wall], 
+                                                        'value': drag_start_length,
+                                                        'temp': True
+                                                    })
+                                                    temp_constraint_active = True
                                     else:
                                         # Click on empty space
                                         if not (pygame.key.get_mods() & pygame.KMOD_SHIFT):
@@ -655,6 +706,7 @@ def main():
                 elif event.type == pygame.MOUSEBUTTONUP:
                     is_panning = False; is_painting = False; is_erasing = False
                     wall_mode = None; wall_idx = -1
+                    current_group_indices = [] # Clear group
                     
                     # Remove temporary constraint
                     if temp_constraint_active:
@@ -668,31 +720,52 @@ def main():
                     mx, my = event.pos
                     if is_panning: pan_x += mx - last_mouse_pos[0]; pan_y += my - last_mouse_pos[1]; last_mouse_pos = (mx, my)
                     
-                    if wall_mode is not None and wall_idx < len(sim.walls):
+                    if wall_mode is not None:
                         if wall_mode == 'EDIT' or wall_mode == 'NEW':
-                            w = sim.walls[wall_idx]
-                            anchor = w['end'] if wall_pt == 0 else w['start']
-                            dest_x, dest_y = get_snapped_pos(mx, my, sim, zoom, pan_x, pan_y, sim.world_size, layout, anchor, wall_idx)
-                            if wall_pt == 0: sim.update_wall(wall_idx, (dest_x, dest_y), w['end'])
-                            else: sim.update_wall(wall_idx, w['start'], (dest_x, dest_y))
-                            if app_mode == MODE_EDITOR: sim.apply_constraints()
+                            if wall_idx < len(sim.walls):
+                                w = sim.walls[wall_idx]
+                                anchor = w['end'] if wall_pt == 0 else w['start']
+                                dest_x, dest_y = get_snapped_pos(mx, my, sim, zoom, pan_x, pan_y, sim.world_size, layout, anchor, wall_idx)
+                                if wall_pt == 0: sim.update_wall(wall_idx, (dest_x, dest_y), w['end'])
+                                else: sim.update_wall(wall_idx, w['start'], (dest_x, dest_y))
+                                if app_mode == MODE_EDITOR: sim.apply_constraints()
                         
                         elif wall_mode == 'MOVE_WALL':
-                            # Use sim coordinates difference for 1:1 movement
+                             if wall_idx < len(sim.walls):
+                                # Use sim coordinates difference for 1:1 movement
+                                curr_sim_x, curr_sim_y = screen_to_sim(mx, my, zoom, pan_x, pan_y, sim.world_size, layout)
+                                prev_sim_x, prev_sim_y = screen_to_sim(last_mouse_pos[0], last_mouse_pos[1], zoom, pan_x, pan_y, sim.world_size, layout)
+                                
+                                dx = curr_sim_x - prev_sim_x
+                                dy = curr_sim_y - prev_sim_y
+                                
+                                last_mouse_pos = (mx, my) # Update for next delta
+                                
+                                w = sim.walls[wall_idx]
+                                new_s = (w['start'][0] + dx, w['start'][1] + dy)
+                                new_e = (w['end'][0] + dx, w['end'][1] + dy)
+                                sim.update_wall(wall_idx, new_s, new_e)
+                                
+                                # Just apply constraints; the temporary LENGTH constraint handles rigidity
+                                if app_mode == MODE_EDITOR: 
+                                    sim.apply_constraints()
+                        
+                        elif wall_mode == 'MOVE_GROUP':
                             curr_sim_x, curr_sim_y = screen_to_sim(mx, my, zoom, pan_x, pan_y, sim.world_size, layout)
                             prev_sim_x, prev_sim_y = screen_to_sim(last_mouse_pos[0], last_mouse_pos[1], zoom, pan_x, pan_y, sim.world_size, layout)
                             
                             dx = curr_sim_x - prev_sim_x
                             dy = curr_sim_y - prev_sim_y
                             
-                            last_mouse_pos = (mx, my) # Update for next delta
+                            last_mouse_pos = (mx, my)
                             
-                            w = sim.walls[wall_idx]
-                            new_s = (w['start'][0] + dx, w['start'][1] + dy)
-                            new_e = (w['end'][0] + dx, w['end'][1] + dy)
-                            sim.update_wall(wall_idx, new_s, new_e)
-                            
-                            # Just apply constraints; the temporary LENGTH constraint handles rigidity
+                            for w_i in current_group_indices:
+                                if w_i < len(sim.walls):
+                                    w = sim.walls[w_i]
+                                    new_s = (w['start'][0] + dx, w['start'][1] + dy)
+                                    new_e = (w['end'][0] + dx, w['end'][1] + dy)
+                                    sim.update_wall(w_i, new_s, new_e)
+
                             if app_mode == MODE_EDITOR: 
                                 sim.apply_constraints()
 
