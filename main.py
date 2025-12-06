@@ -827,6 +827,8 @@ def main():
                 pygame.draw.line(screen, (50, 50, 50), (cx-10, cy), (cx+10, cy))
                 pygame.draw.line(screen, (50, 50, 50), (cx, cy-10), (cx, cy+10))
             
+            # --- RENDER WALLS (Layered Approach) ---
+            # 1. Draw Lines (Walls)
             for i, w in enumerate(sim.walls):
                 s1 = sim_to_screen(w['start'][0], w['start'][1], zoom, pan_x, pan_y, sim.world_size, layout)
                 s2 = sim_to_screen(w['end'][0], w['end'][1], zoom, pan_x, pan_y, sim.world_size, layout)
@@ -835,6 +837,17 @@ def main():
                 if i in selected_walls: color = (255, 200, 50) # Orange highlight
                 if pending_constraint and i in pending_targets_walls: color = (100, 255, 100) # Green pending
                 
+                if app_mode == MODE_EDITOR: 
+                    pygame.draw.line(screen, color, s1, s2, 2 if (i in selected_walls or (pending_constraint and i in pending_targets_walls)) else 1)
+
+            # 2. Draw Points & Collect Anchors
+            anchored_points_draw_list = []
+            
+            for i, w in enumerate(sim.walls):
+                s1 = sim_to_screen(w['start'][0], w['start'][1], zoom, pan_x, pan_y, sim.world_size, layout)
+                s2 = sim_to_screen(w['end'][0], w['end'][1], zoom, pan_x, pan_y, sim.world_size, layout)
+                
+                # Standard Point (White)
                 pygame.draw.rect(screen, (255, 255, 255), (s1[0]-3, s1[1]-3, 6, 6))
                 pygame.draw.rect(screen, (255, 255, 255), (s2[0]-3, s2[1]-3, 6, 6))
                 
@@ -842,16 +855,19 @@ def main():
                 if (i, 0) in selected_points: pygame.draw.rect(screen, (0, 255, 255), (s1[0]-4, s1[1]-4, 8, 8), 2)
                 if (i, 1) in selected_points: pygame.draw.rect(screen, (0, 255, 255), (s2[0]-4, s2[1]-4, 8, 8), 2)
                 
-                # Highlight Anchored Points (RED)
-                anchors = w.get('anchored', [False, False])
-                if anchors[0]: pygame.draw.rect(screen, (255, 50, 50), (s1[0]-3, s1[1]-3, 6, 6))
-                if anchors[1]: pygame.draw.rect(screen, (255, 50, 50), (s2[0]-3, s2[1]-3, 6, 6))
-                
                 # Highlight Pending Points
                 if pending_constraint and (i, 0) in pending_targets_points: pygame.draw.rect(screen, (100, 255, 100), (s1[0]-4, s1[1]-4, 8, 8), 2)
                 if pending_constraint and (i, 1) in pending_targets_points: pygame.draw.rect(screen, (100, 255, 100), (s2[0]-4, s2[1]-4, 8, 8), 2)
+                
+                # Collect Anchors for late rendering
+                anchors = w.get('anchored', [False, False])
+                if anchors[0]: anchored_points_draw_list.append(s1)
+                if anchors[1]: anchored_points_draw_list.append(s2)
 
-                if app_mode == MODE_EDITOR: pygame.draw.line(screen, color, s1, s2, 2 if (i in selected_walls or (pending_constraint and i in pending_targets_walls)) else 1)
+            # 3. Draw Anchors on Top
+            for pt in anchored_points_draw_list:
+                # Red, slightly larger to ensure it covers the white/selection box if coincident
+                pygame.draw.rect(screen, (255, 50, 50), (pt[0]-4, pt[1]-4, 8, 8))
 
             if placing_asset_data:
                 mx, my = pygame.mouse.get_pos()
