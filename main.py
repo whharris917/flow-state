@@ -227,11 +227,15 @@ def main():
     
     # Constraint Buttons
     c_btn_w = (rp_width - 10) // 2
-    btn_const_coincident = Button(rp_start_x, ae_curr_y, rp_width, 30, "Coincident (Point-Point)", toggle=False); ae_curr_y+=35
+    btn_const_coincident = Button(rp_start_x, ae_curr_y, rp_width, 30, "Coincident (Pt-Pt)", toggle=False); ae_curr_y+=35
     btn_const_length = Button(rp_start_x, ae_curr_y, c_btn_w, 30, "Fix Length", toggle=False)
     btn_const_equal = Button(rp_start_x + c_btn_w + 10, ae_curr_y, c_btn_w, 30, "Equal Len", toggle=False); ae_curr_y+=35
     btn_const_parallel = Button(rp_start_x, ae_curr_y, c_btn_w, 30, "Parallel", toggle=False)
     btn_const_perp = Button(rp_start_x + c_btn_w + 10, ae_curr_y, c_btn_w, 30, "Perpendic", toggle=False); ae_curr_y+=35
+    
+    # New Constraint Buttons
+    btn_const_horiz = Button(rp_start_x, ae_curr_y, c_btn_w, 30, "Horizontal", toggle=False)
+    btn_const_vert = Button(rp_start_x + c_btn_w + 10, ae_curr_y, c_btn_w, 30, "Vertical", toggle=False); ae_curr_y+=35
 
     ui_sim_elements = [btn_play, btn_clear, btn_reset, btn_undo, btn_redo,
                        slider_gravity, slider_temp, slider_damping, slider_dt, 
@@ -239,12 +243,14 @@ def main():
                        btn_thermostat, btn_boundaries, slider_brush_size, btn_resize]
     
     ui_editor_elements = [btn_tool_wall, btn_ae_save, btn_ae_discard, btn_undo, btn_redo, btn_clear,
-                          btn_const_coincident, btn_const_length, btn_const_equal, btn_const_parallel, btn_const_perp]
+                          btn_const_coincident, btn_const_length, btn_const_equal, btn_const_parallel, btn_const_perp,
+                          btn_const_horiz, btn_const_vert]
     
     right_panel_elements = [
         slider_gravity, slider_temp, slider_damping, slider_dt, slider_sigma, slider_epsilon, slider_M, slider_skin,
         btn_thermostat, btn_boundaries, btn_tool_brush, btn_tool_wall, slider_brush_size, input_world, btn_resize,
-        btn_ae_save, btn_ae_discard, btn_const_coincident, btn_const_length, btn_const_equal, btn_const_parallel, btn_const_perp
+        btn_ae_save, btn_ae_discard, btn_const_coincident, btn_const_length, btn_const_equal, btn_const_parallel, btn_const_perp,
+        btn_const_horiz, btn_const_vert
     ]
 
     # --- APP STATE ---
@@ -260,6 +266,11 @@ def main():
     # Selection State
     selected_walls = set() # Set of indices
     selected_points = set() # Set of (wall_idx, pt_idx) tuples
+    
+    # Pending Constraint State
+    pending_constraint = None # 'LENGTH', 'EQUAL', etc.
+    pending_targets_walls = []
+    pending_targets_points = []
 
     def enter_editor_mode():
         nonlocal app_mode, zoom, pan_x, pan_y, status_msg, status_time, sim_backup_state
@@ -295,6 +306,98 @@ def main():
         zoom = 1.0; pan_x = 0; pan_y = 0
         status_msg = "Returned to Simulation"; status_time = time.time()
 
+    def trigger_constraint(ctype):
+        nonlocal pending_constraint, status_msg, status_time
+        
+        # 1. Check if we have enough selected items to apply immediately
+        applied = False
+        if ctype == 'LENGTH' and len(selected_walls) == 1:
+            val = simpledialog.askfloat("Length", "Enter length:")
+            if val: sim.add_constraint('LENGTH', list(selected_walls), val); applied = True
+        elif ctype in ['EQUAL', 'PARALLEL', 'PERPENDICULAR'] and len(selected_walls) == 2:
+            sim.add_constraint(ctype, list(selected_walls)); applied = True
+        elif ctype in ['HORIZONTAL', 'VERTICAL'] and len(selected_walls) >= 1:
+            # Apply to all selected
+            for w_idx in selected_walls: sim.add_constraint(ctype, [w_idx])
+            applied = True
+        elif ctype == 'COINCIDENT' and len(selected_points) == 2:
+            sim.add_constraint('COINCIDENT', list(selected_points)); applied = True
+            
+        if applied:
+            status_msg = f"Applied {ctype}"; status_time = time.time()
+            selected_walls.clear(); selected_points.clear()
+            pending_constraint = None
+            reset_constraint_buttons()
+        else:
+            # Enter pending mode
+            pending_constraint = ctype
+            pending_targets_walls.clear()
+            pending_targets_points.clear()
+            # If items are already selected, add them to pending targets
+            if selected_walls: pending_targets_walls.extend(list(selected_walls))
+            if selected_points: pending_targets_points.extend(list(selected_points))
+            
+            selected_walls.clear(); selected_points.clear()
+            status_msg = f"Select targets for {ctype}..."; status_time = time.time()
+            
+            # Highlight the button
+            reset_constraint_buttons()
+            if ctype == 'LENGTH': btn_const_length.active = True
+            elif ctype == 'EQUAL': btn_const_equal.active = True
+            elif ctype == 'PARALLEL': btn_const_parallel.active = True
+            elif ctype == 'PERPENDICULAR': btn_const_perp.active = True
+            elif ctype == 'COINCIDENT': btn_const_coincident.active = True
+            elif ctype == 'HORIZONTAL': btn_const_horiz.active = True
+            elif ctype == 'VERTICAL': btn_const_vert.active = True
+
+    def reset_constraint_buttons():
+        btn_const_length.active = False
+        btn_const_equal.active = False
+        btn_const_parallel.active = False
+        btn_const_perp.active = False
+        btn_const_coincident.active = False
+        btn_const_horiz.active = False
+        btn_const_vert.active = False
+
+    def handle_pending_constraint_click(wall_idx=None, pt_idx=None):
+        nonlocal pending_constraint, status_msg, status_time
+        
+        if pending_constraint in ['LENGTH', 'HORIZONTAL', 'VERTICAL']:
+            if wall_idx is not None:
+                if pending_constraint == 'LENGTH':
+                    val = simpledialog.askfloat("Length", "Enter length:")
+                    if val: sim.add_constraint('LENGTH', [wall_idx], val)
+                else:
+                    sim.add_constraint(pending_constraint, [wall_idx])
+                
+                status_msg = f"Applied {pending_constraint}"; status_time = time.time()
+                pending_constraint = None
+                reset_constraint_buttons()
+        
+        elif pending_constraint in ['EQUAL', 'PARALLEL', 'PERPENDICULAR']:
+            if wall_idx is not None:
+                if wall_idx not in pending_targets_walls:
+                    pending_targets_walls.append(wall_idx)
+                    status_msg = f"Selected 1/2 for {pending_constraint}"
+                    
+                    if len(pending_targets_walls) == 2:
+                        sim.add_constraint(pending_constraint, pending_targets_walls)
+                        status_msg = f"Applied {pending_constraint}"; status_time = time.time()
+                        pending_constraint = None
+                        reset_constraint_buttons()
+        
+        elif pending_constraint == 'COINCIDENT':
+            if pt_idx is not None: # pt_idx is (wall, end)
+                if pt_idx not in pending_targets_points:
+                    pending_targets_points.append(pt_idx)
+                    status_msg = f"Selected 1/2 Points"
+                    
+                    if len(pending_targets_points) == 2:
+                        sim.add_constraint('COINCIDENT', pending_targets_points)
+                        status_msg = "Applied Coincident"; status_time = time.time()
+                        pending_constraint = None
+                        reset_constraint_buttons()
+
     running = True
     try:
         while running:
@@ -318,6 +421,10 @@ def main():
                         sim.redo(); status_msg = "Redo"; status_time = time.time()
                     if event.key == pygame.K_ESCAPE:
                         if placing_asset_data: placing_asset_data = None; status_msg = "Cancelled"; status_time = time.time()
+                        elif pending_constraint:
+                            pending_constraint = None
+                            reset_constraint_buttons()
+                            status_msg = "Constraint Cancelled"; status_time = time.time()
                         else:
                             selected_walls.clear(); selected_points.clear() # Clear selection
                 
@@ -361,7 +468,10 @@ def main():
                 if context_menu:
                     if context_menu.handle_event(event):
                         action = context_menu.action
-                        if action == "Delete": sim.remove_wall(context_wall_idx); context_menu = None
+                        if action == "Delete": 
+                            sim.remove_wall(context_wall_idx)
+                            selected_walls.clear(); selected_points.clear()
+                            context_menu = None
                         elif action == "Properties":
                             prop_dialog = PropertiesDialog(layout['W']//2, layout['H']//2, sim.walls[context_wall_idx]); context_menu = None
                         elif action == "Set Rotation...":
@@ -391,24 +501,13 @@ def main():
                 
                 # Constraint Logic
                 if app_mode == MODE_EDITOR:
-                    if btn_const_length.clicked:
-                        if len(selected_walls) == 1:
-                            val = simpledialog.askfloat("Length", "Enter length:")
-                            if val: sim.add_constraint('LENGTH', list(selected_walls), val)
-                        else: status_msg = "Select 1 Wall"; status_time = time.time()
-                    if btn_const_equal.clicked:
-                        if len(selected_walls) == 2: sim.add_constraint('EQUAL', list(selected_walls))
-                        else: status_msg = "Select 2 Walls"; status_time = time.time()
-                    if btn_const_parallel.clicked:
-                        if len(selected_walls) == 2: sim.add_constraint('PARALLEL', list(selected_walls))
-                        else: status_msg = "Select 2 Walls"; status_time = time.time()
-                    if btn_const_perp.clicked:
-                        if len(selected_walls) == 2: sim.add_constraint('PERPENDICULAR', list(selected_walls))
-                        else: status_msg = "Select 2 Walls"; status_time = time.time()
-                    if btn_const_coincident.clicked:
-                        # Logic: Point-Point (2 points)
-                        if len(selected_points) == 2: sim.add_constraint('COINCIDENT', list(selected_points))
-                        else: status_msg = "Select 2 Points"; status_time = time.time()
+                    if btn_const_length.clicked: trigger_constraint('LENGTH')
+                    if btn_const_equal.clicked: trigger_constraint('EQUAL')
+                    if btn_const_parallel.clicked: trigger_constraint('PARALLEL')
+                    if btn_const_perp.clicked: trigger_constraint('PERPENDICULAR')
+                    if btn_const_coincident.clicked: trigger_constraint('COINCIDENT')
+                    if btn_const_horiz.clicked: trigger_constraint('HORIZONTAL')
+                    if btn_const_vert.clicked: trigger_constraint('VERTICAL')
 
                     if btn_ae_discard.clicked: exit_editor_mode(sim_backup_state); ui_captured = True
                     if btn_ae_save.clicked and root_tk:
@@ -434,6 +533,8 @@ def main():
                         mx, my = event.pos
                         if layout['LEFT_X'] < mx < layout['RIGHT_X']:
                             if placing_asset_data: placing_asset_data = None
+                            elif pending_constraint:
+                                pending_constraint = None; reset_constraint_buttons(); status_msg = "Cancelled"; status_time = time.time()
                             else:
                                 sim_x, sim_y = screen_to_sim(mx, my, zoom, pan_x, pan_y, sim.world_size, layout)
                                 rad_sim = 5.0 / (((layout['MID_W'] - 50) / sim.world_size) * zoom)
@@ -462,16 +563,19 @@ def main():
                                     if math.hypot(w['end'][0]-sim_x, w['end'][1]-sim_y) < rad_sim: hit_pt=(i,1); break
                                 
                                 if hit_pt:
-                                    # Point Click Logic
-                                    if not (pygame.key.get_mods() & pygame.KMOD_SHIFT):
-                                        if hit_pt not in selected_points: # If not adding to selection, clear others
-                                            selected_walls.clear(); selected_points.clear()
-                                    
-                                    if hit_pt in selected_points: selected_points.remove(hit_pt)
-                                    else: selected_points.add(hit_pt)
-                                    
-                                    wall_mode = 'EDIT'; wall_idx = hit_pt[0]; wall_pt = hit_pt[1]
-                                    sim.snapshot()
+                                    if pending_constraint:
+                                        handle_pending_constraint_click(pt_idx=hit_pt)
+                                    else:
+                                        # Point Click Logic
+                                        if not (pygame.key.get_mods() & pygame.KMOD_SHIFT):
+                                            if hit_pt not in selected_points: # If not adding to selection, clear others
+                                                selected_walls.clear(); selected_points.clear()
+                                        
+                                        if hit_pt in selected_points: selected_points.remove(hit_pt)
+                                        else: selected_points.add(hit_pt)
+                                        
+                                        wall_mode = 'EDIT'; wall_idx = hit_pt[0]; wall_pt = hit_pt[1]
+                                        sim.snapshot()
                                 else:
                                     # Check for Wall Click (Line)
                                     hit_wall = -1
@@ -487,21 +591,25 @@ def main():
                                         if dist < rad_sim: hit_wall = i; break
                                     
                                     if hit_wall != -1:
-                                        if not (pygame.key.get_mods() & pygame.KMOD_SHIFT):
-                                            if hit_wall not in selected_walls:
-                                                selected_walls.clear(); selected_points.clear()
-                                        
-                                        if hit_wall in selected_walls: selected_walls.remove(hit_wall)
-                                        else: selected_walls.add(hit_wall)
+                                        if pending_constraint:
+                                            handle_pending_constraint_click(wall_idx=hit_wall)
+                                        else:
+                                            if not (pygame.key.get_mods() & pygame.KMOD_SHIFT):
+                                                if hit_wall not in selected_walls:
+                                                    selected_walls.clear(); selected_points.clear()
+                                            
+                                            if hit_wall in selected_walls: selected_walls.remove(hit_wall)
+                                            else: selected_walls.add(hit_wall)
                                     else:
-                                        # Click on empty space -> Start New Wall or Clear Selection
+                                        # Click on empty space
                                         if not (pygame.key.get_mods() & pygame.KMOD_SHIFT):
                                             selected_walls.clear(); selected_points.clear()
                                         
-                                        wall_mode = 'NEW'; sim.snapshot()
-                                        start_x, start_y = get_snapped_pos(mx, my, sim, zoom, pan_x, pan_y, sim.world_size, layout)
-                                        sim.add_wall((start_x, start_y), (start_x, start_y))
-                                        wall_idx = len(sim.walls)-1; wall_pt = 1
+                                        if not pending_constraint:
+                                            wall_mode = 'NEW'; sim.snapshot()
+                                            start_x, start_y = get_snapped_pos(mx, my, sim, zoom, pan_x, pan_y, sim.world_size, layout)
+                                            sim.add_wall((start_x, start_y), (start_x, start_y))
+                                            wall_idx = len(sim.walls)-1; wall_pt = 1
 
                 elif event.type == pygame.MOUSEBUTTONUP:
                     is_panning = False; is_painting = False; is_erasing = False
@@ -519,7 +627,8 @@ def main():
                         dest_x, dest_y = get_snapped_pos(mx, my, sim, zoom, pan_x, pan_y, sim.world_size, layout, anchor, wall_idx)
                         if wall_pt == 0: sim.update_wall(wall_idx, (dest_x, dest_y), w['end'])
                         else: sim.update_wall(wall_idx, w['start'], (dest_x, dest_y))
-                        # Live solve while dragging? Might be jittery, but cool. Let's try only on mouse up first.
+                        # Continuous constraint solving while dragging
+                        if app_mode == MODE_EDITOR: sim.apply_constraints()
 
             # --- UPDATE ---
             if not prop_dialog and not rot_dialog:
@@ -573,6 +682,7 @@ def main():
                 
                 color = (255, 255, 255)
                 if i in selected_walls: color = (255, 200, 50) # Orange highlight
+                if pending_constraint and i in pending_targets_walls: color = (100, 255, 100) # Green pending
                 
                 pygame.draw.rect(screen, (255, 255, 255), (s1[0]-3, s1[1]-3, 6, 6))
                 pygame.draw.rect(screen, (255, 255, 255), (s2[0]-3, s2[1]-3, 6, 6))
@@ -580,8 +690,12 @@ def main():
                 # Highlight Selected Points
                 if (i, 0) in selected_points: pygame.draw.rect(screen, (0, 255, 255), (s1[0]-4, s1[1]-4, 8, 8), 2)
                 if (i, 1) in selected_points: pygame.draw.rect(screen, (0, 255, 255), (s2[0]-4, s2[1]-4, 8, 8), 2)
+                
+                # Highlight Pending Points
+                if pending_constraint and (i, 0) in pending_targets_points: pygame.draw.rect(screen, (100, 255, 100), (s1[0]-4, s1[1]-4, 8, 8), 2)
+                if pending_constraint and (i, 1) in pending_targets_points: pygame.draw.rect(screen, (100, 255, 100), (s2[0]-4, s2[1]-4, 8, 8), 2)
 
-                if app_mode == MODE_EDITOR: pygame.draw.line(screen, color, s1, s2, 2 if i in selected_walls else 1)
+                if app_mode == MODE_EDITOR: pygame.draw.line(screen, color, s1, s2, 2 if (i in selected_walls or (pending_constraint and i in pending_targets_walls)) else 1)
 
             if placing_asset_data:
                 mx, my = pygame.mouse.get_pos()
