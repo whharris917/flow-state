@@ -557,6 +557,11 @@ def main():
                             # Toggle Anchor
                             sim.toggle_anchor(context_wall_idx, context_pt_idx)
                             context_menu = None
+                        elif action == "Set Length...":
+                            val = simpledialog.askfloat("Set Length", "Enter target length:")
+                            if val:
+                                sim.add_constraint('LENGTH', [context_wall_idx], val)
+                            context_menu = None
                         elif action == "CLOSE": context_menu = None
                     continue 
                 if prop_dialog:
@@ -632,12 +637,22 @@ def main():
                                     context_pt_idx = hit_pt[1]
                                     context_menu = ContextMenu(mx, my, ["Anchor"])
                                 else:
-                                    # Fallback to Wall
+                                    # Fallback to Wall - UPDATED HIT DETECTION
                                     hit = -1
                                     for i, w in enumerate(sim.walls):
-                                        if math.hypot(w['start'][0]-sim_x, w['start'][1]-sim_y) < rad_sim or math.hypot(w['end'][0]-sim_x, w['end'][1]-sim_y) < rad_sim:
+                                        # Dist point to line segment (Same logic as left click)
+                                        p1=np.array(w['start']); p2=np.array(w['end']); p3=np.array([sim_x, sim_y])
+                                        d_vec = p2-p1; len_sq = np.dot(d_vec, d_vec)
+                                        if len_sq == 0: dist = np.linalg.norm(p3-p1)
+                                        else:
+                                            t = max(0, min(1, np.dot(p3-p1, d_vec)/len_sq))
+                                            proj = p1 + t*d_vec
+                                            dist = np.linalg.norm(p3-proj)
+                                        
+                                        if dist < rad_sim: 
                                             hit = i; break
-                                    if hit != -1: context_menu = ContextMenu(mx, my, ["Properties", "Set Rotation...", "Delete"]); context_wall_idx = hit
+                                    
+                                    if hit != -1: context_menu = ContextMenu(mx, my, ["Properties", "Set Length...", "Set Rotation...", "Delete"]); context_wall_idx = hit
                                     else: is_erasing = True; sim.snapshot()
                     elif event.button == 1:
                         mx, my = event.pos
