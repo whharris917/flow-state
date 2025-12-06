@@ -114,6 +114,22 @@ def calculate_current_temp(vel_x, vel_y, count, mass):
     ke_total = 0.5 * mass * np.sum(vx**2 + vy**2)
     return ke_total / count
 
+def draw_dashed_line(surf, color, start_pos, end_pos, width=1, dash_length=10):
+    x1, y1 = start_pos
+    x2, y2 = end_pos
+    dl = dash_length
+    length = math.hypot(x2 - x1, y2 - y1)
+    if length == 0: return
+    
+    dash_amount = int(length / dl)
+    dx = (x2 - x1) / length
+    dy = (y2 - y1) / length
+    
+    for i in range(0, dash_amount, 2):
+        s = (x1 + dx * i * dl, y1 + dy * i * dl)
+        e = (x1 + dx * (i + 1) * dl, y1 + dy * (i + 1) * dl)
+        pygame.draw.line(surf, color, s, e, width)
+
 # --- Helpers ---
 def convert_state_to_serializable(state):
     serializable_state = {}
@@ -254,8 +270,12 @@ def main():
     btn_boundaries = Button(rp_start_x + btn_w + 10, rp_curr_y, btn_w, 30, "Bounds", active=False)
     rp_curr_y += 40
     btn_tool_brush = Button(rp_start_x, rp_curr_y, btn_w, 30, "Brush", active=True, toggle=False)
-    btn_tool_wall = Button(rp_start_x + btn_w + 10, rp_curr_y, btn_w, 30, "Wall", active=False, toggle=False)
+    btn_tool_line = Button(rp_start_x + btn_w + 10, rp_curr_y, btn_w, 30, "Line", active=False, toggle=False)
     rp_curr_y += 40
+    # Added Ref Line button on next row
+    btn_tool_ref = Button(rp_start_x, rp_curr_y, rp_width, 30, "Reference Line", active=False, toggle=False)
+    rp_curr_y += 40
+
     slider_brush_size = SmartSlider(rp_start_x, rp_curr_y, rp_width, 1.0, 10.0, 2.0, "Brush Radius", hard_min=0.5); rp_curr_y+=60
     lbl_resize = font.render("World Size:", True, (200, 200, 200))
     input_world = InputField(rp_start_x + 80, rp_curr_y, 60, 25, str(config.DEFAULT_WORLD_SIZE))
@@ -283,19 +303,20 @@ def main():
                        slider_sigma, slider_epsilon, slider_M, slider_skin,
                        btn_thermostat, btn_boundaries, slider_brush_size, btn_resize]
     
-    ui_editor_elements = [btn_tool_wall, btn_ae_save, btn_ae_discard, btn_undo, btn_redo, btn_clear,
+    # REMOVED btn_tool_line and btn_tool_ref from here to avoid double-handling
+    ui_editor_elements = [btn_ae_save, btn_ae_discard, btn_undo, btn_redo, btn_clear,
                           btn_const_coincident, btn_const_length, btn_const_equal, btn_const_parallel, btn_const_perp,
                           btn_const_horiz, btn_const_vert]
     
     right_panel_elements = [
         slider_gravity, slider_temp, slider_damping, slider_dt, slider_sigma, slider_epsilon, slider_M, slider_skin,
-        btn_thermostat, btn_boundaries, btn_tool_brush, btn_tool_wall, slider_brush_size, input_world, btn_resize,
+        btn_thermostat, btn_boundaries, btn_tool_brush, btn_tool_line, btn_tool_ref, slider_brush_size, input_world, btn_resize,
         btn_ae_save, btn_ae_discard, btn_const_coincident, btn_const_length, btn_const_equal, btn_const_parallel, btn_const_perp,
         btn_const_horiz, btn_const_vert
     ]
 
     # --- APP STATE ---
-    current_tool = 0 
+    current_tool = 0 # 0=Brush, 1=Line, 2=RefLine
     zoom = 1.0; pan_x = 0.0; pan_y = 0.0
     is_panning = False; last_mouse_pos = (0, 0)
     is_painting = False; is_erasing = False
@@ -339,8 +360,13 @@ def main():
         sim.walls = []
         sim.constraints = []
         app_mode = MODE_EDITOR
-        btn_tool_wall.active = True
+        
+        # Set default tool and reset active states
+        current_tool = 1
+        btn_tool_line.active = True
         btn_tool_brush.active = False
+        btn_tool_ref.active = False
+        
         zoom = 1.5; pan_x = 0; pan_y = 0
         status_msg = "Entered Asset Editor"; status_time = time.time()
 
@@ -545,10 +571,12 @@ def main():
                 for el in current_ui_list:
                     if el.handle_event(event): ui_captured = True
                 if app_mode == MODE_SIM and input_world.handle_event(event): ui_captured = True
-                if btn_tool_wall.handle_event(event):
-                    current_tool = 1; btn_tool_wall.active = True; btn_tool_brush.active = False; ui_captured = True
+                if btn_tool_line.handle_event(event):
+                    current_tool = 1; btn_tool_line.active = True; btn_tool_brush.active = False; btn_tool_ref.active = False; ui_captured = True
+                if btn_tool_ref.handle_event(event):
+                    current_tool = 2; btn_tool_ref.active = True; btn_tool_line.active = False; btn_tool_brush.active = False; ui_captured = True
                 if app_mode == MODE_SIM and btn_tool_brush.handle_event(event):
-                    current_tool = 0; btn_tool_brush.active = True; btn_tool_wall.active = False; ui_captured = True
+                    current_tool = 0; btn_tool_brush.active = True; btn_tool_line.active = False; btn_tool_ref.active = False; ui_captured = True
                 
                 # Constraint Logic
                 if app_mode == MODE_EDITOR:
@@ -614,7 +642,7 @@ def main():
                                 sim_x, sim_y = screen_to_sim(mx, my, zoom, pan_x, pan_y, sim.world_size, layout)
                                 sim.place_asset(placing_asset_data, sim_x, sim_y)
                             elif current_tool == 0 and app_mode == MODE_SIM: is_painting = True; sim.snapshot()
-                            elif current_tool == 1 or app_mode == MODE_EDITOR:
+                            elif current_tool == 1 or current_tool == 2 or app_mode == MODE_EDITOR:
                                 # SELECTION & WALL LOGIC
                                 sim_x, sim_y = screen_to_sim(mx, my, zoom, pan_x, pan_y, sim.world_size, layout)
                                 rad_sim = 5.0 / (((layout['MID_W'] - 50) / sim.world_size) * zoom)
@@ -700,7 +728,8 @@ def main():
                                         if not pending_constraint:
                                             wall_mode = 'NEW'; sim.snapshot()
                                             start_x, start_y = get_snapped_pos(mx, my, sim, zoom, pan_x, pan_y, sim.world_size, layout)
-                                            sim.add_wall((start_x, start_y), (start_x, start_y))
+                                            is_ref = (current_tool == 2)
+                                            sim.add_wall((start_x, start_y), (start_x, start_y), is_ref=is_ref)
                                             wall_idx = len(sim.walls)-1; wall_pt = 1
 
                 elif event.type == pygame.MOUSEBUTTONUP:
@@ -838,7 +867,11 @@ def main():
                 if pending_constraint and i in pending_targets_walls: color = (100, 255, 100) # Green pending
                 
                 if app_mode == MODE_EDITOR: 
-                    pygame.draw.line(screen, color, s1, s2, 2 if (i in selected_walls or (pending_constraint and i in pending_targets_walls)) else 1)
+                    line_width = 2 if (i in selected_walls or (pending_constraint and i in pending_targets_walls)) else 1
+                    if w.get('ref'):
+                        draw_dashed_line(screen, color, s1, s2, line_width)
+                    else:
+                        pygame.draw.line(screen, color, s1, s2, line_width)
 
             # 2. Draw Points & Collect Anchors
             anchored_points_draw_list = []
@@ -903,8 +936,13 @@ def main():
 
             for el in current_ui_list: el.draw(screen, font)
             if app_mode == MODE_SIM:
-                btn_tool_brush.draw(screen, font); btn_tool_wall.draw(screen, font)
+                btn_tool_brush.draw(screen, font); btn_tool_line.draw(screen, font)
                 screen.blit(lbl_resize, (layout['RIGHT_X'] + 15, input_world.rect.y + 4)); input_world.draw(screen, font)
+            # EXPLICITLY DRAW EDITOR TOOLS HERE
+            if app_mode == MODE_EDITOR:
+                btn_tool_line.draw(screen, font)
+                btn_tool_ref.draw(screen, font)
+
             if time.time() - status_time < 3.0:
                 status_surf = font.render(status_msg, True, (100, 255, 100))
                 pygame.draw.rect(screen, (30,30,30), (layout['MID_X'] + 10, TOP_MENU_H + 10, status_surf.get_width()+10, 25), border_radius=5)
