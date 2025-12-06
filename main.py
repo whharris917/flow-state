@@ -135,8 +135,15 @@ def main():
     # Enable resizing
     screen = pygame.display.set_mode((config.WINDOW_WIDTH, config.WINDOW_HEIGHT), pygame.RESIZABLE)
     pygame.display.set_caption("Fast MD - Panel Layout")
-    font = pygame.font.SysFont("consolas", 14)
-    big_font = pygame.font.SysFont("consolas", 20)
+    
+    # Fonts - Sleek Modern Look (VS Code style)
+    try:
+        font = pygame.font.SysFont("segoeui", 15)
+        big_font = pygame.font.SysFont("segoeui", 22)
+    except:
+        font = pygame.font.SysFont("arial", 15)
+        big_font = pygame.font.SysFont("arial", 22)
+        
     clock = pygame.time.Clock()
     
     sim = Simulation()
@@ -166,15 +173,16 @@ def main():
     # -- Left Panel (Fixed Position) --
     lp_margin = 10
     lp_w = layout['LEFT_W'] - 2 * lp_margin
-    lp_h = 40 
+    lp_h = 35 
     lp_curr_y = TOP_MENU_H + 20
     
-    btn_play = Button(layout['LEFT_X'] + lp_margin, lp_curr_y, lp_w, lp_h, "Play/Pause", active=False, color_active=(50, 200, 50), color_inactive=(200, 50, 50))
-    lp_curr_y += lp_h + 20
-    btn_clear = Button(layout['LEFT_X'] + lp_margin, lp_curr_y, lp_w, lp_h, "Clear", active=False, toggle=False, color_inactive=(150, 80, 80))
-    lp_curr_y += lp_h + 20
-    btn_reset = Button(layout['LEFT_X'] + lp_margin, lp_curr_y, lp_w, lp_h, "Reset", active=False, toggle=False, color_inactive=(150, 50, 50))
-    lp_curr_y += lp_h + 20
+    # Updated Colors for "Flat" look
+    btn_play = Button(layout['LEFT_X'] + lp_margin, lp_curr_y, lp_w, lp_h, "Play/Pause", active=False, color_active=(60, 120, 60), color_inactive=(180, 60, 60))
+    lp_curr_y += lp_h + 15
+    btn_clear = Button(layout['LEFT_X'] + lp_margin, lp_curr_y, lp_w, lp_h, "Clear", active=False, toggle=False, color_inactive=(80, 80, 80))
+    lp_curr_y += lp_h + 15
+    btn_reset = Button(layout['LEFT_X'] + lp_margin, lp_curr_y, lp_w, lp_h, "Reset", active=False, toggle=False, color_inactive=(80, 80, 80))
+    lp_curr_y += lp_h + 15
     btn_undo = Button(layout['LEFT_X'] + lp_margin, lp_curr_y, lp_w, lp_h, "Undo", active=False, toggle=False)
     lp_curr_y += lp_h + 10
     btn_redo = Button(layout['LEFT_X'] + lp_margin, lp_curr_y, lp_w, lp_h, "Redo", active=False, toggle=False)
@@ -221,7 +229,7 @@ def main():
     
     # Asset Editor UI (Right Panel)
     ae_curr_y = TOP_MENU_H + 40
-    btn_ae_save = Button(rp_start_x, ae_curr_y, rp_width, 40, "Save Asset", active=False, toggle=False, color_inactive=(50, 150, 50))
+    btn_ae_save = Button(rp_start_x, ae_curr_y, rp_width, 40, "Save Asset", active=False, toggle=False, color_inactive=(50, 120, 50))
     ae_curr_y += 50
     btn_ae_discard = Button(rp_start_x, ae_curr_y, rp_width, 40, "Discard & Exit", active=False, toggle=False, color_inactive=(150, 50, 50))
     
@@ -658,6 +666,7 @@ def main():
             sim_rect = pygame.Rect(layout['MID_X'], TOP_MENU_H, layout['MID_W'], layout['MID_H'])
             screen.set_clip(sim_rect)
             
+            # Grid
             tl = sim_to_screen(0, 0, zoom, pan_x, pan_y, sim.world_size, layout)
             br = sim_to_screen(sim.world_size, sim.world_size, zoom, pan_x, pan_y, sim.world_size, layout)
             g_col = config.GRID_COLOR if app_mode == MODE_SIM else (50, 60, 50)
