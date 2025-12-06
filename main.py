@@ -81,22 +81,28 @@ def screen_to_sim(sx, sy, zoom, pan_x, pan_y, world_size, layout):
     return x, y
 
 def get_snapped_pos(mx, my, sim, zoom, pan_x, pan_y, world_size, layout, anchor_pos=None, exclude_wall_idx=-1):
+    """
+    Returns (x, y, snapped_target).
+    snapped_target is (wall_idx, pt_idx) if snapped to a vertex with Ctrl, else None.
+    """
     sim_x, sim_y = screen_to_sim(mx, my, zoom, pan_x, pan_y, world_size, layout)
     final_x, final_y = sim_x, sim_y
     is_snapped_to_vertex = False
+    snapped_target = None
     
     if pygame.key.get_mods() & pygame.KMOD_CTRL:
         snap_threshold_px = 15 
         best_dist = float('inf')
         for i, w in enumerate(sim.walls):
             if i == exclude_wall_idx: continue
-            points = [w['start'], w['end']]
-            for pt in points:
-                sx, sy = sim_to_screen(pt[0], pt[1], zoom, pan_x, pan_y, world_size, layout)
+            points = [(w['start'], 0), (w['end'], 1)]
+            for pt_pos, pt_idx in points:
+                sx, sy = sim_to_screen(pt_pos[0], pt_pos[1], zoom, pan_x, pan_y, world_size, layout)
                 dist = math.hypot(mx - sx, my - sy)
                 if dist < snap_threshold_px and dist < best_dist:
                     best_dist = dist
-                    final_x, final_y = pt
+                    final_x, final_y = pt_pos
+                    snapped_target = (i, pt_idx)
                     is_snapped_to_vertex = True
 
     if (pygame.key.get_mods() & pygame.KMOD_SHIFT) and anchor_pos is not None and not is_snapped_to_vertex:
@@ -105,7 +111,7 @@ def get_snapped_pos(mx, my, sim, zoom, pan_x, pan_y, world_size, layout, anchor_
         if abs(dx) > abs(dy): final_y = anchor_pos[1] 
         else: final_x = anchor_pos[0] 
 
-    return final_x, final_y
+    return final_x, final_y, snapped_target
 
 def calculate_current_temp(vel_x, vel_y, count, mass):
     if count == 0: return 0.0
@@ -339,6 +345,10 @@ def main():
     drag_start_length = None
     temp_constraint_active = False
     current_group_indices = [] # For group movement
+    
+    # Auto-Constraint State
+    current_snap_target = None
+    new_wall_start_snap = None
 
     def enter_editor_mode():
         nonlocal app_mode, zoom, pan_x, pan_y, status_msg, status_time, sim_backup_state
@@ -746,12 +756,45 @@ def main():
                                         
                                         if not pending_constraint:
                                             wall_mode = 'NEW'; sim.snapshot()
-                                            start_x, start_y = get_snapped_pos(mx, my, sim, zoom, pan_x, pan_y, sim.world_size, layout)
+                                            
+                                            # CAPTURE START SNAP
+                                            start_x, start_y, start_snap = get_snapped_pos(mx, my, sim, zoom, pan_x, pan_y, sim.world_size, layout)
+                                            
                                             is_ref = (current_tool == 2)
                                             sim.add_wall((start_x, start_y), (start_x, start_y), is_ref=is_ref)
                                             wall_idx = len(sim.walls)-1; wall_pt = 1
+                                            
+                                            # Reset and store
+                                            current_snap_target = None
+                                            new_wall_start_snap = None
+                                            if pygame.key.get_mods() & pygame.KMOD_CTRL:
+                                                new_wall_start_snap = start_snap
 
                 elif event.type == pygame.MOUSEBUTTONUP:
+                    # HANDLE AUTO-CONSTRAINTS ON RELEASE
+                    if wall_mode == 'NEW':
+                        # 1. Start point auto-coincident
+                        if new_wall_start_snap and (pygame.key.get_mods() & pygame.KMOD_CTRL):
+                             sim.add_constraint('COINCIDENT', [(wall_idx, 0), new_wall_start_snap])
+                        
+                        # 2. End point auto-coincident
+                        if current_snap_target and (pygame.key.get_mods() & pygame.KMOD_CTRL):
+                             sim.add_constraint('COINCIDENT', [(wall_idx, 1), current_snap_target])
+                             
+                        # 3. Auto-HV (Shift)
+                        if pygame.key.get_mods() & pygame.KMOD_SHIFT:
+                             w = sim.walls[wall_idx]
+                             dx = abs(w['start'][0] - w['end'][0])
+                             dy = abs(w['start'][1] - w['end'][1])
+                             # We snapped to axis in get_snapped_pos, so one delta should be very small
+                             if dy < 0.001: sim.add_constraint('HORIZONTAL', [wall_idx])
+                             elif dx < 0.001: sim.add_constraint('VERTICAL', [wall_idx])
+
+                    elif wall_mode == 'EDIT':
+                        # Auto-Coincident for endpoint drag
+                        if current_snap_target and (pygame.key.get_mods() & pygame.KMOD_CTRL):
+                             sim.add_constraint('COINCIDENT', [(wall_idx, wall_pt), current_snap_target])
+
                     is_panning = False; is_painting = False; is_erasing = False
                     wall_mode = None; wall_idx = -1
                     current_group_indices = [] # Clear group
@@ -773,7 +816,11 @@ def main():
                             if wall_idx < len(sim.walls):
                                 w = sim.walls[wall_idx]
                                 anchor = w['end'] if wall_pt == 0 else w['start']
-                                dest_x, dest_y = get_snapped_pos(mx, my, sim, zoom, pan_x, pan_y, sim.world_size, layout, anchor, wall_idx)
+                                
+                                # UPDATED UNPACKING
+                                dest_x, dest_y, dest_snap = get_snapped_pos(mx, my, sim, zoom, pan_x, pan_y, sim.world_size, layout, anchor, wall_idx)
+                                current_snap_target = dest_snap
+                                
                                 if wall_pt == 0: sim.update_wall(wall_idx, (dest_x, dest_y), w['end'])
                                 else: sim.update_wall(wall_idx, w['start'], (dest_x, dest_y))
                                 if app_mode == MODE_EDITOR: sim.apply_constraints()
