@@ -271,6 +271,10 @@ def main():
     pending_constraint = None # 'LENGTH', 'EQUAL', etc.
     pending_targets_walls = []
     pending_targets_points = []
+    
+    # Drag State
+    drag_start_length = None
+    temp_constraint_active = False
 
     def enter_editor_mode():
         nonlocal app_mode, zoom, pan_x, pan_y, status_msg, status_time, sim_backup_state
@@ -597,9 +601,29 @@ def main():
                                             if not (pygame.key.get_mods() & pygame.KMOD_SHIFT):
                                                 if hit_wall not in selected_walls:
                                                     selected_walls.clear(); selected_points.clear()
+                                                    selected_walls.add(hit_wall) # Just select
+                                            else:
+                                                if hit_wall in selected_walls: selected_walls.remove(hit_wall)
+                                                else: selected_walls.add(hit_wall)
                                             
-                                            if hit_wall in selected_walls: selected_walls.remove(hit_wall)
-                                            else: selected_walls.add(hit_wall)
+                                            # Prepare Drag
+                                            wall_mode = 'MOVE_WALL'; wall_idx = hit_wall
+                                            sim.snapshot()
+                                            last_mouse_pos = event.pos # Capture start position
+                                            
+                                            # Capture start length for Rigid Drag Check
+                                            w = sim.walls[hit_wall]
+                                            drag_start_length = math.hypot(w['end'][0]-w['start'][0], w['end'][1]-w['start'][1])
+                                            
+                                            # Add temporary length constraint for rigidity
+                                            if app_mode == MODE_EDITOR:
+                                                sim.constraints.append({
+                                                    'type': 'LENGTH', 
+                                                    'indices': [hit_wall], 
+                                                    'value': drag_start_length,
+                                                    'temp': True
+                                                })
+                                                temp_constraint_active = True
                                     else:
                                         # Click on empty space
                                         if not (pygame.key.get_mods() & pygame.KMOD_SHIFT):
@@ -614,6 +638,12 @@ def main():
                 elif event.type == pygame.MOUSEBUTTONUP:
                     is_panning = False; is_painting = False; is_erasing = False
                     wall_mode = None; wall_idx = -1
+                    
+                    # Remove temporary constraint
+                    if temp_constraint_active:
+                        sim.constraints = [c for c in sim.constraints if not c.get('temp')]
+                        temp_constraint_active = False
+                    
                     # Solve constraints after move
                     if app_mode == MODE_EDITOR: sim.apply_constraints()
 
@@ -622,13 +652,32 @@ def main():
                     if is_panning: pan_x += mx - last_mouse_pos[0]; pan_y += my - last_mouse_pos[1]; last_mouse_pos = (mx, my)
                     
                     if wall_mode is not None and wall_idx < len(sim.walls):
-                        w = sim.walls[wall_idx]
-                        anchor = w['end'] if wall_pt == 0 else w['start']
-                        dest_x, dest_y = get_snapped_pos(mx, my, sim, zoom, pan_x, pan_y, sim.world_size, layout, anchor, wall_idx)
-                        if wall_pt == 0: sim.update_wall(wall_idx, (dest_x, dest_y), w['end'])
-                        else: sim.update_wall(wall_idx, w['start'], (dest_x, dest_y))
-                        # Continuous constraint solving while dragging
-                        if app_mode == MODE_EDITOR: sim.apply_constraints()
+                        if wall_mode == 'EDIT' or wall_mode == 'NEW':
+                            w = sim.walls[wall_idx]
+                            anchor = w['end'] if wall_pt == 0 else w['start']
+                            dest_x, dest_y = get_snapped_pos(mx, my, sim, zoom, pan_x, pan_y, sim.world_size, layout, anchor, wall_idx)
+                            if wall_pt == 0: sim.update_wall(wall_idx, (dest_x, dest_y), w['end'])
+                            else: sim.update_wall(wall_idx, w['start'], (dest_x, dest_y))
+                            if app_mode == MODE_EDITOR: sim.apply_constraints()
+                        
+                        elif wall_mode == 'MOVE_WALL':
+                            # Use sim coordinates difference for 1:1 movement
+                            curr_sim_x, curr_sim_y = screen_to_sim(mx, my, zoom, pan_x, pan_y, sim.world_size, layout)
+                            prev_sim_x, prev_sim_y = screen_to_sim(last_mouse_pos[0], last_mouse_pos[1], zoom, pan_x, pan_y, sim.world_size, layout)
+                            
+                            dx = curr_sim_x - prev_sim_x
+                            dy = curr_sim_y - prev_sim_y
+                            
+                            last_mouse_pos = (mx, my) # Update for next delta
+                            
+                            w = sim.walls[wall_idx]
+                            new_s = (w['start'][0] + dx, w['start'][1] + dy)
+                            new_e = (w['end'][0] + dx, w['end'][1] + dy)
+                            sim.update_wall(wall_idx, new_s, new_e)
+                            
+                            # Just apply constraints; the temporary LENGTH constraint handles rigidity
+                            if app_mode == MODE_EDITOR: 
+                                sim.apply_constraints()
 
             # --- UPDATE ---
             if not prop_dialog and not rot_dialog:
