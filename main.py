@@ -385,8 +385,11 @@ def main():
         # 1. Check if we have enough selected items to apply immediately
         applied = False
         if ctype == 'LENGTH' and len(selected_walls) == 1:
-            val = simpledialog.askfloat("Length", "Enter length:")
-            if val: sim.add_constraint('LENGTH', list(selected_walls), val); applied = True
+            w_idx = list(selected_walls)[0]
+            w = sim.walls[w_idx]
+            curr_len = math.hypot(w['end'][0]-w['start'][0], w['end'][1]-w['start'][1])
+            sim.add_constraint('LENGTH', list(selected_walls), curr_len)
+            applied = True
         elif ctype in ['EQUAL', 'PARALLEL', 'PERPENDICULAR'] and len(selected_walls) == 2:
             sim.add_constraint(ctype, list(selected_walls)); applied = True
         elif ctype in ['HORIZONTAL', 'VERTICAL'] and len(selected_walls) >= 1:
@@ -438,8 +441,9 @@ def main():
         if pending_constraint in ['LENGTH', 'HORIZONTAL', 'VERTICAL']:
             if wall_idx is not None:
                 if pending_constraint == 'LENGTH':
-                    val = simpledialog.askfloat("Length", "Enter length:")
-                    if val: sim.add_constraint('LENGTH', [wall_idx], val)
+                    w = sim.walls[wall_idx]
+                    curr_len = math.hypot(w['end'][0]-w['start'][0], w['end'][1]-w['start'][1])
+                    sim.add_constraint('LENGTH', [wall_idx], curr_len)
                 else:
                     sim.add_constraint(pending_constraint, [wall_idx])
                 
