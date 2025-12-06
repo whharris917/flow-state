@@ -80,6 +80,38 @@ def screen_to_sim(sx, sy, zoom, pan_x, pan_y, world_size, layout):
     y = (sy - pan_y - cy_screen) / final_scale + cy_world
     return x, y
 
+def get_grouped_points(sim, zoom, pan_x, pan_y, world_size, layout):
+    """
+    Groups points by their screen coordinates to handle stacking.
+    Returns a dict: {(sx, sy): [(wall_idx, pt_idx), ...]}
+    """
+    point_map = {}
+    
+    for i, w in enumerate(sim.walls):
+        points_to_process = []
+        if w['start'] == w['end']: # Standalone point
+            points_to_process.append((w['start'], 0))
+        else:
+            points_to_process.append((w['start'], 0))
+            points_to_process.append((w['end'], 1))
+        
+        for pt, end_idx in points_to_process:
+            sx, sy = sim_to_screen(pt[0], pt[1], zoom, pan_x, pan_y, world_size, layout)
+            
+            # Fuzzy match to group (within 3 pixels)
+            found_key = None
+            for k in point_map:
+                if abs(k[0]-sx) <= 3 and abs(k[1]-sy) <= 3:
+                    found_key = k
+                    break
+            
+            if found_key:
+                point_map[found_key].append((i, end_idx))
+            else:
+                point_map[(sx, sy)] = [(i, end_idx)]
+                
+    return point_map
+
 def get_snapped_pos(mx, my, sim, zoom, pan_x, pan_y, world_size, layout, anchor_pos=None, exclude_wall_idx=-1):
     """
     Returns (x, y, snapped_target).
@@ -279,7 +311,8 @@ def main():
     btn_tool_line = Button(rp_start_x + btn_w + 10, rp_curr_y, btn_w, 30, "Line", active=False, toggle=False)
     rp_curr_y += 40
     # Added Ref Line button on next row
-    btn_tool_ref = Button(rp_start_x, rp_curr_y, rp_width, 30, "Reference Line", active=False, toggle=False)
+    btn_tool_ref = Button(rp_start_x, rp_curr_y, btn_w, 30, "Reference Line", active=False, toggle=False)
+    btn_tool_point = Button(rp_start_x + btn_w + 10, rp_curr_y, btn_w, 30, "Point", active=False, toggle=False)
     rp_curr_y += 40
 
     slider_brush_size = SmartSlider(rp_start_x, rp_curr_y, rp_width, 1.0, 10.0, 2.0, "Brush Radius", hard_min=0.5); rp_curr_y+=60
@@ -316,13 +349,13 @@ def main():
     
     right_panel_elements = [
         slider_gravity, slider_temp, slider_damping, slider_dt, slider_sigma, slider_epsilon, slider_M, slider_skin,
-        btn_thermostat, btn_boundaries, btn_tool_brush, btn_tool_line, btn_tool_ref, slider_brush_size, input_world, btn_resize,
+        btn_thermostat, btn_boundaries, btn_tool_brush, btn_tool_line, btn_tool_ref, btn_tool_point, slider_brush_size, input_world, btn_resize,
         btn_ae_save, btn_ae_discard, btn_const_coincident, btn_const_length, btn_const_equal, btn_const_parallel, btn_const_perp,
         btn_const_horiz, btn_const_vert
     ]
 
     # --- APP STATE ---
-    current_tool = 0 # 0=Brush, 1=Line, 2=RefLine
+    current_tool = 0 # 0=Brush, 1=Line, 2=RefLine, 3=Point
     zoom = 1.0; pan_x = 0.0; pan_y = 0.0
     is_panning = False; last_mouse_pos = (0, 0)
     is_painting = False; is_erasing = False
@@ -376,6 +409,7 @@ def main():
         btn_tool_line.active = True
         btn_tool_brush.active = False
         btn_tool_ref.active = False
+        btn_tool_point.active = False
         
         zoom = 1.5; pan_x = 0; pan_y = 0
         status_msg = "Entered Asset Editor"; status_time = time.time()
@@ -591,9 +625,11 @@ def main():
                     if el.handle_event(event): ui_captured = True
                 if app_mode == MODE_SIM and input_world.handle_event(event): ui_captured = True
                 if btn_tool_line.handle_event(event):
-                    current_tool = 1; btn_tool_line.active = True; btn_tool_brush.active = False; btn_tool_ref.active = False; ui_captured = True
+                    current_tool = 1; btn_tool_line.active = True; btn_tool_brush.active = False; btn_tool_ref.active = False; btn_tool_point.active=False; ui_captured = True
                 if btn_tool_ref.handle_event(event):
-                    current_tool = 2; btn_tool_ref.active = True; btn_tool_line.active = False; btn_tool_brush.active = False; ui_captured = True
+                    current_tool = 2; btn_tool_ref.active = True; btn_tool_line.active = False; btn_tool_brush.active = False; btn_tool_point.active=False; ui_captured = True
+                if btn_tool_point.handle_event(event):
+                    current_tool = 3; btn_tool_point.active = True; btn_tool_ref.active = False; btn_tool_line.active = False; btn_tool_brush.active = False; ui_captured = True
                 if app_mode == MODE_SIM and btn_tool_brush.handle_event(event):
                     current_tool = 0; btn_tool_brush.active = True; btn_tool_line.active = False; btn_tool_ref.active = False; ui_captured = True
                 
@@ -635,12 +671,43 @@ def main():
                                 pending_constraint = None; reset_constraint_buttons(); status_msg = "Cancelled"; status_time = time.time()
                             else:
                                 sim_x, sim_y = screen_to_sim(mx, my, zoom, pan_x, pan_y, sim.world_size, layout)
-                                rad_sim = 5.0 / (((layout['MID_W'] - 50) / sim.world_size) * zoom)
+                                # REFACTORED HIT DETECTION
+                                # 1. Check Points (Stacked)
+                                point_map = get_grouped_points(sim, zoom, pan_x, pan_y, sim.world_size, layout)
+                                
                                 hit_pt = None
-                                # Check for Point first
-                                for i, w in enumerate(sim.walls):
-                                    if math.hypot(w['start'][0]-sim_x, w['start'][1]-sim_y) < rad_sim: hit_pt=(i,0); break
-                                    if math.hypot(w['end'][0]-sim_x, w['end'][1]-sim_y) < rad_sim: hit_pt=(i,1); break
+                                # Find if we clicked near any stack
+                                base_r, step_r = 5, 4
+                                found_stack = None
+                                found_center = None
+                                
+                                # Iterate visual stacks to find click
+                                for center_pos, items in point_map.items():
+                                    dist = math.hypot(mx - center_pos[0], my - center_pos[1])
+                                    # Max radius for this stack
+                                    max_r = base_r + (len(items) - 1) * step_r
+                                    if dist <= max_r:
+                                        found_stack = items
+                                        found_center = center_pos
+                                        break
+                                
+                                if found_stack:
+                                    # Determine WHICH ring in the stack was clicked
+                                    # Rings are rendered bottom (large) to top (small).
+                                    # Radius for index k (0=top) is base + k*step
+                                    # Logic:
+                                    # If dist < base: clicked top (index 0)
+                                    # If base < dist < base+step: clicked index 1
+                                    dist = math.hypot(mx - found_center[0], my - found_center[1])
+                                    if dist < base_r: 
+                                        hit_pt = found_stack[0] # Topmost
+                                    else:
+                                        # (dist - base) / step gives approximate index
+                                        k = int((dist - base_r) / step_r) + 1
+                                        if k < len(found_stack):
+                                            hit_pt = found_stack[k]
+                                        else:
+                                            hit_pt = found_stack[-1] # Fallback to bottom-most
                                 
                                 if hit_pt and app_mode == MODE_EDITOR:
                                     context_wall_idx = hit_pt[0]
@@ -649,7 +716,10 @@ def main():
                                 else:
                                     # Fallback to Wall - UPDATED HIT DETECTION
                                     hit = -1
+                                    rad_sim = 5.0 / (((layout['MID_W'] - 50) / sim.world_size) * zoom)
                                     for i, w in enumerate(sim.walls):
+                                        if w['start'] == w['end']: continue # Skip points in wall check
+                                        
                                         # Dist point to line segment (Same logic as left click)
                                         p1=np.array(w['start']); p2=np.array(w['end']); p3=np.array([sim_x, sim_y])
                                         d_vec = p2-p1; len_sq = np.dot(d_vec, d_vec)
@@ -671,16 +741,46 @@ def main():
                                 sim_x, sim_y = screen_to_sim(mx, my, zoom, pan_x, pan_y, sim.world_size, layout)
                                 sim.place_asset(placing_asset_data, sim_x, sim_y)
                             elif current_tool == 0 and app_mode == MODE_SIM: is_painting = True; sim.snapshot()
+                            elif current_tool == 3 and app_mode == MODE_EDITOR:
+                                # ADD POINT LOGIC
+                                start_x, start_y, start_snap = get_snapped_pos(mx, my, sim, zoom, pan_x, pan_y, sim.world_size, layout)
+                                sim.snapshot()
+                                # Add a wall with zero length
+                                sim.add_wall((start_x, start_y), (start_x, start_y), is_ref=False)
+                                wall_idx = len(sim.walls)-1
+                                
+                                # Auto Coincident
+                                if start_snap and (pygame.key.get_mods() & pygame.KMOD_CTRL):
+                                    sim.add_constraint('COINCIDENT', [(wall_idx, 0), start_snap])
+                                
                             elif current_tool == 1 or current_tool == 2 or app_mode == MODE_EDITOR:
                                 # SELECTION & WALL LOGIC
                                 sim_x, sim_y = screen_to_sim(mx, my, zoom, pan_x, pan_y, sim.world_size, layout)
                                 rad_sim = 5.0 / (((layout['MID_W'] - 50) / sim.world_size) * zoom)
                                 
-                                # Check for Point Click
+                                # Check for Point Click (UPDATED STACK LOGIC)
+                                point_map = get_grouped_points(sim, zoom, pan_x, pan_y, sim.world_size, layout)
                                 hit_pt = None
-                                for i, w in enumerate(sim.walls):
-                                    if math.hypot(w['start'][0]-sim_x, w['start'][1]-sim_y) < rad_sim: hit_pt=(i,0); break
-                                    if math.hypot(w['end'][0]-sim_x, w['end'][1]-sim_y) < rad_sim: hit_pt=(i,1); break
+                                
+                                base_r, step_r = 5, 4
+                                found_stack = None
+                                found_center = None
+                                
+                                for center_pos, items in point_map.items():
+                                    dist = math.hypot(mx - center_pos[0], my - center_pos[1])
+                                    max_r = base_r + (len(items) - 1) * step_r
+                                    if dist <= max_r:
+                                        found_stack = items
+                                        found_center = center_pos
+                                        break
+                                
+                                if found_stack:
+                                    dist = math.hypot(mx - found_center[0], my - found_center[1])
+                                    if dist < base_r: hit_pt = found_stack[0]
+                                    else:
+                                        k = int((dist - base_r) / step_r) + 1
+                                        if k < len(found_stack): hit_pt = found_stack[k]
+                                        else: hit_pt = found_stack[-1]
                                 
                                 if hit_pt:
                                     if pending_constraint:
@@ -700,6 +800,8 @@ def main():
                                     # Check for Wall Click (Line)
                                     hit_wall = -1
                                     for i, w in enumerate(sim.walls):
+                                        if w['start'] == w['end']: continue # Skip points
+                                        
                                         # Dist point to line segment
                                         p1=np.array(w['start']); p2=np.array(w['end']); p3=np.array([sim_x, sim_y])
                                         d_vec = p2-p1; len_sq = np.dot(d_vec, d_vec)
@@ -925,6 +1027,9 @@ def main():
             # --- RENDER WALLS (Layered Approach) ---
             # 1. Draw Lines (Walls)
             for i, w in enumerate(sim.walls):
+                # Skip standalone points
+                if w['start'] == w['end']: continue
+                
                 s1 = sim_to_screen(w['start'][0], w['start'][1], zoom, pan_x, pan_y, sim.world_size, layout)
                 s2 = sim_to_screen(w['end'][0], w['end'][1], zoom, pan_x, pan_y, sim.world_size, layout)
                 
@@ -939,34 +1044,61 @@ def main():
                     else:
                         pygame.draw.line(screen, color, s1, s2, line_width)
 
-            # 2. Draw Points & Collect Anchors
-            anchored_points_draw_list = []
-            
-            for i, w in enumerate(sim.walls):
-                s1 = sim_to_screen(w['start'][0], w['start'][1], zoom, pan_x, pan_y, sim.world_size, layout)
-                s2 = sim_to_screen(w['end'][0], w['end'][1], zoom, pan_x, pan_y, sim.world_size, layout)
+            # 2. Render Points Grouped by Location
+            if app_mode == MODE_EDITOR:
+                point_map = get_grouped_points(sim, zoom, pan_x, pan_y, sim.world_size, layout)
+                anchored_points_draw_list = []
                 
-                # Standard Point (White)
-                pygame.draw.rect(screen, (255, 255, 255), (s1[0]-3, s1[1]-3, 6, 6))
-                pygame.draw.rect(screen, (255, 255, 255), (s2[0]-3, s2[1]-3, 6, 6))
+                base_r = 5
+                step_r = 4
                 
-                # Highlight Selected Points
-                if (i, 0) in selected_points: pygame.draw.rect(screen, (0, 255, 255), (s1[0]-4, s1[1]-4, 8, 8), 2)
-                if (i, 1) in selected_points: pygame.draw.rect(screen, (0, 255, 255), (s2[0]-4, s2[1]-4, 8, 8), 2)
-                
-                # Highlight Pending Points
-                if pending_constraint and (i, 0) in pending_targets_points: pygame.draw.rect(screen, (100, 255, 100), (s1[0]-4, s1[1]-4, 8, 8), 2)
-                if pending_constraint and (i, 1) in pending_targets_points: pygame.draw.rect(screen, (100, 255, 100), (s2[0]-4, s2[1]-4, 8, 8), 2)
-                
-                # Collect Anchors for late rendering
-                anchors = w.get('anchored', [False, False])
-                if anchors[0]: anchored_points_draw_list.append(s1)
-                if anchors[1]: anchored_points_draw_list.append(s2)
+                for center_pos, items in point_map.items():
+                    cx, cy = center_pos
+                    
+                    # Draw from Bottom (Largest) to Top (Smallest)
+                    # items is list of (wall_idx, pt_idx). Index 0 = Top.
+                    # We want to iterate backwards to draw largest first.
+                    count = len(items)
+                    for k in range(count - 1, -1, -1):
+                        w_idx, pt_idx = items[k]
+                        radius = base_r + (k * step_r)
+                        
+                        color = (200, 200, 200) 
+                        if (w_idx, pt_idx) in selected_points: color = (0, 255, 255)
+                        elif pending_constraint and (w_idx, pt_idx) in pending_targets_points: color = (100, 255, 100)
+                        
+                        # Filled Circle (Background) to cover underlying lines
+                        pygame.draw.circle(screen, (30,30,30), (cx, cy), radius)
+                        # Outline/Color
+                        pygame.draw.circle(screen, color, (cx, cy), radius, 2)
+                        
+                        # Draw Line Stub
+                        w = sim.walls[w_idx]
+                        if w['start'] != w['end']:
+                            p_my = w['start'] if pt_idx == 0 else w['end']
+                            p_other = w['end'] if pt_idx == 0 else w['start']
+                            
+                            dx = p_other[0] - p_my[0]
+                            dy = p_other[1] - p_my[1]
+                            l = math.hypot(dx, dy)
+                            if l > 0.0001:
+                                dx /= l; dy /= l
+                                # Stub starts at surface of THIS circle
+                                sx = cx + dx * radius
+                                sy = cy + dy * radius
+                                # Stub goes out a bit
+                                ex = cx + dx * (radius + 8)
+                                ey = cy + dy * (radius + 8)
+                                pygame.draw.line(screen, color, (sx, sy), (ex, ey), 2)
 
-            # 3. Draw Anchors on Top
-            for pt in anchored_points_draw_list:
-                # Red, slightly larger to ensure it covers the white/selection box if coincident
-                pygame.draw.rect(screen, (255, 50, 50), (pt[0]-4, pt[1]-4, 8, 8))
+                        # Collect Anchor
+                        anchors = w.get('anchored', [False, False])
+                        if anchors[pt_idx]:
+                            anchored_points_draw_list.append((cx, cy))
+
+                # 3. Draw Anchors on Top (Center dots)
+                for pt in anchored_points_draw_list:
+                    pygame.draw.circle(screen, (255, 50, 50), pt, 3)
 
             if placing_asset_data:
                 mx, my = pygame.mouse.get_pos()
@@ -1008,6 +1140,7 @@ def main():
             if app_mode == MODE_EDITOR:
                 btn_tool_line.draw(screen, font)
                 btn_tool_ref.draw(screen, font)
+                btn_tool_point.draw(screen, font)
 
             if time.time() - status_time < 3.0:
                 status_surf = font.render(status_msg, True, (100, 255, 100))
