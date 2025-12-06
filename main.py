@@ -261,6 +261,7 @@ def main():
     wall_mode = None; wall_idx = -1; wall_pt = -1
     
     context_menu = None; prop_dialog = None; rot_dialog = None; context_wall_idx = -1
+    context_pt_idx = None # Added for anchor toggle
     placing_asset_data = None; sim_backup_state = None
     
     # Selection State
@@ -480,6 +481,10 @@ def main():
                             prop_dialog = PropertiesDialog(layout['W']//2, layout['H']//2, sim.walls[context_wall_idx]); context_menu = None
                         elif action == "Set Rotation...":
                             rot_dialog = RotationDialog(layout['W']//2, layout['H']//2, sim.walls[context_wall_idx].get('anim')); context_menu = None
+                        elif action == "Anchor": # NEW
+                            # Toggle Anchor
+                            sim.toggle_anchor(context_wall_idx, context_pt_idx)
+                            context_menu = None
                         elif action == "CLOSE": context_menu = None
                     continue 
                 if prop_dialog:
@@ -542,12 +547,24 @@ def main():
                             else:
                                 sim_x, sim_y = screen_to_sim(mx, my, zoom, pan_x, pan_y, sim.world_size, layout)
                                 rad_sim = 5.0 / (((layout['MID_W'] - 50) / sim.world_size) * zoom)
-                                hit = -1
+                                hit_pt = None
+                                # Check for Point first
                                 for i, w in enumerate(sim.walls):
-                                    if math.hypot(w['start'][0]-sim_x, w['start'][1]-sim_y) < rad_sim or math.hypot(w['end'][0]-sim_x, w['end'][1]-sim_y) < rad_sim:
-                                        hit = i; break
-                                if hit != -1: context_menu = ContextMenu(mx, my, ["Properties", "Set Rotation...", "Delete"]); context_wall_idx = hit
-                                else: is_erasing = True; sim.snapshot()
+                                    if math.hypot(w['start'][0]-sim_x, w['start'][1]-sim_y) < rad_sim: hit_pt=(i,0); break
+                                    if math.hypot(w['end'][0]-sim_x, w['end'][1]-sim_y) < rad_sim: hit_pt=(i,1); break
+                                
+                                if hit_pt and app_mode == MODE_EDITOR:
+                                    context_wall_idx = hit_pt[0]
+                                    context_pt_idx = hit_pt[1]
+                                    context_menu = ContextMenu(mx, my, ["Anchor"])
+                                else:
+                                    # Fallback to Wall
+                                    hit = -1
+                                    for i, w in enumerate(sim.walls):
+                                        if math.hypot(w['start'][0]-sim_x, w['start'][1]-sim_y) < rad_sim or math.hypot(w['end'][0]-sim_x, w['end'][1]-sim_y) < rad_sim:
+                                            hit = i; break
+                                    if hit != -1: context_menu = ContextMenu(mx, my, ["Properties", "Set Rotation...", "Delete"]); context_wall_idx = hit
+                                    else: is_erasing = True; sim.snapshot()
                     elif event.button == 1:
                         mx, my = event.pos
                         if layout['LEFT_X'] < mx < layout['RIGHT_X']:
@@ -739,6 +756,11 @@ def main():
                 # Highlight Selected Points
                 if (i, 0) in selected_points: pygame.draw.rect(screen, (0, 255, 255), (s1[0]-4, s1[1]-4, 8, 8), 2)
                 if (i, 1) in selected_points: pygame.draw.rect(screen, (0, 255, 255), (s2[0]-4, s2[1]-4, 8, 8), 2)
+                
+                # Highlight Anchored Points (RED)
+                anchors = w.get('anchored', [False, False])
+                if anchors[0]: pygame.draw.rect(screen, (255, 50, 50), (s1[0]-3, s1[1]-3, 6, 6))
+                if anchors[1]: pygame.draw.rect(screen, (255, 50, 50), (s2[0]-3, s2[1]-3, 6, 6))
                 
                 # Highlight Pending Points
                 if pending_constraint and (i, 0) in pending_targets_points: pygame.draw.rect(screen, (100, 255, 100), (s1[0]-4, s1[1]-4, 8, 8), 2)
