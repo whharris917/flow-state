@@ -10,7 +10,7 @@ from tkinter import filedialog, Tk, simpledialog
 from simulation_state import Simulation
 from ui_widgets import SmartSlider, Button, InputField, ContextMenu, PropertiesDialog, MenuBar, RotationDialog
 from geometry import Line, Point, Circle
-from constraints import create_constraint, Coincident, Length, EqualLength, Angle
+from constraints import create_constraint, Coincident, Length, EqualLength, Angle, Midpoint
 
 # --- Layout Constants ---
 TOP_MENU_H = 30
@@ -261,6 +261,7 @@ def main():
     
     c_btn_w = (rp_width - 10) // 2
     btn_const_coincident = Button(rp_start_x, ae_curr_y, rp_width, 30, "Coincident (Pt-Pt)", toggle=False); ae_curr_y+=35
+    btn_const_midpoint = Button(rp_start_x, ae_curr_y, rp_width, 30, "Midpoint (Pt-Ln)", toggle=False); ae_curr_y+=35
     btn_const_length = Button(rp_start_x, ae_curr_y, c_btn_w, 30, "Fix Length", toggle=False)
     btn_const_equal = Button(rp_start_x + c_btn_w + 10, ae_curr_y, c_btn_w, 30, "Equal Len", toggle=False); ae_curr_y+=35
     btn_const_parallel = Button(rp_start_x, ae_curr_y, c_btn_w, 30, "Parallel", toggle=False)
@@ -271,14 +272,14 @@ def main():
     ui_sim_elements = [btn_play, btn_clear, btn_reset, btn_undo, btn_redo, slider_gravity, slider_temp, slider_damping, slider_dt, slider_sigma, slider_epsilon, slider_M, slider_skin, btn_thermostat, btn_boundaries, slider_brush_size, btn_resize]
     
     # Add btn_tool_select to both toolsets if applicable, or manage visibility via loops
-    ui_editor_elements = [btn_ae_save, btn_ae_discard, btn_undo, btn_redo, btn_clear, btn_const_coincident, btn_const_length, btn_const_equal, btn_const_parallel, btn_const_perp, btn_const_horiz, btn_const_vert]
+    ui_editor_elements = [btn_ae_save, btn_ae_discard, btn_undo, btn_redo, btn_clear, btn_const_coincident, btn_const_midpoint, btn_const_length, btn_const_equal, btn_const_parallel, btn_const_perp, btn_const_horiz, btn_const_vert]
     
     right_panel_elements = [
         slider_gravity, slider_temp, slider_damping, slider_dt, slider_sigma, slider_epsilon, slider_M, slider_skin, 
         btn_thermostat, btn_boundaries, 
         btn_tool_brush, btn_tool_select, btn_tool_line, btn_tool_rect, btn_tool_circle, btn_tool_point, btn_tool_ref, 
         slider_brush_size, input_world, btn_resize, btn_ae_save, btn_ae_discard, 
-        btn_const_coincident, btn_const_length, btn_const_equal, btn_const_parallel, btn_const_perp, btn_const_horiz, btn_const_vert
+        btn_const_coincident, btn_const_midpoint, btn_const_length, btn_const_equal, btn_const_parallel, btn_const_perp, btn_const_horiz, btn_const_vert
     ]
 
     # App State
@@ -374,6 +375,14 @@ def main():
         elif ctype == 'COINCIDENT' and len(selected_points) == 2:
             sp = list(selected_points)
             sim.add_constraint_object(Coincident(sp[0][0], sp[0][1], sp[1][0], sp[1][1])); applied = True
+        elif ctype == 'MIDPOINT':
+            # Needs 1 point and 1 line
+            if len(selected_points) == 1 and len(selected_walls) == 1:
+                pt_tuple = list(selected_points)[0] # (wall_idx, pt_idx)
+                w_idx = list(selected_walls)[0]
+                if isinstance(sim.walls[w_idx], Line):
+                    sim.add_constraint_object(Midpoint(pt_tuple[0], pt_tuple[1], w_idx))
+                    applied = True
             
         if applied:
             status_msg = f"Applied {ctype}"; status_time = time.time()
@@ -391,12 +400,14 @@ def main():
             elif ctype == 'PARALLEL': btn_const_parallel.active = True
             elif ctype == 'PERPENDICULAR': btn_const_perp.active = True
             elif ctype == 'COINCIDENT': btn_const_coincident.active = True
+            elif ctype == 'MIDPOINT': btn_const_midpoint.active = True
             elif ctype == 'HORIZONTAL': btn_const_horiz.active = True
             elif ctype == 'VERTICAL': btn_const_vert.active = True
 
     def reset_constraint_buttons():
         btn_const_length.active = False; btn_const_equal.active = False; btn_const_parallel.active = False
-        btn_const_perp.active = False; btn_const_coincident.active = False; btn_const_horiz.active = False; btn_const_vert.active = False
+        btn_const_perp.active = False; btn_const_coincident.active = False; btn_const_midpoint.active = False
+        btn_const_horiz.active = False; btn_const_vert.active = False
 
     def handle_pending_constraint_click(wall_idx=None, pt_idx=None):
         nonlocal pending_constraint, status_msg, status_time
@@ -427,6 +438,21 @@ def main():
                         sim.add_constraint_object(Coincident(pending_targets_points[0][0], pending_targets_points[0][1], pending_targets_points[1][0], pending_targets_points[1][1]))
                         status_msg = "Applied Coincident"; status_time = time.time()
                         pending_constraint = None; reset_constraint_buttons()
+        elif pending_constraint == 'MIDPOINT':
+            if pt_idx is not None and len(pending_targets_points) == 0:
+                pending_targets_points.append(pt_idx)
+                status_msg = "Selected Point. Now select Line."
+            elif wall_idx is not None and len(pending_targets_walls) == 0:
+                if isinstance(sim.walls[wall_idx], Line):
+                    pending_targets_walls.append(wall_idx)
+                    status_msg = "Selected Line. Now select Point."
+            
+            if len(pending_targets_points) == 1 and len(pending_targets_walls) == 1:
+                pt = pending_targets_points[0]
+                ln = pending_targets_walls[0]
+                sim.add_constraint_object(Midpoint(pt[0], pt[1], ln))
+                status_msg = "Applied Midpoint"; status_time = time.time()
+                pending_constraint = None; reset_constraint_buttons()
 
     running = True
     while running:
@@ -535,6 +561,7 @@ def main():
                 if btn_const_parallel.clicked: trigger_constraint('PARALLEL')
                 if btn_const_perp.clicked: trigger_constraint('PERPENDICULAR')
                 if btn_const_coincident.clicked: trigger_constraint('COINCIDENT')
+                if btn_const_midpoint.clicked: trigger_constraint('MIDPOINT')
                 if btn_const_horiz.clicked: trigger_constraint('HORIZONTAL')
                 if btn_const_vert.clicked: trigger_constraint('VERTICAL')
                 if btn_ae_discard.clicked: exit_editor_mode(sim_backup_state); ui_captured = True
