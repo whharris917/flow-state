@@ -17,6 +17,15 @@ TOP_MENU_H = 30
 MODE_SIM = 0
 MODE_EDITOR = 1
 
+# --- Tool Constants ---
+TOOL_BRUSH = 0
+TOOL_LINE = 1
+TOOL_REF = 2
+TOOL_POINT = 3
+TOOL_RECT = 4
+TOOL_CIRCLE = 5
+TOOL_SELECT = 6
+
 def get_connected_group(sim, start_wall_idx):
     group = {start_wall_idx}
     queue = [start_wall_idx]
@@ -229,14 +238,19 @@ def main():
     btn_w = (rp_width - 10) // 2
     btn_thermostat = Button(rp_start_x, rp_curr_y, btn_w, 30, "Thermostat", active=False)
     btn_boundaries = Button(rp_start_x + btn_w + 10, rp_curr_y, btn_w, 30, "Bounds", active=False); rp_curr_y += 40
-    btn_tool_brush = Button(rp_start_x, rp_curr_y, btn_w, 30, "Brush", active=True, toggle=False)
-    btn_tool_line = Button(rp_start_x + btn_w + 10, rp_curr_y, btn_w, 30, "Line", active=False, toggle=False); rp_curr_y += 40
-    btn_tool_ref = Button(rp_start_x, rp_curr_y, btn_w, 30, "Reference Line", active=False, toggle=False)
-    btn_tool_point = Button(rp_start_x + btn_w + 10, rp_curr_y, btn_w, 30, "Point", active=False, toggle=False); rp_curr_y += 40
-    # NEW GEOMETRY TOOLS
-    btn_tool_rect = Button(rp_start_x, rp_curr_y, btn_w, 30, "Rectangle", active=False, toggle=False)
-    btn_tool_circle = Button(rp_start_x + btn_w + 10, rp_curr_y, btn_w, 30, "Circle", active=False, toggle=False); rp_curr_y += 40
     
+    # Tools Layout
+    btn_tool_brush = Button(rp_start_x, rp_curr_y, btn_w, 30, "Brush", active=True, toggle=False)
+    btn_tool_select = Button(rp_start_x + btn_w + 10, rp_curr_y, btn_w, 30, "Select", active=False, toggle=False); rp_curr_y += 40
+    
+    btn_tool_line = Button(rp_start_x, rp_curr_y, btn_w, 30, "Line", active=False, toggle=False)
+    btn_tool_rect = Button(rp_start_x + btn_w + 10, rp_curr_y, btn_w, 30, "Rectangle", active=False, toggle=False); rp_curr_y += 40
+    
+    btn_tool_circle = Button(rp_start_x, rp_curr_y, btn_w, 30, "Circle", active=False, toggle=False)
+    btn_tool_point = Button(rp_start_x + btn_w + 10, rp_curr_y, btn_w, 30, "Point", active=False, toggle=False); rp_curr_y += 40
+    
+    btn_tool_ref = Button(rp_start_x, rp_curr_y, btn_w, 30, "Ref Line", active=False, toggle=False); rp_curr_y += 40
+
     slider_brush_size = SmartSlider(rp_start_x, rp_curr_y, rp_width, 1.0, 10.0, 2.0, "Brush Radius", hard_min=0.5); rp_curr_y+=60
     input_world = InputField(rp_start_x + 80, rp_curr_y, 60, 25, str(config.DEFAULT_WORLD_SIZE))
     btn_resize = Button(rp_start_x + 150, rp_curr_y, rp_width - 150, 25, "Resize & Restart", active=False, toggle=False)
@@ -255,12 +269,21 @@ def main():
     btn_const_vert = Button(rp_start_x + c_btn_w + 10, ae_curr_y, c_btn_w, 30, "Vertical", toggle=False); ae_curr_y+=35
 
     ui_sim_elements = [btn_play, btn_clear, btn_reset, btn_undo, btn_redo, slider_gravity, slider_temp, slider_damping, slider_dt, slider_sigma, slider_epsilon, slider_M, slider_skin, btn_thermostat, btn_boundaries, slider_brush_size, btn_resize]
+    
+    # Add btn_tool_select to both toolsets if applicable, or manage visibility via loops
     ui_editor_elements = [btn_ae_save, btn_ae_discard, btn_undo, btn_redo, btn_clear, btn_const_coincident, btn_const_length, btn_const_equal, btn_const_parallel, btn_const_perp, btn_const_horiz, btn_const_vert]
-    right_panel_elements = [slider_gravity, slider_temp, slider_damping, slider_dt, slider_sigma, slider_epsilon, slider_M, slider_skin, btn_thermostat, btn_boundaries, btn_tool_brush, btn_tool_line, btn_tool_ref, btn_tool_point, btn_tool_rect, btn_tool_circle, slider_brush_size, input_world, btn_resize, btn_ae_save, btn_ae_discard, btn_const_coincident, btn_const_length, btn_const_equal, btn_const_parallel, btn_const_perp, btn_const_horiz, btn_const_vert]
+    
+    right_panel_elements = [
+        slider_gravity, slider_temp, slider_damping, slider_dt, slider_sigma, slider_epsilon, slider_M, slider_skin, 
+        btn_thermostat, btn_boundaries, 
+        btn_tool_brush, btn_tool_select, btn_tool_line, btn_tool_rect, btn_tool_circle, btn_tool_point, btn_tool_ref, 
+        slider_brush_size, input_world, btn_resize, btn_ae_save, btn_ae_discard, 
+        btn_const_coincident, btn_const_length, btn_const_equal, btn_const_parallel, btn_const_perp, btn_const_horiz, btn_const_vert
+    ]
 
     # App State
-    # 0=Brush, 1=Line, 2=Ref, 3=Point, 4=Rect, 5=Circle
-    current_tool = 0; zoom = 1.0; pan_x = 0.0; pan_y = 0.0
+    # 0=Brush, 1=Line, 2=Ref, 3=Point, 4=Rect, 5=Circle, 6=Select
+    current_tool = TOOL_BRUSH; zoom = 1.0; pan_x = 0.0; pan_y = 0.0
     is_panning = False; last_mouse_pos = (0, 0); is_painting = False; is_erasing = False
     wall_mode = None; wall_idx = -1; wall_pt = -1
     context_menu = None; prop_dialog = None; rot_dialog = None; context_wall_idx = -1; context_pt_idx = None
@@ -271,6 +294,17 @@ def main():
     temp_constraint_active = False; current_group_indices = []; current_snap_target = None; new_wall_start_snap = None
     rect_start = None
 
+    def set_tool(tool_id):
+        nonlocal current_tool
+        current_tool = tool_id
+        btn_tool_brush.active = (tool_id == TOOL_BRUSH)
+        btn_tool_line.active = (tool_id == TOOL_LINE)
+        btn_tool_ref.active = (tool_id == TOOL_REF)
+        btn_tool_point.active = (tool_id == TOOL_POINT)
+        btn_tool_rect.active = (tool_id == TOOL_RECT)
+        btn_tool_circle.active = (tool_id == TOOL_CIRCLE)
+        btn_tool_select.active = (tool_id == TOOL_SELECT)
+
     def enter_geometry_mode():
         nonlocal app_mode, zoom, pan_x, pan_y, status_msg, status_time, sim_backup_state, current_tool
         sim.snapshot()
@@ -278,8 +312,8 @@ def main():
         sim.clear_particles(snapshot=False)
         sim.world_size = 30.0; sim.walls = []; sim.constraints = []
         app_mode = MODE_EDITOR
-        current_tool = 1; btn_tool_line.active = True; btn_tool_brush.active = False
-        btn_tool_ref.active = False; btn_tool_point.active = False; btn_tool_rect.active = False; btn_tool_circle.active = False
+        # Default to select tool
+        set_tool(TOOL_SELECT)
         zoom = 1.5; pan_x = 0; pan_y = 0
         status_msg = "Entered Geometry Editor"; status_time = time.time()
 
@@ -292,15 +326,31 @@ def main():
         zoom = 1.0; pan_x = 0; pan_y = 0
         status_msg = "Returned to Simulation"; status_time = time.time()
 
-    def set_tool(tool_id):
-        nonlocal current_tool
-        current_tool = tool_id
-        btn_tool_brush.active = (tool_id == 0)
-        btn_tool_line.active = (tool_id == 1)
-        btn_tool_ref.active = (tool_id == 2)
-        btn_tool_point.active = (tool_id == 3)
-        btn_tool_rect.active = (tool_id == 4)
-        btn_tool_circle.active = (tool_id == 5)
+    def cancel_operation():
+        nonlocal wall_mode, wall_idx, status_msg, status_time
+        if wall_mode in ['NEW', 'RECT', 'CIRCLE']:
+            # If we were drawing something, remove the incomplete geometry
+            if wall_idx < len(sim.walls):
+                # Rectangles add 4 walls, Circles/Lines add 1
+                if wall_mode == 'RECT':
+                    # Remove 4 walls. Safest to check bounds or just pop 4 times if valid
+                    # wall_idx was base index
+                    added_count = len(sim.walls) - wall_idx
+                    for _ in range(added_count):
+                        if sim.walls: sim.walls.pop()
+                else:
+                    sim.walls.pop()
+            
+            wall_mode = None
+            wall_idx = -1
+            status_msg = "Operation Cancelled"; status_time = time.time()
+            return True
+        elif wall_mode in ['MOVE_WALL', 'MOVE_GROUP', 'EDIT']:
+             # Just stop dragging
+             wall_mode = None; wall_idx = -1
+             status_msg = "Move Cancelled"; status_time = time.time()
+             return True
+        return False
 
     def trigger_constraint(ctype):
         nonlocal pending_constraint, status_msg, status_time
@@ -399,6 +449,7 @@ def main():
                 if event.key == pygame.K_ESCAPE:
                     if placing_geo_data: placing_geo_data = None; status_msg = "Cancelled"
                     elif pending_constraint: pending_constraint = None; reset_constraint_buttons(); status_msg = "Cancelled"
+                    elif wall_mode is not None: cancel_operation()
                     else: selected_walls.clear(); selected_points.clear()
             
             menu_clicked = menu_bar.handle_event(event)
@@ -470,12 +521,13 @@ def main():
             if app_mode == MODE_SIM and input_world.handle_event(event): ui_captured = True
             
             # Tools Logic
-            if btn_tool_line.handle_event(event): set_tool(1); ui_captured = True
-            if btn_tool_ref.handle_event(event): set_tool(2); ui_captured = True
-            if btn_tool_point.handle_event(event): set_tool(3); ui_captured = True
-            if btn_tool_rect.handle_event(event): set_tool(4); ui_captured = True
-            if btn_tool_circle.handle_event(event): set_tool(5); ui_captured = True
-            if app_mode == MODE_SIM and btn_tool_brush.handle_event(event): set_tool(0); ui_captured = True
+            if btn_tool_line.handle_event(event): set_tool(TOOL_LINE); ui_captured = True
+            if btn_tool_ref.handle_event(event): set_tool(TOOL_REF); ui_captured = True
+            if btn_tool_point.handle_event(event): set_tool(TOOL_POINT); ui_captured = True
+            if btn_tool_rect.handle_event(event): set_tool(TOOL_RECT); ui_captured = True
+            if btn_tool_circle.handle_event(event): set_tool(TOOL_CIRCLE); ui_captured = True
+            if btn_tool_select.handle_event(event): set_tool(TOOL_SELECT); ui_captured = True
+            if app_mode == MODE_SIM and btn_tool_brush.handle_event(event): set_tool(TOOL_BRUSH); ui_captured = True
             
             if app_mode == MODE_EDITOR:
                 if btn_const_length.clicked: trigger_constraint('LENGTH')
@@ -510,51 +562,56 @@ def main():
                     if layout['LEFT_X'] < mx < layout['RIGHT_X']:
                         if placing_geo_data: placing_geo_data = None
                         elif pending_constraint: pending_constraint = None; reset_constraint_buttons(); status_msg = "Cancelled"
+                        elif cancel_operation():
+                            pass # Operation cancelled
                         else:
                             sim_x, sim_y = screen_to_sim(mx, my, zoom, pan_x, pan_y, sim.world_size, layout)
-                            point_map = get_grouped_points(sim, zoom, pan_x, pan_y, sim.world_size, layout)
-                            hit_pt = None
-                            base_r, step_r = 5, 4
-                            found_stack = None; found_center = None
+                            hit_found = False
                             
-                            for center_pos, items in point_map.items():
-                                dist = math.hypot(mx - center_pos[0], my - center_pos[1])
-                                max_r = base_r + (len(items) - 1) * step_r
-                                if dist <= max_r: found_stack = items; found_center = center_pos; break
-                            
-                            if found_stack:
-                                dist = math.hypot(mx - found_center[0], my - found_center[1])
-                                if dist < base_r: hit_pt = found_stack[0]
-                                else:
-                                    k = int((dist - base_r) / step_r) + 1
-                                    if k < len(found_stack): hit_pt = found_stack[k]
-                                    else: hit_pt = found_stack[-1]
-                            
-                            if hit_pt and app_mode == MODE_EDITOR:
-                                context_wall_idx = hit_pt[0]; context_pt_idx = hit_pt[1]
-                                context_menu = ContextMenu(mx, my, ["Anchor"])
-                            else:
-                                hit = -1
-                                rad_sim = 5.0 / (((layout['MID_W'] - 50) / sim.world_size) * zoom)
-                                for i, w in enumerate(sim.walls):
-                                    if isinstance(w, Line):
-                                        p1=w.start; p2=w.end; p3=np.array([sim_x, sim_y])
-                                        d_vec = p2-p1; len_sq = np.dot(d_vec, d_vec)
-                                        if len_sq == 0: dist = np.linalg.norm(p3-p1)
-                                        else:
-                                            t = max(0, min(1, np.dot(p3-p1, d_vec)/len_sq))
-                                            proj = p1 + t*d_vec
-                                            dist = np.linalg.norm(p3-proj)
-                                        if dist < rad_sim: hit = i; break
-                                    elif isinstance(w, Circle):
-                                        d = math.hypot(sim_x - w.center[0], sim_y - w.center[1])
-                                        if abs(d - w.radius) < rad_sim: hit = i; break
+                            # Hit test for Context Menu
+                            if app_mode == MODE_EDITOR:
+                                point_map = get_grouped_points(sim, zoom, pan_x, pan_y, sim.world_size, layout)
+                                hit_pt = None
+                                base_r, step_r = 5, 4
+                                found_stack = None
                                 
-                                if hit != -1: 
-                                    opts = ["Properties", "Delete"]
-                                    if isinstance(sim.walls[hit], Line): opts.extend(["Set Length...", "Set Rotation..."])
-                                    context_menu = ContextMenu(mx, my, opts); context_wall_idx = hit
-                                else: is_erasing = True; sim.snapshot()
+                                for center_pos, items in point_map.items():
+                                    dist = math.hypot(mx - center_pos[0], my - center_pos[1])
+                                    max_r = base_r + (len(items) - 1) * step_r
+                                    if dist <= max_r: found_stack = items; break
+                                
+                                if found_stack: hit_pt = found_stack[0] # Simplified context menu check
+                                
+                                if hit_pt:
+                                    context_wall_idx = hit_pt[0]; context_pt_idx = hit_pt[1]
+                                    context_menu = ContextMenu(mx, my, ["Anchor"]); hit_found = True
+                                else:
+                                    # Hit Wall
+                                    rad_sim = 5.0 / (((layout['MID_W'] - 50) / sim.world_size) * zoom)
+                                    for i, w in enumerate(sim.walls):
+                                        if isinstance(w, Line):
+                                            p1=w.start; p2=w.end; p3=np.array([sim_x, sim_y])
+                                            d_vec = p2-p1; len_sq = np.dot(d_vec, d_vec)
+                                            if len_sq == 0: dist = np.linalg.norm(p3-p1)
+                                            else:
+                                                t = max(0, min(1, np.dot(p3-p1, d_vec)/len_sq))
+                                                proj = p1 + t*d_vec
+                                                dist = np.linalg.norm(p3-proj)
+                                            if dist < rad_sim: 
+                                                context_menu = ContextMenu(mx, my, ["Properties", "Delete", "Set Length...", "Set Rotation..."])
+                                                context_wall_idx = i; hit_found = True; break
+                                        elif isinstance(w, Circle):
+                                            d = math.hypot(sim_x - w.center[0], sim_y - w.center[1])
+                                            if abs(d - w.radius) < rad_sim: 
+                                                context_menu = ContextMenu(mx, my, ["Properties", "Delete"])
+                                                context_wall_idx = i; hit_found = True; break
+                            
+                            if not hit_found:
+                                if app_mode == MODE_EDITOR:
+                                    set_tool(TOOL_SELECT) # Switch to select tool
+                                    status_msg = "Switched to Select Tool"; status_time = time.time()
+                                else:
+                                    is_erasing = True; sim.snapshot()
                 
                 elif event.button == 1: # Left Click
                     mx, my = event.pos
@@ -562,34 +619,39 @@ def main():
                         if placing_geo_data:
                             sim_x, sim_y = screen_to_sim(mx, my, zoom, pan_x, pan_y, sim.world_size, layout)
                             sim.place_geometry(placing_geo_data, sim_x, sim_y)
-                        elif current_tool == 0 and app_mode == MODE_SIM: is_painting = True; sim.snapshot()
-                        elif current_tool == 3 and app_mode == MODE_EDITOR:
-                            # Add Point
+                        elif current_tool == TOOL_BRUSH and app_mode == MODE_SIM: is_painting = True; sim.snapshot()
+                        
+                        elif (app_mode == MODE_EDITOR and current_tool in [TOOL_POINT, TOOL_RECT, TOOL_CIRCLE, TOOL_LINE, TOOL_REF]) or \
+                             (app_mode == MODE_SIM and current_tool == TOOL_LINE):
+                            # CREATE GEOMETRY (ONLY IF A DRAWING TOOL IS SELECTED)
                             start_x, start_y, start_snap = get_snapped_pos(mx, my, sim, zoom, pan_x, pan_y, sim.world_size, layout)
                             sim.snapshot()
-                            sim.add_wall((start_x, start_y), (start_x, start_y), is_ref=False)
-                            wall_idx = len(sim.walls)-1
-                            if start_snap and (pygame.key.get_mods() & pygame.KMOD_CTRL):
-                                sim.add_constraint_object(Coincident(wall_idx, 0, start_snap[0], start_snap[1]))
-                        elif current_tool == 4 and app_mode == MODE_EDITOR:
-                            # Start Rectangle
-                            sim.snapshot()
-                            rect_start, rect_y, rect_snap = get_snapped_pos(mx, my, sim, zoom, pan_x, pan_y, sim.world_size, layout)
-                            rect_start_tuple = (rect_start, rect_y)
-                            rect_start = rect_start_tuple # Store tuple
                             
-                            # Create 4 lines placeholder
-                            base_idx = len(sim.walls)
-                            for _ in range(4): sim.add_wall(rect_start_tuple, rect_start_tuple)
-                            wall_mode = 'RECT'; wall_idx = base_idx # Start moving the corner
-                        elif current_tool == 5 and app_mode == MODE_EDITOR:
-                            # Start Circle
-                            sim.snapshot()
-                            c_start, c_y, c_snap = get_snapped_pos(mx, my, sim, zoom, pan_x, pan_y, sim.world_size, layout)
-                            sim.add_circle((c_start, c_y), 0.1) # small radius
-                            wall_mode = 'CIRCLE'; wall_idx = len(sim.walls)-1
-                        
-                        elif current_tool in [1, 2] or app_mode == MODE_EDITOR:
+                            if current_tool == TOOL_POINT and app_mode == MODE_EDITOR:
+                                sim.add_wall((start_x, start_y), (start_x, start_y), is_ref=False)
+                                wall_idx = len(sim.walls)-1
+                                if start_snap and (pygame.key.get_mods() & pygame.KMOD_CTRL):
+                                    sim.add_constraint_object(Coincident(wall_idx, 0, start_snap[0], start_snap[1]))
+                            
+                            elif current_tool == TOOL_RECT and app_mode == MODE_EDITOR:
+                                rect_start = (start_x, start_y)
+                                base_idx = len(sim.walls)
+                                for _ in range(4): sim.add_wall(rect_start, rect_start)
+                                wall_mode = 'RECT'; wall_idx = base_idx 
+                            
+                            elif current_tool == TOOL_CIRCLE and app_mode == MODE_EDITOR:
+                                sim.add_circle((start_x, start_y), 0.1)
+                                wall_mode = 'CIRCLE'; wall_idx = len(sim.walls)-1
+                            
+                            else: # Line or Ref
+                                is_ref = (current_tool == TOOL_REF)
+                                sim.add_wall((start_x, start_y), (start_x, start_y), is_ref=is_ref)
+                                wall_mode = 'NEW'; wall_idx = len(sim.walls)-1; wall_pt = 1
+                                current_snap_target = None; new_wall_start_snap = None
+                                if pygame.key.get_mods() & pygame.KMOD_CTRL: new_wall_start_snap = start_snap
+
+                        # SELECT / MOVE / DRAG (ONLY IF SELECT TOOL ACTIVE)
+                        elif current_tool == TOOL_SELECT:
                             sim_x, sim_y = screen_to_sim(mx, my, zoom, pan_x, pan_y, sim.world_size, layout)
                             rad_sim = 5.0 / (((layout['MID_W'] - 50) / sim.world_size) * zoom)
                             point_map = get_grouped_points(sim, zoom, pan_x, pan_y, sim.world_size, layout)
@@ -660,15 +722,7 @@ def main():
                                                     sim.constraints.append(c); temp_constraint_active = True
                                 else:
                                     if not (pygame.key.get_mods() & pygame.KMOD_SHIFT): selected_walls.clear(); selected_points.clear()
-                                    if not pending_constraint:
-                                        wall_mode = 'NEW'; sim.snapshot()
-                                        start_x, start_y, start_snap = get_snapped_pos(mx, my, sim, zoom, pan_x, pan_y, sim.world_size, layout)
-                                        is_ref = (current_tool == 2)
-                                        sim.add_wall((start_x, start_y), (start_x, start_y), is_ref=is_ref)
-                                        wall_idx = len(sim.walls)-1; wall_pt = 1
-                                        current_snap_target = None; new_wall_start_snap = None
-                                        if pygame.key.get_mods() & pygame.KMOD_CTRL: new_wall_start_snap = start_snap
-
+                                    
             elif event.type == pygame.MOUSEBUTTONUP:
                 if wall_mode == 'NEW':
                     if new_wall_start_snap and (pygame.key.get_mods() & pygame.KMOD_CTRL):
@@ -893,12 +947,12 @@ def main():
             input_world.draw(screen, font)
         if app_mode == MODE_EDITOR:
             btn_tool_line.draw(screen, font); btn_tool_ref.draw(screen, font); btn_tool_point.draw(screen, font)
-            btn_tool_rect.draw(screen, font); btn_tool_circle.draw(screen, font)
+            btn_tool_rect.draw(screen, font); btn_tool_circle.draw(screen, font); btn_tool_select.draw(screen, font)
 
         if time.time() - status_time < 3.0:
             status_surf = font.render(status_msg, True, (100, 255, 100))
-            pygame.draw.rect(screen, (30,30,30), (layout['MID_X'] + 10, TOP_MENU_H + 10, status_surf.get_width()+10, 25), border_radius=5)
-            screen.blit(status_surf, (layout['MID_X'] + 15, TOP_MENU_H + 15))
+            pygame.draw.rect(screen, (30,30,30), (layout['MID_X'] + 15, TOP_MENU_H + 10, status_surf.get_width()+10, 25), border_radius=5)
+            screen.blit(status_surf, (layout['MID_X'] + 20, TOP_MENU_H + 15))
         
         menu_bar.draw(screen, font)
         if context_menu: context_menu.draw(screen, font)
