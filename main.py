@@ -482,14 +482,16 @@ def main():
                                     msg = file_io.save_geometry_file(sim, f)
                                     app.set_status(msg)
                                     exit_editor_mode(app.sim_backup_state)
+                        elif el == btn_clear: sim.clear_particles()
+                        elif el == btn_undo: sim.undo(); app.set_status("Undo")
+                        elif el == btn_redo: sim.redo(); app.set_status("Redo")
                     
                     if app.mode == config.MODE_SIM:
                         if el == btn_reset: sim.reset_simulation()
                         elif el == btn_clear: sim.clear_particles()
                         elif el == btn_resize: sim.resize_world(app.input_world.get_value(50.0))
-                    
-                    if el == btn_undo: sim.undo(); app.set_status("Undo")
-                    elif el == btn_redo: sim.redo(); app.set_status("Redo")
+                        elif el == btn_undo: sim.undo(); app.set_status("Undo")
+                        elif el == btn_redo: sim.redo(); app.set_status("Redo")
 
         # --- Update ---
         if app.mode == config.MODE_SIM:
