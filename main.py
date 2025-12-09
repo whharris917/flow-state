@@ -110,6 +110,8 @@ def main():
     btn_const_perp = Button(rp_start_x + c_btn_w + 10, ae_curr_y, c_btn_w, 30, "Perpendic", toggle=False); ae_curr_y+=35
     btn_const_horiz = Button(rp_start_x, ae_curr_y, c_btn_w, 30, "Horizontal", toggle=False)
     btn_const_vert = Button(rp_start_x + c_btn_w + 10, ae_curr_y, c_btn_w, 30, "Vertical", toggle=False); ae_curr_y+=35
+    
+    btn_util_extend = Button(rp_start_x, ae_curr_y, rp_width, 30, "Extend Infinite", toggle=False); ae_curr_y+=35
 
     # UI Lists
     ui_sim_elements = [
@@ -122,7 +124,8 @@ def main():
     ui_editor_elements = [
         btn_ae_save, btn_ae_discard, btn_undo, btn_redo, btn_clear, 
         btn_tool_select, btn_tool_line, btn_tool_rect, btn_tool_circle, btn_tool_point, btn_tool_ref,
-        btn_const_coincident, btn_const_collinear, btn_const_midpoint, btn_const_length, btn_const_equal, btn_const_parallel, btn_const_perp, btn_const_horiz, btn_const_vert
+        btn_const_coincident, btn_const_collinear, btn_const_midpoint, btn_const_length, btn_const_equal, 
+        btn_const_parallel, btn_const_perp, btn_const_horiz, btn_const_vert, btn_util_extend
     ]
     
     # Right panel specifically for layout updates
@@ -132,7 +135,8 @@ def main():
         btn_tool_brush, btn_tool_select, btn_tool_line, btn_tool_rect, btn_tool_circle, btn_tool_point, btn_tool_ref, 
         slider_brush_size, app.input_world, btn_resize, 
         btn_ae_save, btn_ae_discard, 
-        btn_const_coincident, btn_const_collinear, btn_const_midpoint, btn_const_length, btn_const_equal, btn_const_parallel, btn_const_perp, btn_const_horiz, btn_const_vert
+        btn_const_coincident, btn_const_collinear, btn_const_midpoint, btn_const_length, btn_const_equal, 
+        btn_const_parallel, btn_const_perp, btn_const_horiz, btn_const_vert, btn_util_extend
     ]
 
     # --- Helper Functions (Logic) ---
@@ -324,6 +328,7 @@ def main():
     running = True
     context_menu = None; prop_dialog = None; rot_dialog = None
     context_wall_idx = -1; context_pt_idx = None
+    context_constraint_idx = -1 # Track constraint for context menu
 
     while running:
         current_ui_list = ui_sim_elements if app.mode == config.MODE_SIM else ui_editor_elements
@@ -412,7 +417,13 @@ def main():
             if context_menu and context_menu.handle_event(event):
                 # Handle context actions (same as before but using app state if needed)
                 action = context_menu.action
-                if action == "Delete": 
+                if action == "Delete Constraint":
+                    if 0 <= context_constraint_idx < len(sim.constraints):
+                        sim.snapshot()
+                        sim.constraints.pop(context_constraint_idx)
+                        sim.apply_constraints()
+                    context_menu = None
+                elif action == "Delete": 
                     sim.remove_wall(context_wall_idx)
                     app.selected_walls.clear(); app.selected_points.clear(); context_menu = None
                 elif action == "Properties":
@@ -465,50 +476,62 @@ def main():
                             mx, my = event.pos
                             sim_x, sim_y = utils.screen_to_sim(mx, my, app.zoom, app.pan_x, app.pan_y, sim.world_size, layout)
                             
-                            # Re-implement simple hit test for context menu
-                            point_map = utils.get_grouped_points(sim, app.zoom, app.pan_x, app.pan_y, sim.world_size, layout)
-                            hit_pt = None
-                            base_r, step_r = 5, 4
-                            found_stack = None
-                            for center_pos, items in point_map.items():
-                                dist = math.hypot(mx - center_pos[0], my - center_pos[1])
-                                max_r = base_r + (len(items) - 1) * step_r
-                                if dist <= max_r: found_stack = items; break
-                            if found_stack: hit_pt = found_stack[0]
-
-                            if hit_pt:
-                                context_wall_idx = hit_pt[0]; context_pt_idx = hit_pt[1]
-                                context_menu = ContextMenu(mx, my, ["Anchor"])
+                            # Hit Test Priority: Points -> Constraints -> Walls
+                            
+                            # 1. Constraints (NEW)
+                            hit_const = -1
+                            for i, c in enumerate(sim.constraints):
+                                if c.hit_test(mx, my):
+                                    hit_const = i
+                                    break
+                            
+                            if hit_const != -1:
+                                context_constraint_idx = hit_const
+                                context_menu = ContextMenu(mx, my, ["Delete Constraint"])
+                            
                             else:
-                                hit_wall = -1
-                                rad_sim = 5.0 / (((layout['MID_W'] - 50) / sim.world_size) * app.zoom)
-                                for i, w in enumerate(sim.walls):
-                                    # ... Hit logic same as tool ...
-                                    # For brevity, reuse select tool hit logic or copy-paste core checks
-                                    # (Simplest: if SelectTool has public hit test, use it. If not, copy logic)
-                                    pass # (Assume logic similar to SelectTool._hit_test_walls is here)
-                                    if isinstance(w, Line):
-                                        p1=w.start; p2=w.end; p3=np.array([sim_x, sim_y])
-                                        d_vec = p2-p1; len_sq = np.dot(d_vec, d_vec)
-                                        if len_sq == 0: dist = np.linalg.norm(p3-p1)
-                                        else:
-                                            t = max(0, min(1, np.dot(p3-p1, d_vec)/len_sq))
-                                            proj = p1 + t*d_vec
-                                            dist = np.linalg.norm(p3-proj)
-                                        if dist < rad_sim: hit_wall = i; break
-                                    elif isinstance(w, Circle):
-                                        d = math.hypot(sim_x - w.center[0], sim_y - w.center[1])
-                                        if abs(d - w.radius) < rad_sim: hit_wall = i; break
-                                
-                                if hit_wall != -1:
-                                    context_wall_idx = hit_wall
-                                    opts = ["Properties", "Delete"]
-                                    if isinstance(sim.walls[hit_wall], Line): opts.extend(["Set Length...", "Set Rotation..."])
-                                    context_menu = ContextMenu(mx, my, opts)
+                                # 2. Points
+                                point_map = utils.get_grouped_points(sim, app.zoom, app.pan_x, app.pan_y, sim.world_size, layout)
+                                hit_pt = None
+                                base_r, step_r = 5, 4
+                                found_stack = None
+                                for center_pos, items in point_map.items():
+                                    dist = math.hypot(mx - center_pos[0], my - center_pos[1])
+                                    max_r = base_r + (len(items) - 1) * step_r
+                                    if dist <= max_r: found_stack = items; break
+                                if found_stack: hit_pt = found_stack[0]
+
+                                if hit_pt:
+                                    context_wall_idx = hit_pt[0]; context_pt_idx = hit_pt[1]
+                                    context_menu = ContextMenu(mx, my, ["Anchor"])
                                 else:
-                                    if app.mode == config.MODE_EDITOR:
-                                        change_tool(config.TOOL_SELECT)
-                                        app.set_status("Switched to Select Tool")
+                                    # 3. Walls
+                                    hit_wall = -1
+                                    rad_sim = 5.0 / (((layout['MID_W'] - 50) / sim.world_size) * app.zoom)
+                                    for i, w in enumerate(sim.walls):
+                                        pass # Hit logic
+                                        if isinstance(w, Line):
+                                            p1=w.start; p2=w.end; p3=np.array([sim_x, sim_y])
+                                            d_vec = p2-p1; len_sq = np.dot(d_vec, d_vec)
+                                            if len_sq == 0: dist = np.linalg.norm(p3-p1)
+                                            else:
+                                                t = max(0, min(1, np.dot(p3-p1, d_vec)/len_sq))
+                                                proj = p1 + t*d_vec
+                                                dist = np.linalg.norm(p3-proj)
+                                            if dist < rad_sim: hit_wall = i; break
+                                        elif isinstance(w, Circle):
+                                            d = math.hypot(sim_x - w.center[0], sim_y - w.center[1])
+                                            if abs(d - w.radius) < rad_sim: hit_wall = i; break
+                                    
+                                    if hit_wall != -1:
+                                        context_wall_idx = hit_wall
+                                        opts = ["Properties", "Delete"]
+                                        if isinstance(sim.walls[hit_wall], Line): opts.extend(["Set Length...", "Set Rotation..."])
+                                        context_menu = ContextMenu(mx, my, opts)
+                                    else:
+                                        if app.mode == config.MODE_EDITOR:
+                                            change_tool(config.TOOL_SELECT)
+                                            app.set_status("Switched to Select Tool")
                     else:
                         app.current_tool.handle_event(event, layout)
 
@@ -525,6 +548,14 @@ def main():
                         elif el == btn_const_collinear: trigger_constraint('COLLINEAR')
                         elif el == btn_const_horiz: trigger_constraint('HORIZONTAL')
                         elif el == btn_const_vert: trigger_constraint('VERTICAL')
+                        elif el == btn_util_extend: 
+                            if app.selected_walls:
+                                for idx in app.selected_walls:
+                                    if idx < len(sim.walls):
+                                        w = sim.walls[idx]
+                                        if isinstance(w, Line): w.infinite = not w.infinite
+                                sim.rebuild_static_atoms()
+                                app.set_status("Toggled Extend")
                         elif el == btn_ae_discard: exit_editor_mode(app.sim_backup_state)
                         elif el == btn_ae_save:
                             if root_tk:
