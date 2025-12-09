@@ -101,7 +101,7 @@ def main():
     btn_ae_discard = Button(rp_start_x, ae_curr_y, rp_width, 40, "Discard & Exit", active=False, toggle=False, color_inactive=(150, 50, 50)); ae_curr_y+=50
     
     c_btn_w = (rp_width - 10) // 2
-    btn_const_coincident = Button(rp_start_x, ae_curr_y, rp_width, 30, "Coincident (Pt-Pt/Ln)", toggle=False); ae_curr_y+=35
+    btn_const_coincident = Button(rp_start_x, ae_curr_y, rp_width, 30, "Coincident (Pt-Pt/Ln/Circ)", toggle=False); ae_curr_y+=35
     btn_const_collinear = Button(rp_start_x, ae_curr_y, rp_width, 30, "Collinear (Pt-Ln)", toggle=False); ae_curr_y+=35
     btn_const_midpoint = Button(rp_start_x, ae_curr_y, rp_width, 30, "Midpoint (Pt-Ln)", toggle=False); ae_curr_y+=35
     btn_const_length = Button(rp_start_x, ae_curr_y, c_btn_w, 30, "Fix Length", toggle=False)
@@ -203,12 +203,12 @@ def main():
             if len(app.selected_points) == 2:
                 sp = list(app.selected_points)
                 sim.add_constraint_object(Coincident(sp[0][0], sp[0][1], sp[1][0], sp[1][1])); applied = True
-            # Case 2: Point-Line
+            # Case 2: Point-Entity (Line or Circle)
             elif len(app.selected_points) == 1 and len(app.selected_walls) == 1:
                 pt_tuple = list(app.selected_points)[0]
                 w_idx = list(app.selected_walls)[0]
-                if isinstance(sim.walls[w_idx], Line):
-                    # -1 denotes the line itself
+                if isinstance(sim.walls[w_idx], (Line, Circle)):
+                    # -1 denotes the entity itself
                     sim.add_constraint_object(Coincident(pt_tuple[0], pt_tuple[1], w_idx, -1)); applied = True
 
         elif ctype == 'COLLINEAR' and len(app.selected_points) == 1 and len(app.selected_walls) == 1:
@@ -300,11 +300,11 @@ def main():
                     app.pending_targets_points.append(pt_idx)
                     app.set_status(f"Selected Point (1/2)")
             
-            # Allow picking line for pending coincident
-            if wall_idx is not None and isinstance(sim.walls[wall_idx], Line):
+            # Allow picking line/circle for pending coincident
+            if wall_idx is not None and isinstance(sim.walls[wall_idx], (Line, Circle)):
                 if wall_idx not in app.pending_targets_walls:
                     app.pending_targets_walls.append(wall_idx)
-                    app.set_status(f"Selected Line (1/2)")
+                    app.set_status(f"Selected Entity (1/2)")
 
             # Check if we have Pt-Pt
             if len(app.pending_targets_points) == 2:
@@ -312,12 +312,12 @@ def main():
                 app.set_status("Applied Coincident (Pt-Pt)"); app.pending_constraint = None; reset_constraint_buttons()
                 sim.apply_constraints()
             
-            # Check if we have Pt-Line
+            # Check if we have Pt-Entity
             elif len(app.pending_targets_points) == 1 and len(app.pending_targets_walls) == 1:
                 pt = app.pending_targets_points[0]
-                line_idx = app.pending_targets_walls[0]
-                sim.add_constraint_object(Coincident(pt[0], pt[1], line_idx, -1))
-                app.set_status("Applied Coincident (Pt-Ln)"); app.pending_constraint = None; reset_constraint_buttons()
+                ent_idx = app.pending_targets_walls[0]
+                sim.add_constraint_object(Coincident(pt[0], pt[1], ent_idx, -1))
+                app.set_status("Applied Coincident (Pt-Ent)"); app.pending_constraint = None; reset_constraint_buttons()
                 sim.apply_constraints()
 
     # --- Main Loop ---
