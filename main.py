@@ -367,6 +367,10 @@ class FastMDEditor:
     def _handle_keys(self, event):
         if event.type == pygame.KEYDOWN:
             if event.key == pygame.K_ESCAPE:
+                if self.app.placing_geo_data:
+                    self.app.placing_geo_data = None
+                    self.app.set_status("Placement Cancelled")
+                    return True
                 if self.app.current_tool: self.app.current_tool.cancel()
                 self.app.pending_constraint = None
                 self.app.selected_walls.clear(); self.app.selected_points.clear()
@@ -468,6 +472,20 @@ class FastMDEditor:
         return captured
 
     def _handle_scene_mouse(self, event):
+        # 0. Handle Geometry Placement (High Priority)
+        if self.app.placing_geo_data:
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                if event.button == 1:
+                    mx, my = event.pos
+                    sx, sy = utils.screen_to_sim(mx, my, self.app.zoom, self.app.pan_x, self.app.pan_y, self.sim.world_size, self.layout)
+                    self.sim.place_geometry(self.app.placing_geo_data, sx, sy)
+                    self.app.placing_geo_data = None
+                    self.app.set_status("Geometry Placed")
+                elif event.button == 3:
+                    self.app.placing_geo_data = None
+                    self.app.set_status("Placement Cancelled")
+            return
+
         # Global Pan
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 2:
             self.app.state = InteractionState.PANNING; self.app.last_mouse_pos = event.pos
