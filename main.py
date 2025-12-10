@@ -308,6 +308,12 @@ class FastMDEditor:
             if action == "Delete Constraint":
                 if 0 <= self.ctx_vars['const'] < len(self.sim.constraints):
                     self.sim.snapshot(); self.sim.constraints.pop(self.ctx_vars['const']); self.sim.apply_constraints()
+            elif action == "Set Angle...":
+                val = simpledialog.askfloat("Set Angle", "Enter target angle (degrees):")
+                if val is not None:
+                    if 0 <= self.ctx_vars['const'] < len(self.sim.constraints):
+                        self.sim.constraints[self.ctx_vars['const']].value = val
+                        self.sim.apply_constraints()
             elif action == "Delete": 
                 self.sim.remove_wall(self.ctx_vars['wall']); self.app.selected_walls.clear(); self.app.selected_points.clear()
             elif action == "Properties":
@@ -358,7 +364,12 @@ class FastMDEditor:
         # Hit Test Constraints
         for i, c in enumerate(self.sim.constraints):
             if c.hit_test(mx, my): 
-                self.ctx_vars['const'] = i; self.context_menu = ContextMenu(mx, my, ["Delete Constraint"]); return
+                self.ctx_vars['const'] = i
+                opts = ["Delete Constraint"]
+                if getattr(c, 'type', '') == 'ANGLE':
+                    opts.insert(0, "Set Angle...")
+                self.context_menu = ContextMenu(mx, my, opts)
+                return
 
         # Hit Test Points
         point_map = utils.get_grouped_points(self.sim, self.app.zoom, self.app.pan_x, self.app.pan_y, self.sim.world_size, self.layout)
