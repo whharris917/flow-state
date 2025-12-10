@@ -16,6 +16,67 @@ from renderer import Renderer
 from app_state import AppState, InteractionState
 from tools import SelectTool, BrushTool, LineTool, RectTool, CircleTool, PointTool
 
+class AnimationDialog:
+    def __init__(self, x, y, driver_data):
+        self.rect = pygame.Rect(x, y, 260, 240)
+        # Default driver: Amplitude 15 deg, 0.5 Hz
+        self.driver = driver_data if driver_data else {'amp': 15.0, 'freq': 0.5, 'phase': 0.0}
+        self.done = False
+        self.apply = False
+        
+        self.in_amp = InputField(x + 110, y + 50, 100, 25, str(self.driver.get('amp', 15.0)))
+        self.in_freq = InputField(x + 110, y + 90, 100, 25, str(self.driver.get('freq', 0.5)))
+        self.in_phase = InputField(x + 110, y + 130, 100, 25, str(self.driver.get('phase', 0.0)))
+        
+        self.btn_stop = Button(x + 20, y + 180, 100, 30, "Remove/Stop", toggle=False, color_inactive=(160, 60, 60))
+        self.btn_ok = Button(x + 140, y + 180, 100, 30, "Start/Update", toggle=False, color_inactive=(60, 160, 60))
+
+    def handle_event(self, event):
+        if self.in_amp.handle_event(event): return True
+        if self.in_freq.handle_event(event): return True
+        if self.in_phase.handle_event(event): return True
+        
+        if self.btn_stop.handle_event(event):
+            self.driver = None # Signal removal
+            self.apply = True; self.done = True
+            return True
+            
+        if self.btn_ok.handle_event(event):
+            self.driver = {
+                'type': 'sin',
+                'amp': self.in_amp.get_value(0.0),
+                'freq': self.in_freq.get_value(0.0),
+                'phase': self.in_phase.get_value(0.0)
+            }
+            self.apply = True; self.done = True
+            return True
+        return False
+
+    def get_values(self):
+        return self.driver
+
+    def draw(self, screen, font):
+        shadow = self.rect.copy(); shadow.x += 5; shadow.y += 5
+        s_surf = pygame.Surface((shadow.width, shadow.height), pygame.SRCALPHA)
+        pygame.draw.rect(s_surf, (0, 0, 0, 100), s_surf.get_rect(), border_radius=6)
+        screen.blit(s_surf, shadow)
+        
+        pygame.draw.rect(screen, (45, 45, 48), self.rect, border_radius=6)
+        pygame.draw.rect(screen, (0, 122, 204), self.rect, 1, border_radius=6)
+        
+        title = font.render("Drive Constraint (Sinusoid)", True, (255, 255, 255))
+        screen.blit(title, (self.rect.x + 15, self.rect.y + 10))
+        
+        screen.blit(font.render("Amplitude:", True, (220, 220, 220)), (self.rect.x + 20, self.rect.y + 55))
+        screen.blit(font.render("Freq (Hz):", True, (220, 220, 220)), (self.rect.x + 20, self.rect.y + 95))
+        screen.blit(font.render("Phase (deg):", True, (220, 220, 220)), (self.rect.x + 20, self.rect.y + 135))
+        
+        self.in_amp.draw(screen, font)
+        self.in_freq.draw(screen, font)
+        self.in_phase.draw(screen, font)
+        self.btn_stop.draw(screen, font)
+        self.btn_ok.draw(screen, font)
+
 class FastMDEditor:
     def __init__(self):
         # 1. System Setup
@@ -40,6 +101,7 @@ class FastMDEditor:
         self.context_menu = None
         self.prop_dialog = None
         self.rot_dialog = None
+        self.anim_dialog = None
         self.ctx_vars = {'wall': -1, 'pt': None, 'const': -1} # Store context indices
 
         # 4. Initialization
@@ -314,6 +376,10 @@ class FastMDEditor:
                     if 0 <= self.ctx_vars['const'] < len(self.sim.constraints):
                         self.sim.constraints[self.ctx_vars['const']].value = val
                         self.sim.apply_constraints()
+            elif action == "Animate...":
+                c = self.sim.constraints[self.ctx_vars['const']]
+                driver = getattr(c, 'driver', None)
+                self.anim_dialog = AnimationDialog(self.layout['W']//2, self.layout['H']//2, driver)
             elif action == "Delete": 
                 self.sim.remove_wall(self.ctx_vars['wall']); self.app.selected_walls.clear(); self.app.selected_points.clear()
             elif action == "Properties":
@@ -335,6 +401,17 @@ class FastMDEditor:
         if self.rot_dialog and self.rot_dialog.handle_event(event):
             if self.rot_dialog.apply: self.sim.set_wall_rotation(self.ctx_vars['wall'], self.rot_dialog.get_values()); self.rot_dialog.apply = False
             if self.rot_dialog.done: self.rot_dialog = None
+            captured = True
+        if self.anim_dialog and self.anim_dialog.handle_event(event):
+            if self.anim_dialog.apply:
+                c = self.sim.constraints[self.ctx_vars['const']]
+                if self.anim_dialog.get_values() is None:
+                    if hasattr(c, 'driver'): del c.driver
+                else:
+                    c.driver = self.anim_dialog.get_values()
+                    if not hasattr(c, 'base_value'): c.base_value = c.value # Store base
+                self.anim_dialog.apply = False
+            if self.anim_dialog.done: self.anim_dialog = None
             captured = True
         return captured
 
@@ -368,6 +445,7 @@ class FastMDEditor:
                 opts = ["Delete Constraint"]
                 if getattr(c, 'type', '') == 'ANGLE':
                     opts.insert(0, "Set Angle...")
+                    opts.insert(1, "Animate...")
                 self.context_menu = ContextMenu(mx, my, opts)
                 return
 
@@ -405,6 +483,19 @@ class FastMDEditor:
 
     # --- Logic Helpers ---
     def update_physics(self):
+        # Update Driven Constraints
+        t = time.time()
+        for c in self.sim.constraints:
+            if hasattr(c, 'driver') and c.driver:
+                d = c.driver
+                base = getattr(c, 'base_value', c.value)
+                if d['type'] == 'sin':
+                    offset = d['amp'] * math.sin(2 * math.pi * d['freq'] * t + math.radians(d['phase']))
+                    c.value = base + offset
+        
+        if self.app.mode == config.MODE_EDITOR:
+            self.sim.apply_constraints()
+
         if self.app.mode == config.MODE_SIM:
             self.sim.paused = not self.btn_play.active
             self.sim.gravity = self.sliders['gravity'].val; self.sim.target_temp = self.sliders['temp'].val
@@ -428,6 +519,7 @@ class FastMDEditor:
         if self.context_menu: self.context_menu.draw(self.screen, self.font)
         if self.prop_dialog: self.prop_dialog.draw(self.screen, self.font)
         if self.rot_dialog: self.rot_dialog.draw(self.screen, self.font)
+        if self.anim_dialog: self.anim_dialog.draw(self.screen, self.font)
         pygame.display.flip()
 
     def change_tool(self, tool_id):
