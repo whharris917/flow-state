@@ -18,36 +18,65 @@ from tools import SelectTool, BrushTool, LineTool, RectTool, CircleTool, PointTo
 
 class AnimationDialog:
     def __init__(self, x, y, driver_data):
-        self.rect = pygame.Rect(x, y, 260, 240)
-        # Default driver: Amplitude 15 deg, 0.5 Hz
-        self.driver = driver_data if driver_data else {'amp': 15.0, 'freq': 0.5, 'phase': 0.0}
+        self.rect = pygame.Rect(x, y, 300, 280)
+        self.driver = driver_data if driver_data else {'type': 'sin', 'amp': 15.0, 'freq': 0.5, 'phase': 0.0, 'rate': 10.0}
         self.done = False
         self.apply = False
+        self.current_tab = self.driver.get('type', 'sin')
         
-        self.in_amp = InputField(x + 110, y + 50, 100, 25, str(self.driver.get('amp', 15.0)))
-        self.in_freq = InputField(x + 110, y + 90, 100, 25, str(self.driver.get('freq', 0.5)))
-        self.in_phase = InputField(x + 110, y + 130, 100, 25, str(self.driver.get('phase', 0.0)))
+        # Shared UI
+        self.btn_stop = Button(x + 20, y + 230, 100, 30, "Remove/Stop", toggle=False, color_inactive=(160, 60, 60))
+        self.btn_ok = Button(x + 180, y + 230, 100, 30, "Start/Update", toggle=False, color_inactive=(60, 160, 60))
         
-        self.btn_stop = Button(x + 20, y + 180, 100, 30, "Remove/Stop", toggle=False, color_inactive=(160, 60, 60))
-        self.btn_ok = Button(x + 140, y + 180, 100, 30, "Start/Update", toggle=False, color_inactive=(60, 160, 60))
+        # Tabs
+        self.btn_tab_sin = Button(x + 20, y + 50, 120, 25, "Sinusoidal", toggle=False, active=(self.current_tab == 'sin'))
+        self.btn_tab_lin = Button(x + 160, y + 50, 120, 25, "Linear", toggle=False, active=(self.current_tab == 'lin'))
+
+        # Sinusoidal Inputs
+        self.in_amp = InputField(x + 150, y + 90, 100, 25, str(self.driver.get('amp', 15.0)))
+        self.in_freq = InputField(x + 150, y + 130, 100, 25, str(self.driver.get('freq', 0.5)))
+        self.in_phase = InputField(x + 150, y + 170, 100, 25, str(self.driver.get('phase', 0.0)))
+        
+        # Linear Inputs
+        self.in_rate = InputField(x + 150, y + 90, 100, 25, str(self.driver.get('rate', 10.0)))
 
     def handle_event(self, event):
-        if self.in_amp.handle_event(event): return True
-        if self.in_freq.handle_event(event): return True
-        if self.in_phase.handle_event(event): return True
+        # Tab Switching
+        if self.btn_tab_sin.handle_event(event):
+            self.current_tab = 'sin'
+            self.btn_tab_sin.active = True; self.btn_tab_lin.active = False
+            return True
+        if self.btn_tab_lin.handle_event(event):
+            self.current_tab = 'lin'
+            self.btn_tab_sin.active = False; self.btn_tab_lin.active = True
+            return True
+
+        # Input Fields based on Tab
+        if self.current_tab == 'sin':
+            if self.in_amp.handle_event(event): return True
+            if self.in_freq.handle_event(event): return True
+            if self.in_phase.handle_event(event): return True
+        else:
+            if self.in_rate.handle_event(event): return True
         
         if self.btn_stop.handle_event(event):
-            self.driver = None # Signal removal
+            self.driver = None 
             self.apply = True; self.done = True
             return True
             
         if self.btn_ok.handle_event(event):
-            self.driver = {
-                'type': 'sin',
-                'amp': self.in_amp.get_value(0.0),
-                'freq': self.in_freq.get_value(0.0),
-                'phase': self.in_phase.get_value(0.0)
-            }
+            if self.current_tab == 'sin':
+                self.driver = {
+                    'type': 'sin',
+                    'amp': self.in_amp.get_value(0.0),
+                    'freq': self.in_freq.get_value(0.0),
+                    'phase': self.in_phase.get_value(0.0)
+                }
+            else:
+                self.driver = {
+                    'type': 'lin',
+                    'rate': self.in_rate.get_value(0.0)
+                }
             self.apply = True; self.done = True
             return True
         return False
@@ -56,6 +85,7 @@ class AnimationDialog:
         return self.driver
 
     def draw(self, screen, font):
+        # Background
         shadow = self.rect.copy(); shadow.x += 5; shadow.y += 5
         s_surf = pygame.Surface((shadow.width, shadow.height), pygame.SRCALPHA)
         pygame.draw.rect(s_surf, (0, 0, 0, 100), s_surf.get_rect(), border_radius=6)
@@ -64,16 +94,24 @@ class AnimationDialog:
         pygame.draw.rect(screen, (45, 45, 48), self.rect, border_radius=6)
         pygame.draw.rect(screen, (0, 122, 204), self.rect, 1, border_radius=6)
         
-        title = font.render("Drive Constraint (Sinusoid)", True, (255, 255, 255))
+        title = font.render("Drive Constraint", True, (255, 255, 255))
         screen.blit(title, (self.rect.x + 15, self.rect.y + 10))
         
-        screen.blit(font.render("Amplitude:", True, (220, 220, 220)), (self.rect.x + 20, self.rect.y + 55))
-        screen.blit(font.render("Freq (Hz):", True, (220, 220, 220)), (self.rect.x + 20, self.rect.y + 95))
-        screen.blit(font.render("Phase (deg):", True, (220, 220, 220)), (self.rect.x + 20, self.rect.y + 135))
+        # Tabs
+        self.btn_tab_sin.draw(screen, font)
+        self.btn_tab_lin.draw(screen, font)
         
-        self.in_amp.draw(screen, font)
-        self.in_freq.draw(screen, font)
-        self.in_phase.draw(screen, font)
+        if self.current_tab == 'sin':
+            screen.blit(font.render("Amplitude:", True, (220, 220, 220)), (self.rect.x + 20, self.rect.y + 95))
+            screen.blit(font.render("Freq (Hz):", True, (220, 220, 220)), (self.rect.x + 20, self.rect.y + 135))
+            screen.blit(font.render("Phase (deg):", True, (220, 220, 220)), (self.rect.x + 20, self.rect.y + 175))
+            self.in_amp.draw(screen, font)
+            self.in_freq.draw(screen, font)
+            self.in_phase.draw(screen, font)
+        else:
+            screen.blit(font.render("Rate (deg/s):", True, (220, 220, 220)), (self.rect.x + 20, self.rect.y + 95))
+            self.in_rate.draw(screen, font)
+            
         self.btn_stop.draw(screen, font)
         self.btn_ok.draw(screen, font)
 
@@ -96,6 +134,12 @@ class FastMDEditor:
         # 2. App Logic
         self.sim = Simulation()
         self.app = AppState()
+        
+        # Initialize Editor State
+        self.app.editor_paused = False
+        self.app.show_constraints = True
+        self.app.geo_time = 0.0
+        self.last_time = time.time()
 
         # 3. State Holders for Dialogs
         self.context_menu = None
@@ -183,6 +227,10 @@ class FastMDEditor:
         self.btn_ae_save = Button(rp_x, ae_y, rp_w, 40, "Save Geometry", active=False, toggle=False, color_inactive=(50, 120, 50)); ae_y+=50
         self.btn_ae_discard = Button(rp_x, ae_y, rp_w, 40, "Discard & Exit", active=False, toggle=False, color_inactive=(150, 50, 50)); ae_y+=50
         
+        # New Editor Controls
+        self.btn_editor_play = Button(rp_x, ae_y, btn_half, 35, "Pause", active=False, toggle=False); 
+        self.btn_show_const = Button(rp_x + btn_half + 10, ae_y, btn_half, 35, "Hide Cnstr", active=False, toggle=False); ae_y+=45
+
         self.const_buttons = {
             'coincident': Button(rp_x, ae_y, rp_w, 30, "Coincident (Pt-Pt/Ln/Circ)", toggle=False),
             'collinear': Button(rp_x, ae_y+35, rp_w, 30, "Collinear (Pt-Ln)", toggle=False),
@@ -226,7 +274,9 @@ class FastMDEditor:
             self.btn_resize: lambda: self.sim.resize_world(self.app.input_world.get_value(50.0)),
             self.btn_ae_discard: lambda: self.exit_editor_mode(self.app.sim_backup_state),
             self.btn_ae_save: self.save_geo_dialog,
-            self.btn_extend: self.toggle_extend
+            self.btn_extend: self.toggle_extend,
+            self.btn_editor_play: self.toggle_editor_play,
+            self.btn_show_const: self.toggle_show_constraints
         }
 
         # 4. UI Groups
@@ -237,6 +287,7 @@ class FastMDEditor:
         ]
         self.editor_elements = [
             self.btn_ae_save, self.btn_ae_discard, self.btn_undo, self.btn_redo, self.btn_clear,
+            self.btn_editor_play, self.btn_show_const,
             *self.tool_buttons.values(), *self.const_buttons.values(), self.btn_extend
         ]
         
@@ -410,6 +461,7 @@ class FastMDEditor:
                 else:
                     c.driver = self.anim_dialog.get_values()
                     if not hasattr(c, 'base_value'): c.base_value = c.value # Store base
+                    if c.driver['type'] == 'lin': c.base_time = time.time() # Start time for linear
                 self.anim_dialog.apply = False
             if self.anim_dialog.done: self.anim_dialog = None
             captured = True
@@ -439,15 +491,16 @@ class FastMDEditor:
         sim_x, sim_y = utils.screen_to_sim(mx, my, self.app.zoom, self.app.pan_x, self.app.pan_y, self.sim.world_size, self.layout)
         
         # Hit Test Constraints
-        for i, c in enumerate(self.sim.constraints):
-            if c.hit_test(mx, my): 
-                self.ctx_vars['const'] = i
-                opts = ["Delete Constraint"]
-                if getattr(c, 'type', '') == 'ANGLE':
-                    opts.insert(0, "Set Angle...")
-                    opts.insert(1, "Animate...")
-                self.context_menu = ContextMenu(mx, my, opts)
-                return
+        if self.app.show_constraints:
+            for i, c in enumerate(self.sim.constraints):
+                if c.hit_test(mx, my): 
+                    self.ctx_vars['const'] = i
+                    opts = ["Delete Constraint"]
+                    if getattr(c, 'type', '') == 'ANGLE':
+                        opts.insert(0, "Set Angle...")
+                        opts.insert(1, "Animate...")
+                    self.context_menu = ContextMenu(mx, my, opts)
+                    return
 
         # Hit Test Points
         point_map = utils.get_grouped_points(self.sim, self.app.zoom, self.app.pan_x, self.app.pan_y, self.sim.world_size, self.layout)
@@ -483,8 +536,15 @@ class FastMDEditor:
 
     # --- Logic Helpers ---
     def update_physics(self):
+        # Update Time
+        now = time.time()
+        dt = now - self.last_time
+        self.last_time = now
+        if self.app.mode == config.MODE_EDITOR and not self.app.editor_paused:
+            self.app.geo_time += dt
+
         # Update Driven Constraints
-        t = time.time()
+        t = self.app.geo_time
         for c in self.sim.constraints:
             if hasattr(c, 'driver') and c.driver:
                 d = c.driver
@@ -492,6 +552,10 @@ class FastMDEditor:
                 if d['type'] == 'sin':
                     offset = d['amp'] * math.sin(2 * math.pi * d['freq'] * t + math.radians(d['phase']))
                     c.value = base + offset
+                elif d['type'] == 'lin':
+                    # Linear drive: Angle = base + rate * t_accum
+                    # We use accumulated geo_time directly to allow pausing
+                    c.value = base + d['rate'] * t
         
         if self.app.mode == config.MODE_EDITOR:
             self.sim.apply_constraints()
@@ -514,7 +578,17 @@ class FastMDEditor:
 
     def render(self):
         ui_list = self.sim_elements if self.app.mode == config.MODE_SIM else self.editor_elements
+        
+        # Hide constraints hack
+        held_constraints = self.sim.constraints
+        if self.app.mode == config.MODE_EDITOR and not self.app.show_constraints:
+            self.sim.constraints = []
+            
         self.renderer.draw_app(self.app, self.sim, self.layout, ui_list)
+        
+        if self.app.mode == config.MODE_EDITOR and not self.app.show_constraints:
+            self.sim.constraints = held_constraints
+
         self.menu_bar.draw(self.screen, self.font)
         if self.context_menu: self.context_menu.draw(self.screen, self.font)
         if self.prop_dialog: self.prop_dialog.draw(self.screen, self.font)
@@ -544,6 +618,16 @@ class FastMDEditor:
             for idx in self.app.selected_walls:
                 if idx < len(self.sim.walls) and isinstance(self.sim.walls[idx], Line): self.sim.walls[idx].infinite = not self.sim.walls[idx].infinite
             self.sim.rebuild_static_atoms(); self.app.set_status("Toggled Extend")
+            
+    def toggle_editor_play(self):
+        self.app.editor_paused = not self.app.editor_paused
+        self.btn_editor_play.text = "Play" if self.app.editor_paused else "Pause"
+        self.btn_editor_play.cached_surf = None # Force redraw
+        
+    def toggle_show_constraints(self):
+        self.app.show_constraints = not self.app.show_constraints
+        self.btn_show_const.text = "Show Cnstr" if not self.app.show_constraints else "Hide Cnstr"
+        self.btn_show_const.cached_surf = None # Force redraw
 
     def save_geo_dialog(self):
         if self.root_tk:
