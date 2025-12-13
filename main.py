@@ -122,6 +122,7 @@ class FastMDEditor:
         except: self.root_tk = None
 
         pygame.init()
+        # Initialize with config size, but allow resizing
         self.screen = pygame.display.set_mode((config.WINDOW_WIDTH, config.WINDOW_HEIGHT), pygame.RESIZABLE)
         pygame.display.set_caption("Flow State - Chemical Engineering Simulation")
         
@@ -149,18 +150,20 @@ class FastMDEditor:
         self.ctx_vars = {'wall': -1, 'pt': None, 'const': -1} # Store context indices
 
         # 4. Initialization
-        self.init_layout()
+        # Pass current screen dimensions to init_layout
+        w, h = self.screen.get_size()
+        self.init_layout(w, h)
         self.init_ui_elements()
         self.init_mappings() 
         self.init_tools()    
 
-    def init_layout(self):
+    def init_layout(self, w, h):
         self.layout = {
-            'W': config.WINDOW_WIDTH, 'H': config.WINDOW_HEIGHT,
+            'W': w, 'H': h,
             'LEFT_X': 0, 'LEFT_W': config.PANEL_LEFT_WIDTH,
-            'RIGHT_W': config.PANEL_RIGHT_WIDTH, 'RIGHT_X': config.WINDOW_WIDTH - config.PANEL_RIGHT_WIDTH,
-            'MID_X': config.PANEL_LEFT_WIDTH, 'MID_W': config.WINDOW_WIDTH - config.PANEL_LEFT_WIDTH - config.PANEL_RIGHT_WIDTH,
-            'MID_H': config.WINDOW_HEIGHT - config.TOP_MENU_H
+            'RIGHT_W': config.PANEL_RIGHT_WIDTH, 'RIGHT_X': w - config.PANEL_RIGHT_WIDTH,
+            'MID_X': config.PANEL_LEFT_WIDTH, 'MID_W': w - config.PANEL_LEFT_WIDTH - config.PANEL_RIGHT_WIDTH,
+            'MID_H': h - config.TOP_MENU_H
         }
 
     def init_tools(self):
@@ -328,6 +331,14 @@ class FastMDEditor:
                 {'w':1, 'p':1, 't':(Line, Circle), 'msg':"Select Point & Entity", 'f': lambda s,w,p: Coincident(p[0][0], p[0][1], w[0], -1)}
             ]
         }
+    
+    def handle_resize(self, w, h):
+        """Update layout and UI positions on window resize."""
+        self.init_layout(w, h)
+        # Re-initialize UI elements to snap to new layout positions
+        self.init_ui_elements()
+        self.init_mappings() # Re-bind actions since buttons were re-created
+        self.menu_bar.resize(w)
 
     # --- Core Loop ---
     def run(self):
@@ -346,6 +357,10 @@ class FastMDEditor:
         
         for event in pygame.event.get():
             if event.type == pygame.QUIT: self.running = False
+            
+            # --- HANDLE WINDOW RESIZE ---
+            elif event.type == pygame.VIDEORESIZE:
+                self.handle_resize(event.w, event.h)
             
             # 1. Global Input
             if self._handle_keys(event): continue
@@ -464,7 +479,7 @@ class FastMDEditor:
                         data, view_state = file_io.load_geometry_file(f)
                         if data:
                             self.sim.clear_particles(snapshot=False)
-                            self.sim.place_geometry(data, 0, 0, use_original_coordinates=True)
+                            self.sim.place_geometry(data, 0, 0, use_original_coordinates=True, current_time=self.app.geo_time)
                             self.app.set_status(f"Loaded Geometry: {f}")
                             if view_state:
                                 self.app.zoom = view_state['zoom']
