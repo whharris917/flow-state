@@ -341,7 +341,28 @@ class FastMDEditor:
     
     def handle_resize(self, w, h):
         """Update layout and UI positions on window resize."""
+        old_mid_w = self.layout['MID_W']
+        old_mid_h = self.layout['MID_H']
+        
         self.init_layout(w, h)
+        
+        # Compensate for aspect ratio changes to keep geometry visible
+        # utils.py scales based on Width. If Width grows faster than Height (e.g. maximizing),
+        # the geometry grows too big for the vertical space.
+        if old_mid_w > 0 and old_mid_h > 0:
+            new_mid_w = self.layout['MID_W']
+            new_mid_h = self.layout['MID_H']
+            
+            w_ratio = new_mid_w / old_mid_w
+            h_ratio = new_mid_h / old_mid_h
+            
+            # If window gets flatter (width grows more than height), scale down zoom
+            if w_ratio > h_ratio and w_ratio > 0:
+                correction = h_ratio / w_ratio
+                self.app.zoom *= correction
+                self.app.sim_view['zoom'] *= correction
+                self.app.editor_view['zoom'] *= correction
+
         # Re-initialize UI elements to snap to new layout positions
         self.init_ui_elements()
         self.init_mappings() # Re-bind actions since buttons were re-created
