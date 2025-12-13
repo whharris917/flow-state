@@ -399,23 +399,52 @@ class FastMDEditor:
     def _execute_menu(self, selection):
         if selection == "New Simulation": self.sim.reset_simulation(); self.app.input_world.set_value(config.DEFAULT_WORLD_SIZE)
         elif selection == "Create New Geometry" and self.app.mode == config.MODE_SIM: self.enter_geometry_mode()
-        elif selection == "Add Existing Geometry" and self.app.mode == config.MODE_SIM and self.root_tk:
-            f = filedialog.askopenfilename(filetypes=[("Geometry Files", "*.json")])
+        
+        elif selection == "Add Existing Geometry" and self.root_tk:
+            # Allows adding geometry in both SIM and EDITOR modes
+            f = filedialog.askopenfilename(filetypes=[("Geometry Files", "*.geom"), ("All Files", "*.*")])
             if f: 
                 data = file_io.load_geometry_file(f)
-                if data: self.app.placing_geo_data = data; self.app.set_status("Place Geometry")
+                if data: 
+                    self.app.placing_geo_data = data
+                    self.app.set_status("Place Geometry")
+        
         elif self.root_tk:
             if selection == "Save As..." or (selection == "Save" and not self.app.current_filepath):
-                f = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON Files", "*.json")])
-                if f: self.app.current_filepath = f; self.app.set_status(file_io.save_file(self.sim, f))
-            elif selection == "Save" and self.app.current_filepath: self.app.set_status(file_io.save_file(self.sim, self.app.current_filepath))
+                if self.app.mode == config.MODE_EDITOR:
+                    f = filedialog.asksaveasfilename(defaultextension=".geom", filetypes=[("Geometry Files", "*.geom")])
+                    if f: 
+                        self.app.current_filepath = f
+                        self.app.set_status(file_io.save_geometry_file(self.sim, f))
+                else:
+                    f = filedialog.asksaveasfilename(defaultextension=".sim", filetypes=[("Simulation Files", "*.sim")])
+                    if f: 
+                        self.app.current_filepath = f
+                        self.app.set_status(file_io.save_file(self.sim, f))
+            
+            elif selection == "Save" and self.app.current_filepath: 
+                if self.app.mode == config.MODE_EDITOR:
+                    self.app.set_status(file_io.save_geometry_file(self.sim, self.app.current_filepath))
+                else:
+                    self.app.set_status(file_io.save_file(self.sim, self.app.current_filepath))
+            
             elif selection == "Open...":
-                f = filedialog.askopenfilename(filetypes=[("JSON Files", "*.json")])
-                if f: 
-                    self.app.current_filepath = f
-                    success, msg, lset = file_io.load_file(self.sim, f)
-                    self.app.set_status(msg)
-                    if success: self.app.input_world.set_value(self.sim.world_size); self.app.zoom=1.0; self.app.pan_x=0; self.app.pan_y=0
+                if self.app.mode == config.MODE_EDITOR:
+                    f = filedialog.askopenfilename(filetypes=[("Geometry Files", "*.geom"), ("All Files", "*.*")])
+                    if f:
+                        data = file_io.load_geometry_file(f)
+                        if data:
+                            self.sim.clear_particles(snapshot=False)
+                            # Use original coordinates for Open (Scene restore)
+                            self.sim.place_geometry(data, 0, 0, use_original_coordinates=True)
+                            self.app.set_status(f"Loaded Geometry: {f}")
+                else:
+                    f = filedialog.askopenfilename(filetypes=[("Simulation Files", "*.sim"), ("All Files", "*.*")])
+                    if f: 
+                        self.app.current_filepath = f
+                        success, msg, lset = file_io.load_file(self.sim, f)
+                        self.app.set_status(msg)
+                        if success: self.app.input_world.set_value(self.sim.world_size); self.app.zoom=1.0; self.app.pan_x=0; self.app.pan_y=0
 
     def _handle_dialogs(self, event):
         captured = False
@@ -566,14 +595,23 @@ class FastMDEditor:
         for c in self.sim.constraints:
             if hasattr(c, 'driver') and c.driver:
                 d = c.driver
-                base = getattr(c, 'base_value', c.value)
+                
+                # Fix: Ensure base_value is set. If not, set it now.
+                if c.base_value is None:
+                    c.base_value = c.value
+                
+                base = c.base_value
+                
                 if d['type'] == 'sin':
+                    # Sinusoidal: A * sin(2*pi*f*t + phase)
                     offset = d['amp'] * math.sin(2 * math.pi * d['freq'] * t + math.radians(d['phase']))
                     c.value = base + offset
                 elif d['type'] == 'lin':
-                    # Linear drive: Angle = base + rate * t_accum
-                    # We use accumulated geo_time directly to allow pausing
-                    c.value = base + d['rate'] * t
+                    # Linear drive: Angle = base + rate * (t - start_time)
+                    # Use relative time since start of drive
+                    t0 = getattr(c, 'base_time', 0.0)
+                    dt_drive = t - t0
+                    c.value = base + d['rate'] * dt_drive
         
         if self.app.mode == config.MODE_EDITOR:
             self.sim.apply_constraints()
@@ -593,7 +631,7 @@ class FastMDEditor:
                     sx, sy = utils.screen_to_sim(mx, my, self.app.zoom, self.app.pan_x, self.app.pan_y, self.sim.world_size, self.layout)
                     if pygame.mouse.get_pressed()[0]: self.sim.add_particles_brush(sx, sy, self.slider_brush.val)
                     elif pygame.mouse.get_pressed()[2]: self.sim.delete_particles_brush(sx, sy, self.slider_brush.val)
-
+    
     def render(self):
         ui_list = self.sim_elements if self.app.mode == config.MODE_SIM else self.editor_elements
         
@@ -649,7 +687,7 @@ class FastMDEditor:
 
     def save_geo_dialog(self):
         if self.root_tk:
-            f = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("Geometry Files", "*.json")])
+            f = filedialog.asksaveasfilename(defaultextension=".geom", filetypes=[("Geometry Files", "*.geom")])
             if f: self.app.set_status(file_io.save_geometry_file(self.sim, f)); self.exit_editor_mode(self.app.sim_backup_state)
 
     def trigger_constraint(self, ctype):
