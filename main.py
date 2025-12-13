@@ -9,111 +9,12 @@ from tkinter import filedialog, Tk, simpledialog, messagebox
 
 # Modules
 from simulation_state import Simulation
-from ui_widgets import SmartSlider, Button, InputField, ContextMenu, PropertiesDialog, MenuBar, RotationDialog
+from ui_widgets import SmartSlider, Button, InputField, ContextMenu, PropertiesDialog, MenuBar, RotationDialog, AnimationDialog
 from geometry import Line, Circle
 from constraints import Length, EqualLength, Angle, Midpoint, Coincident, Collinear, FixedAngle
 from renderer import Renderer
 from app_state import AppState, InteractionState
 from tools import SelectTool, BrushTool, LineTool, RectTool, CircleTool, PointTool
-
-class AnimationDialog:
-    def __init__(self, x, y, driver_data):
-        self.rect = pygame.Rect(x, y, 300, 280)
-        self.driver = driver_data if driver_data else {'type': 'sin', 'amp': 15.0, 'freq': 0.5, 'phase': 0.0, 'rate': 10.0}
-        self.done = False
-        self.apply = False
-        self.current_tab = self.driver.get('type', 'sin')
-        
-        # Shared UI
-        self.btn_stop = Button(x + 20, y + 230, 100, 30, "Remove/Stop", toggle=False, color_inactive=(160, 60, 60))
-        self.btn_ok = Button(x + 180, y + 230, 100, 30, "Start/Update", toggle=False, color_inactive=(60, 160, 60))
-        
-        # Tabs
-        self.btn_tab_sin = Button(x + 20, y + 50, 120, 25, "Sinusoidal", toggle=False, active=(self.current_tab == 'sin'))
-        self.btn_tab_lin = Button(x + 160, y + 50, 120, 25, "Linear", toggle=False, active=(self.current_tab == 'lin'))
-
-        # Sinusoidal Inputs
-        self.in_amp = InputField(x + 150, y + 90, 100, 25, str(self.driver.get('amp', 15.0)))
-        self.in_freq = InputField(x + 150, y + 130, 100, 25, str(self.driver.get('freq', 0.5)))
-        self.in_phase = InputField(x + 150, y + 170, 100, 25, str(self.driver.get('phase', 0.0)))
-        
-        # Linear Inputs
-        self.in_rate = InputField(x + 150, y + 90, 100, 25, str(self.driver.get('rate', 10.0)))
-
-    def handle_event(self, event):
-        # Tab Switching
-        if self.btn_tab_sin.handle_event(event):
-            self.current_tab = 'sin'
-            self.btn_tab_sin.active = True; self.btn_tab_lin.active = False
-            return True
-        if self.btn_tab_lin.handle_event(event):
-            self.current_tab = 'lin'
-            self.btn_tab_sin.active = False; self.btn_tab_lin.active = True
-            return True
-
-        # Input Fields based on Tab
-        if self.current_tab == 'sin':
-            if self.in_amp.handle_event(event): return True
-            if self.in_freq.handle_event(event): return True
-            if self.in_phase.handle_event(event): return True
-        else:
-            if self.in_rate.handle_event(event): return True
-        
-        if self.btn_stop.handle_event(event):
-            self.driver = None 
-            self.apply = True; self.done = True
-            return True
-            
-        if self.btn_ok.handle_event(event):
-            if self.current_tab == 'sin':
-                self.driver = {
-                    'type': 'sin',
-                    'amp': self.in_amp.get_value(0.0),
-                    'freq': self.in_freq.get_value(0.0),
-                    'phase': self.in_phase.get_value(0.0)
-                }
-            else:
-                self.driver = {
-                    'type': 'lin',
-                    'rate': self.in_rate.get_value(0.0)
-                }
-            self.apply = True; self.done = True
-            return True
-        return False
-
-    def get_values(self):
-        return self.driver
-
-    def draw(self, screen, font):
-        # Background
-        shadow = self.rect.copy(); shadow.x += 5; shadow.y += 5
-        s_surf = pygame.Surface((shadow.width, shadow.height), pygame.SRCALPHA)
-        pygame.draw.rect(s_surf, (0, 0, 0, 100), s_surf.get_rect(), border_radius=6)
-        screen.blit(s_surf, shadow)
-        
-        pygame.draw.rect(screen, (45, 45, 48), self.rect, border_radius=6)
-        pygame.draw.rect(screen, (0, 122, 204), self.rect, 1, border_radius=6)
-        
-        title = font.render("Drive Constraint", True, (255, 255, 255))
-        screen.blit(title, (self.rect.x + 15, self.rect.y + 10))
-        
-        # Tabs
-        self.btn_tab_sin.draw(screen, font)
-        self.btn_tab_lin.draw(screen, font)
-        
-        if self.current_tab == 'sin':
-            screen.blit(font.render("Amplitude:", True, (220, 220, 220)), (self.rect.x + 20, self.rect.y + 95))
-            screen.blit(font.render("Freq (Hz):", True, (220, 220, 220)), (self.rect.x + 20, self.rect.y + 135))
-            screen.blit(font.render("Phase (deg):", True, (220, 220, 220)), (self.rect.x + 20, self.rect.y + 175))
-            self.in_amp.draw(screen, font)
-            self.in_freq.draw(screen, font)
-            self.in_phase.draw(screen, font)
-        else:
-            screen.blit(font.render("Rate (deg/s):", True, (220, 220, 220)), (self.rect.x + 20, self.rect.y + 95))
-            self.in_rate.draw(screen, font)
-            
-        self.btn_stop.draw(screen, font)
-        self.btn_ok.draw(screen, font)
 
 class FastMDEditor:
     def __init__(self):
