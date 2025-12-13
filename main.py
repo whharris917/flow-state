@@ -5,7 +5,7 @@ import file_io
 import time
 import math
 import numpy as np
-from tkinter import filedialog, Tk, simpledialog
+from tkinter import filedialog, Tk, simpledialog, messagebox
 
 # Modules
 from simulation_state import Simulation
@@ -151,8 +151,8 @@ class FastMDEditor:
         # 4. Initialization
         self.init_layout()
         self.init_ui_elements()
-        self.init_mappings() # Moved up: Must exist before tools need it
-        self.init_tools()    # Moved down: Relies on mappings for visual updates
+        self.init_mappings() 
+        self.init_tools()    
 
     def init_layout(self):
         self.layout = {
@@ -178,8 +178,18 @@ class FastMDEditor:
     def init_ui_elements(self):
         # Menu
         self.menu_bar = MenuBar(self.layout['W'], config.TOP_MENU_H)
-        self.menu_bar.items["File"] = ["New Simulation", "Open...", "Save", "Save As...", "---", "Create New Geometry", "Add Existing Geometry"] 
+        self.menu_bar.items["File"] = ["New Simulation", "Open...", "Save", "Save As...", "---", "Import Geometry"] 
         
+        # --- Mode Tabs (Top Center) ---
+        tab_w = 120
+        tab_h = 25
+        tab_y = 2
+        center_x = self.layout['W'] // 2
+        
+        # Tabs are just buttons that switch mode
+        self.btn_tab_sim = Button(center_x - tab_w - 5, tab_y, tab_w, tab_h, "Simulation", toggle=False, active=True)
+        self.btn_tab_edit = Button(center_x + 5, tab_y, tab_w, tab_h, "Geometry Editor", toggle=False, active=False)
+
         # Left Panel
         lp_y = config.TOP_MENU_H + 20; lp_m = 10
         self.btn_play = Button(self.layout['LEFT_X'] + lp_m, lp_y, self.layout['LEFT_W']-20, 35, "Play/Pause", active=False, color_active=(60, 120, 60), color_inactive=(180, 60, 60)); lp_y += 50
@@ -276,18 +286,22 @@ class FastMDEditor:
             self.btn_ae_save: self.save_geo_dialog,
             self.btn_extend: self.toggle_extend,
             self.btn_editor_play: self.toggle_editor_play,
-            self.btn_show_const: self.toggle_show_constraints
+            self.btn_show_const: self.toggle_show_constraints,
+            self.btn_tab_sim: lambda: self.switch_mode(config.MODE_SIM),
+            self.btn_tab_edit: lambda: self.switch_mode(config.MODE_EDITOR)
         }
 
         # 4. UI Groups
         self.sim_elements = [
             self.btn_play, self.btn_clear, self.btn_reset, self.btn_undo, self.btn_redo,
+            self.btn_tab_sim, self.btn_tab_edit, # Tabs
             *self.sliders.values(), self.btn_thermostat, self.btn_boundaries,
             self.tool_buttons['brush'], self.tool_buttons['line'], self.slider_brush, self.btn_resize
         ]
         self.editor_elements = [
             self.btn_ae_save, self.btn_ae_discard, self.btn_undo, self.btn_redo, self.btn_clear,
             self.btn_editor_play, self.btn_show_const,
+            self.btn_tab_sim, self.btn_tab_edit, # Tabs
             *self.tool_buttons.values(), *self.const_buttons.values(), self.btn_extend
         ]
         
@@ -398,16 +412,18 @@ class FastMDEditor:
 
     def _execute_menu(self, selection):
         if selection == "New Simulation": self.sim.reset_simulation(); self.app.input_world.set_value(config.DEFAULT_WORLD_SIZE)
-        elif selection == "Create New Geometry" and self.app.mode == config.MODE_SIM: self.enter_geometry_mode()
         
-        elif selection == "Add Existing Geometry" and self.root_tk:
-            # Allows adding geometry in both SIM and EDITOR modes
-            f = filedialog.askopenfilename(filetypes=[("Geometry Files", "*.geom"), ("All Files", "*.*")])
-            if f: 
-                data = file_io.load_geometry_file(f)
-                if data: 
-                    self.app.placing_geo_data = data
-                    self.app.set_status("Place Geometry")
+        elif selection == "Import Geometry":
+            if self.root_tk:
+                f = filedialog.askopenfilename(filetypes=[("Geometry Files", "*.geom"), ("All Files", "*.*")])
+                if f:
+                    if f.endswith(".sim"):
+                        self.app.set_status("Error: Cannot load .sim file in editor")
+                        return
+                    data = file_io.load_geometry_file(f)
+                    if data: 
+                        self.app.placing_geo_data = data
+                        self.app.set_status("Place Geometry")
         
         elif self.root_tk:
             if selection == "Save As..." or (selection == "Save" and not self.app.current_filepath):
@@ -432,15 +448,20 @@ class FastMDEditor:
                 if self.app.mode == config.MODE_EDITOR:
                     f = filedialog.askopenfilename(filetypes=[("Geometry Files", "*.geom"), ("All Files", "*.*")])
                     if f:
+                        if f.endswith(".sim"):
+                            self.app.set_status("Error: Cannot load .sim file in editor")
+                            return
                         data = file_io.load_geometry_file(f)
                         if data:
                             self.sim.clear_particles(snapshot=False)
-                            # Use original coordinates for Open (Scene restore)
                             self.sim.place_geometry(data, 0, 0, use_original_coordinates=True)
                             self.app.set_status(f"Loaded Geometry: {f}")
                 else:
                     f = filedialog.askopenfilename(filetypes=[("Simulation Files", "*.sim"), ("All Files", "*.*")])
-                    if f: 
+                    if f:
+                        if f.endswith(".geom"):
+                            self.app.set_status("Error: Cannot load .geom file in sim")
+                            return
                         self.app.current_filepath = f
                         success, msg, lset = file_io.load_file(self.sim, f)
                         self.app.set_status(msg)
@@ -491,10 +512,13 @@ class FastMDEditor:
                 c = self.sim.constraints[self.ctx_vars['const']]
                 if self.anim_dialog.get_values() is None:
                     if hasattr(c, 'driver'): del c.driver
+                    c.base_value = None # Reset base on removal
                 else:
                     c.driver = self.anim_dialog.get_values()
-                    if not hasattr(c, 'base_value'): c.base_value = c.value # Store base
-                    if c.driver['type'] == 'lin': c.base_time = time.time() # Start time for linear
+                    # Capture base value if not already captured or if starting fresh
+                    if c.base_value is None: c.base_value = c.value 
+                    # Capture start time relative to geo_time
+                    if c.driver['type'] == 'lin': c.base_time = self.app.geo_time 
                 self.anim_dialog.apply = False
             if self.anim_dialog.done: self.anim_dialog = None
             captured = True
@@ -631,7 +655,7 @@ class FastMDEditor:
                     sx, sy = utils.screen_to_sim(mx, my, self.app.zoom, self.app.pan_x, self.app.pan_y, self.sim.world_size, self.layout)
                     if pygame.mouse.get_pressed()[0]: self.sim.add_particles_brush(sx, sy, self.slider_brush.val)
                     elif pygame.mouse.get_pressed()[2]: self.sim.delete_particles_brush(sx, sy, self.slider_brush.val)
-    
+
     def render(self):
         ui_list = self.sim_elements if self.app.mode == config.MODE_SIM else self.editor_elements
         
@@ -645,7 +669,13 @@ class FastMDEditor:
         if self.app.mode == config.MODE_EDITOR and not self.app.show_constraints:
             self.sim.constraints = held_constraints
 
+        # Buttons and Overlay
         self.menu_bar.draw(self.screen, self.font)
+        self.btn_tab_sim.active = (self.app.mode == config.MODE_SIM)
+        self.btn_tab_edit.active = (self.app.mode == config.MODE_EDITOR)
+        self.btn_tab_sim.draw(self.screen, self.font)
+        self.btn_tab_edit.draw(self.screen, self.font)
+
         if self.context_menu: self.context_menu.draw(self.screen, self.font)
         if self.prop_dialog: self.prop_dialog.draw(self.screen, self.font)
         if self.rot_dialog: self.rot_dialog.draw(self.screen, self.font)
@@ -655,6 +685,12 @@ class FastMDEditor:
     def change_tool(self, tool_id):
         self.app.change_tool(tool_id) 
         for btn, tid in self.tool_btn_map.items(): btn.active = (self.app.current_tool == self.app.tools.get(tid))
+
+    def switch_mode(self, mode):
+        if mode == config.MODE_SIM:
+            self.exit_editor_mode(self.app.sim_backup_state)
+        elif mode == config.MODE_EDITOR:
+            self.enter_geometry_mode()
 
     def enter_geometry_mode(self):
         self.sim.snapshot(); self.app.sim_backup_state = self.sim.undo_stack.pop()
