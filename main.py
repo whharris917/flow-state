@@ -123,7 +123,7 @@ class FastMDEditor:
 
         pygame.init()
         self.screen = pygame.display.set_mode((config.WINDOW_WIDTH, config.WINDOW_HEIGHT), pygame.RESIZABLE)
-        pygame.display.set_caption("Fast MD - Geometry Editor")
+        pygame.display.set_caption("Flow State - Chemical Engineering Simulation")
         
         self.font = pygame.font.SysFont("segoeui", 15)
         self.big_font = pygame.font.SysFont("segoeui", 22)
@@ -178,7 +178,7 @@ class FastMDEditor:
     def init_ui_elements(self):
         # Menu
         self.menu_bar = MenuBar(self.layout['W'], config.TOP_MENU_H)
-        self.menu_bar.items["File"] = ["New Simulation", "Open...", "Save", "Save As...", "---", "Import Geometry"] 
+        self.menu_bar.items["File"] = ["New", "Open...", "Save", "Save As...", "---", "Import Geometry"] 
         
         # --- Mode Tabs (Top Center) ---
         tab_w = 120
@@ -282,7 +282,7 @@ class FastMDEditor:
             self.btn_undo: lambda: (self.sim.undo(), self.app.set_status("Undo")),
             self.btn_redo: lambda: (self.sim.redo(), self.app.set_status("Redo")),
             self.btn_resize: lambda: self.sim.resize_world(self.app.input_world.get_value(50.0)),
-            self.btn_ae_discard: lambda: self.exit_editor_mode(self.app.sim_backup_state),
+            self.btn_ae_discard: lambda: self.exit_editor_mode(self.app.sim_backup_state), # Legacy hook
             self.btn_ae_save: self.save_geo_dialog,
             self.btn_extend: self.toggle_extend,
             self.btn_editor_play: self.toggle_editor_play,
@@ -411,61 +411,80 @@ class FastMDEditor:
         return False
 
     def _execute_menu(self, selection):
-        if selection == "New Simulation": self.sim.reset_simulation(); self.app.input_world.set_value(config.DEFAULT_WORLD_SIZE)
+        if selection == "New": 
+            if self.app.mode == config.MODE_SIM:
+                self.sim.reset_simulation()
+                self.app.input_world.set_value(config.DEFAULT_WORLD_SIZE)
+                self.app.current_sim_filepath = None
+            else:
+                self.sim.walls = []
+                self.sim.constraints = []
+                self.app.current_geom_filepath = None
+                self.app.set_status("New Geometry Created")
         
         elif selection == "Import Geometry":
             if self.root_tk:
                 f = filedialog.askopenfilename(filetypes=[("Geometry Files", "*.geom"), ("All Files", "*.*")])
                 if f:
                     if f.endswith(".sim"):
-                        self.app.set_status("Error: Cannot load .sim file in editor")
+                        self.app.set_status("Error: Cannot import .sim file as geometry")
                         return
-                    data = file_io.load_geometry_file(f)
+                    data, _ = file_io.load_geometry_file(f)
                     if data: 
                         self.app.placing_geo_data = data
                         self.app.set_status("Place Geometry")
         
         elif self.root_tk:
-            if selection == "Save As..." or (selection == "Save" and not self.app.current_filepath):
+            if selection == "Save As..." or (selection == "Save"):
+                is_save_as = (selection == "Save As...")
+                
                 if self.app.mode == config.MODE_EDITOR:
-                    f = filedialog.asksaveasfilename(defaultextension=".geom", filetypes=[("Geometry Files", "*.geom")])
-                    if f: 
-                        self.app.current_filepath = f
-                        self.app.set_status(file_io.save_geometry_file(self.sim, f))
+                    if is_save_as or not self.app.current_geom_filepath:
+                        f = filedialog.asksaveasfilename(defaultextension=".geom", filetypes=[("Geometry Files", "*.geom")])
+                        if f: self.app.current_geom_filepath = f
+                    
+                    if self.app.current_geom_filepath:
+                        self.app.set_status(file_io.save_geometry_file(self.sim, self.app, self.app.current_geom_filepath))
                 else:
-                    f = filedialog.asksaveasfilename(defaultextension=".sim", filetypes=[("Simulation Files", "*.sim")])
-                    if f: 
-                        self.app.current_filepath = f
-                        self.app.set_status(file_io.save_file(self.sim, f))
-            
-            elif selection == "Save" and self.app.current_filepath: 
-                if self.app.mode == config.MODE_EDITOR:
-                    self.app.set_status(file_io.save_geometry_file(self.sim, self.app.current_filepath))
-                else:
-                    self.app.set_status(file_io.save_file(self.sim, self.app.current_filepath))
+                    if is_save_as or not self.app.current_sim_filepath:
+                        f = filedialog.asksaveasfilename(defaultextension=".sim", filetypes=[("Simulation Files", "*.sim")])
+                        if f: self.app.current_sim_filepath = f
+                    
+                    if self.app.current_sim_filepath:
+                        self.app.set_status(file_io.save_file(self.sim, self.app, self.app.current_sim_filepath))
             
             elif selection == "Open...":
                 if self.app.mode == config.MODE_EDITOR:
-                    f = filedialog.askopenfilename(filetypes=[("Geometry Files", "*.geom"), ("All Files", "*.*")])
+                    f = filedialog.askopenfilename(filetypes=[("Geometry Files", "*.geom")])
                     if f:
-                        if f.endswith(".sim"):
-                            self.app.set_status("Error: Cannot load .sim file in editor")
+                        if not f.endswith(".geom"):
+                            self.app.set_status("Error: Only .geom files allowed in Editor")
                             return
-                        data = file_io.load_geometry_file(f)
+                        self.app.current_geom_filepath = f
+                        data, view_state = file_io.load_geometry_file(f)
                         if data:
                             self.sim.clear_particles(snapshot=False)
                             self.sim.place_geometry(data, 0, 0, use_original_coordinates=True)
                             self.app.set_status(f"Loaded Geometry: {f}")
+                            if view_state:
+                                self.app.zoom = view_state['zoom']
+                                self.app.pan_x = view_state['pan_x']
+                                self.app.pan_y = view_state['pan_y']
                 else:
-                    f = filedialog.askopenfilename(filetypes=[("Simulation Files", "*.sim"), ("All Files", "*.*")])
+                    f = filedialog.askopenfilename(filetypes=[("Simulation Files", "*.sim")])
                     if f:
-                        if f.endswith(".geom"):
-                            self.app.set_status("Error: Cannot load .geom file in sim")
+                        if not f.endswith(".sim"):
+                            self.app.set_status("Error: Only .sim files allowed in Simulation")
                             return
-                        self.app.current_filepath = f
-                        success, msg, lset = file_io.load_file(self.sim, f)
+                        self.app.current_sim_filepath = f
+                        success, msg, view_state = file_io.load_file(self.sim, f)
                         self.app.set_status(msg)
-                        if success: self.app.input_world.set_value(self.sim.world_size); self.app.zoom=1.0; self.app.pan_x=0; self.app.pan_y=0
+                        if success: 
+                            self.app.input_world.set_value(self.sim.world_size)
+                            if view_state:
+                                self.app.zoom = view_state['zoom']
+                                self.app.pan_x = view_state['pan_x']
+                                self.app.pan_y = view_state['pan_y']
 
     def _handle_dialogs(self, event):
         captured = False
@@ -687,23 +706,75 @@ class FastMDEditor:
         for btn, tid in self.tool_btn_map.items(): btn.active = (self.app.current_tool == self.app.tools.get(tid))
 
     def switch_mode(self, mode):
-        if mode == config.MODE_SIM:
-            self.exit_editor_mode(self.app.sim_backup_state)
-        elif mode == config.MODE_EDITOR:
-            self.enter_geometry_mode()
+        if mode == self.app.mode: return
 
-    def enter_geometry_mode(self):
-        self.sim.snapshot(); self.app.sim_backup_state = self.sim.undo_stack.pop()
-        self.sim.clear_particles(snapshot=False); self.sim.world_size = 30.0; self.sim.walls = []; self.sim.constraints = []
-        self.app.mode = config.MODE_EDITOR; self.change_tool(config.TOOL_SELECT); self.app.zoom = 1.5; self.app.pan_x = 0; self.app.pan_y = 0
+        # 1. Save current View State
+        if self.app.mode == config.MODE_SIM:
+            self.app.sim_view['zoom'] = self.app.zoom
+            self.app.sim_view['pan_x'] = self.app.pan_x
+            self.app.sim_view['pan_y'] = self.app.pan_y
+            self.exit_sim_mode_logic() # Prepare to leave Sim
+        else:
+            self.app.editor_view['zoom'] = self.app.zoom
+            self.app.editor_view['pan_x'] = self.app.pan_x
+            self.app.editor_view['pan_y'] = self.app.pan_y
+            self.exit_editor_mode_logic() # Prepare to leave Editor
+
+        # 2. Switch
+        self.app.mode = mode
+
+        # 3. Restore Target View State
+        if mode == config.MODE_SIM:
+            self.app.zoom = self.app.sim_view['zoom']
+            self.app.pan_x = self.app.sim_view['pan_x']
+            self.app.pan_y = self.app.sim_view['pan_y']
+            self.enter_sim_mode_logic()
+        else:
+            self.app.zoom = self.app.editor_view['zoom']
+            self.app.pan_x = self.app.editor_view['pan_x']
+            self.app.pan_y = self.app.editor_view['pan_y']
+            self.enter_editor_mode_logic()
+
+    def exit_sim_mode_logic(self):
+        # Taking snapshot of running sim before entering editor
+        self.sim.snapshot()
+        self.app.sim_backup_state = self.sim.undo_stack.pop() # Get that snapshot back to hold it
+        # Pause Sim
+        self.btn_play.active = False
+        self.sim.paused = True
+
+    def enter_editor_mode_logic(self):
+        # 1. Clear everything (physics + walls)
+        self.sim.clear_particles(snapshot=False)
+        # 2. Load Editor Geometry
+        self.sim.walls = self.app.editor_storage['walls']
+        self.sim.constraints = self.app.editor_storage['constraints']
+        
+        self.change_tool(config.TOOL_SELECT)
         self.app.set_status("Entered Geometry Editor")
 
-    def exit_editor_mode(self, restore_state):
-        self.sim.clear_particles(snapshot=False)
-        if restore_state: self.sim.restore_state(restore_state)
-        else: self.sim.world_size = config.DEFAULT_WORLD_SIZE
-        self.app.mode = config.MODE_SIM; self.app.zoom = 1.0; self.app.pan_x = 0; self.app.pan_y = 0
+    def exit_editor_mode_logic(self):
+        # Save current geometry to editor storage
+        self.app.editor_storage['walls'] = self.sim.walls
+        self.app.editor_storage['constraints'] = self.sim.constraints
+
+    def enter_sim_mode_logic(self):
+        # Restore the particle state
+        if self.app.sim_backup_state:
+            self.sim.restore_state(self.app.sim_backup_state)
+            
+        # Resume Sim
+        self.btn_play.active = True
+        self.sim.paused = False
         self.app.set_status("Returned to Simulation")
+
+    def enter_geometry_mode(self):
+        # Legacy stub - replaced by switch_mode
+        pass
+
+    def exit_editor_mode(self, restore_state):
+        # Legacy stub - replaced by switch_mode
+        pass
 
     def toggle_extend(self):
         if self.app.selected_walls:
@@ -724,7 +795,9 @@ class FastMDEditor:
     def save_geo_dialog(self):
         if self.root_tk:
             f = filedialog.asksaveasfilename(defaultextension=".geom", filetypes=[("Geometry Files", "*.geom")])
-            if f: self.app.set_status(file_io.save_geometry_file(self.sim, f)); self.exit_editor_mode(self.app.sim_backup_state)
+            if f: 
+                self.app.current_geom_filepath = f
+                self.app.set_status(file_io.save_geometry_file(self.sim, self.app, f))
 
     def trigger_constraint(self, ctype):
         for btn, c_val in self.constraint_btn_map.items(): btn.active = (c_val == ctype)
