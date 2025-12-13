@@ -550,7 +550,7 @@ class FastMDEditor:
                 if event.button == 1:
                     mx, my = event.pos
                     sx, sy = utils.screen_to_sim(mx, my, self.app.zoom, self.app.pan_x, self.app.pan_y, self.sim.world_size, self.layout)
-                    self.sim.place_geometry(self.app.placing_geo_data, sx, sy)
+                    self.sim.place_geometry(self.app.placing_geo_data, sx, sy, current_time=self.app.geo_time)
                     self.app.placing_geo_data = None
                     self.app.set_status("Geometry Placed")
                 elif event.button == 3:
@@ -644,16 +644,16 @@ class FastMDEditor:
                     c.base_value = c.value
                 
                 base = c.base_value
+                # Use relative time for all drivers to ensure independence
+                t0 = getattr(c, 'base_time', 0.0)
+                dt_drive = t - t0
                 
                 if d['type'] == 'sin':
                     # Sinusoidal: A * sin(2*pi*f*t + phase)
-                    offset = d['amp'] * math.sin(2 * math.pi * d['freq'] * t + math.radians(d['phase']))
+                    offset = d['amp'] * math.sin(2 * math.pi * d['freq'] * dt_drive + math.radians(d['phase']))
                     c.value = base + offset
                 elif d['type'] == 'lin':
                     # Linear drive: Angle = base + rate * (t - start_time)
-                    # Use relative time since start of drive
-                    t0 = getattr(c, 'base_time', 0.0)
-                    dt_drive = t - t0
                     c.value = base + d['rate'] * dt_drive
         
         if self.app.mode == config.MODE_EDITOR:
