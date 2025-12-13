@@ -184,14 +184,16 @@ class FastMDEditor:
         self.menu_bar.items["File"] = ["New", "Open...", "Save", "Save As...", "---", "Import Geometry"] 
         
         # --- Mode Tabs (Top Center) ---
-        tab_w = 120
-        tab_h = 25
-        tab_y = 2
+        tab_w = 200 # Made wider for tab feel
+        tab_h = 28  # Slightly taller
+        tab_y = 1   # Almost flush with top
         center_x = self.layout['W'] // 2
         
         # Tabs are just buttons that switch mode
-        self.btn_tab_sim = Button(center_x - tab_w - 5, tab_y, tab_w, tab_h, "Simulation", toggle=False, active=True)
-        self.btn_tab_edit = Button(center_x + 5, tab_y, tab_w, tab_h, "Geometry Editor", toggle=False, active=False)
+        # Using specific inactive color to make them look like tabs (darker than active)
+        tab_inactive_col = (45, 45, 48)
+        self.btn_tab_sim = Button(center_x - tab_w, tab_y, tab_w, tab_h, "Simulation", toggle=False, active=True, color_inactive=tab_inactive_col)
+        self.btn_tab_edit = Button(center_x, tab_y, tab_w, tab_h, "Geometry Editor", toggle=False, active=False, color_inactive=tab_inactive_col)
 
         # Left Panel
         lp_y = config.TOP_MENU_H + 20; lp_m = 10
