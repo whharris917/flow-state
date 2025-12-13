@@ -136,6 +136,11 @@ class FastMDEditor:
         self.sim = Simulation()
         self.app = AppState()
         
+        # Adjust default view to show boundaries (Zoomed out slightly)
+        self.app.zoom = 0.9
+        self.app.sim_view['zoom'] = 0.9
+        self.app.editor_view['zoom'] = 1.2
+        
         # Initialize Editor State
         self.app.editor_paused = False
         self.app.show_constraints = True
