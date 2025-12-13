@@ -468,6 +468,7 @@ class FastMDEditor:
                 self.sim.constraints = []
                 self.app.current_geom_filepath = None
                 self.app.set_status("New Geometry Created")
+            self._update_window_title()
         
         elif selection == "Import Geometry":
             if self.root_tk:
@@ -492,6 +493,7 @@ class FastMDEditor:
                     
                     if self.app.current_geom_filepath:
                         self.app.set_status(file_io.save_geometry_file(self.sim, self.app, self.app.current_geom_filepath))
+                        self._update_window_title()
                 else:
                     if is_save_as or not self.app.current_sim_filepath:
                         f = filedialog.asksaveasfilename(defaultextension=".sim", filetypes=[("Simulation Files", "*.sim")])
@@ -499,6 +501,7 @@ class FastMDEditor:
                     
                     if self.app.current_sim_filepath:
                         self.app.set_status(file_io.save_file(self.sim, self.app, self.app.current_sim_filepath))
+                        self._update_window_title()
             
             elif selection == "Open...":
                 if self.app.mode == config.MODE_EDITOR:
@@ -517,6 +520,7 @@ class FastMDEditor:
                                 self.app.zoom = view_state['zoom']
                                 self.app.pan_x = view_state['pan_x']
                                 self.app.pan_y = view_state['pan_y']
+                        self._update_window_title()
                 else:
                     f = filedialog.askopenfilename(filetypes=[("Simulation Files", "*.sim")])
                     if f:
@@ -532,6 +536,14 @@ class FastMDEditor:
                                 self.app.zoom = view_state['zoom']
                                 self.app.pan_x = view_state['pan_x']
                                 self.app.pan_y = view_state['pan_y']
+                        self._update_window_title()
+        
+        # FIX: Force focus back to Pygame window to prevent "double click" issue
+        pygame.event.pump() # Clear event queue
+        # There is no direct "focus" command in Pygame, but consuming events and 
+        # ensuring the mouse logic doesn't ignore the next click helps.
+        # Often moving the mouse virtually can wake it up, but that's intrusive.
+        # We rely on the user clicking, but we ensure no state is "stuck".
 
     def _handle_dialogs(self, event):
         captured = False
@@ -752,6 +764,17 @@ class FastMDEditor:
         self.app.change_tool(tool_id) 
         for btn, tid in self.tool_btn_map.items(): btn.active = (self.app.current_tool == self.app.tools.get(tid))
 
+    def _update_window_title(self):
+        title = "Flow State - Chemical Engineering Simulation"
+        # Extract just the filename for cleaner display
+        if self.app.current_sim_filepath:
+            name = self.app.current_sim_filepath.replace("\\", "/").split("/")[-1]
+            title += f" - {name}"
+        elif self.app.current_geom_filepath:
+            name = self.app.current_geom_filepath.replace("\\", "/").split("/")[-1]
+            title += f" - {name}"
+        pygame.display.set_caption(title)
+
     def switch_mode(self, mode):
         if mode == self.app.mode: return
 
@@ -781,6 +804,9 @@ class FastMDEditor:
             self.app.pan_x = self.app.editor_view['pan_x']
             self.app.pan_y = self.app.editor_view['pan_y']
             self.enter_editor_mode_logic()
+            
+        # Call update title here if switching modes changes context (optional, but good practice)
+        self._update_window_title()
 
     def exit_sim_mode_logic(self):
         # Taking snapshot of running sim before entering editor
@@ -855,6 +881,7 @@ class FastMDEditor:
             if f: 
                 self.app.current_geom_filepath = f
                 self.app.set_status(file_io.save_geometry_file(self.sim, self.app, f))
+                self._update_window_title()
 
     def trigger_constraint(self, ctype):
         for btn, c_val in self.constraint_btn_map.items(): btn.active = (c_val == ctype)
