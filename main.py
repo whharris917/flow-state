@@ -739,7 +739,11 @@ class FastMDEditor:
         # Taking snapshot of running sim before entering editor
         self.sim.snapshot()
         self.app.sim_backup_state = self.sim.undo_stack.pop() # Get that snapshot back to hold it
-        # Pause Sim
+        
+        # Save running state
+        self.app.was_sim_running = not self.sim.paused
+        
+        # Always Pause Sim when leaving
         self.btn_play.active = False
         self.sim.paused = True
 
@@ -750,8 +754,8 @@ class FastMDEditor:
         self.sim.walls = self.app.editor_storage['walls']
         self.sim.constraints = self.app.editor_storage['constraints']
         
-        self.change_tool(config.TOOL_SELECT)
-        self.app.set_status("Entered Geometry Editor")
+        self.change_tool(self.app.editor_tool)
+        # Removed status message
 
     def exit_editor_mode_logic(self):
         # Save current geometry to editor storage
@@ -763,10 +767,16 @@ class FastMDEditor:
         if self.app.sim_backup_state:
             self.sim.restore_state(self.app.sim_backup_state)
             
-        # Resume Sim
-        self.btn_play.active = True
-        self.sim.paused = False
-        self.app.set_status("Returned to Simulation")
+        # Resume Sim ONLY if it was running before
+        if self.app.was_sim_running:
+            self.btn_play.active = True
+            self.sim.paused = False
+        else:
+            self.btn_play.active = False
+            self.sim.paused = True
+            
+        self.change_tool(self.app.sim_tool)
+        # Removed status message
 
     def enter_geometry_mode(self):
         # Legacy stub - replaced by switch_mode
