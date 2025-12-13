@@ -137,9 +137,10 @@ class FastMDEditor:
         self.app = AppState()
         
         # Adjust default view to show boundaries (Zoomed out slightly)
+        # Reduced editor zoom from 1.2 to 0.9 to match Sim view and fit in default window height
         self.app.zoom = 0.9
         self.app.sim_view['zoom'] = 0.9
-        self.app.editor_view['zoom'] = 1.2
+        self.app.editor_view['zoom'] = 0.9
         
         # Initialize Editor State
         self.app.editor_paused = False
@@ -347,18 +348,21 @@ class FastMDEditor:
         self.init_layout(w, h)
         
         # Compensate for aspect ratio changes to keep geometry visible
-        # utils.py scales based on Width. If Width grows faster than Height (e.g. maximizing),
-        # the geometry grows too big for the vertical space.
         if old_mid_w > 0 and old_mid_h > 0:
             new_mid_w = self.layout['MID_W']
             new_mid_h = self.layout['MID_H']
             
-            w_ratio = new_mid_w / old_mid_w
-            h_ratio = new_mid_h / old_mid_h
+            # Calculate Aspect Ratios
+            old_ar = old_mid_w / old_mid_h
+            new_ar = new_mid_w / new_mid_h
             
-            # If window gets flatter (width grows more than height), scale down zoom
-            if w_ratio > h_ratio and w_ratio > 0:
-                correction = h_ratio / w_ratio
+            # Correction factor: old_ar / new_ar
+            # This compensates for the fact that utils.py scales by Width.
+            # If AR increases (getting wider), we scale zoom down.
+            # If AR decreases (getting taller), we scale zoom up (to keep relative fit).
+            
+            if abs(new_ar - old_ar) > 0.001:
+                correction = old_ar / new_ar
                 self.app.zoom *= correction
                 self.app.sim_view['zoom'] *= correction
                 self.app.editor_view['zoom'] *= correction
