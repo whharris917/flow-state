@@ -1,8 +1,8 @@
-from editor import FastMDEditor
+from flow_state_app import FlowStateApp
 
 def main():
-    editor = FastMDEditor()
-    editor.run()
+    app = FlowStateApp()
+    app.run()
 
 if __name__ == "__main__":
     main()
