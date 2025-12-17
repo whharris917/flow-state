@@ -1,8 +1,8 @@
-from flow_state_app import FlowStateApp
+from launcher import Launcher
 
 def main():
-    app = FlowStateApp()
-    app.run()
+    dashboard = Launcher()
+    dashboard.run()
 
 if __name__ == "__main__":
     main()
