@@ -7,7 +7,8 @@ import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # Import Configuration first
-import config
+import core.config as config
+
 
 def parse_args():
     """
@@ -51,7 +52,7 @@ def run_simulation(args, logger):
         logger.info(f"Launching Simulation (Resolution: {args.width}x{args.height}, Debug: {args.debug})")
         
         # Import late to prevent Pygame load during Dashboard mode
-        from flow_state_app import FlowStateApp
+        from app.flow_state_app import FlowStateApp
         
         app = FlowStateApp()
         app.run()
@@ -74,7 +75,7 @@ def run_builder(args, logger):
         
         logger.info(f"Launching Model Builder (Resolution: {args.width}x{args.height})")
         
-        from flow_state_app import FlowStateApp
+        from app.flow_state_app import FlowStateApp
         
         # Initialize app in EDITOR mode as requested
         # We try to use config.MODE_EDITOR, defaulting to 'editor' string if not found

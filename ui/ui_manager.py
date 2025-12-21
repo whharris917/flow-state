@@ -1,7 +1,8 @@
-import config
-from ui_widgets import SmartSlider, Button, InputField, MenuBar
+import core.config as config
+
+from ui.ui_widgets import SmartSlider, Button, InputField, MenuBar
 # Tools are created in FlowStateApp, but we import keys here to be consistent
-from tools import SelectTool, BrushTool, LineTool, RectTool, CircleTool, PointTool
+from ui.tools import SelectTool, BrushTool, LineTool, RectTool, CircleTool, PointTool
 
 class UIManager:
     """

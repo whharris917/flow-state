@@ -1,8 +1,9 @@
 import math
 import numpy as np
 import pygame
-import config
-from geometry import Line, Circle, Point
+import core.config as config
+
+from model.geometry import Line, Circle, Point
 
 # --- Coordinate Transformations ---
 

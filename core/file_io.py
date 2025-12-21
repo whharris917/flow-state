@@ -2,8 +2,8 @@ import pickle
 import json
 import os
 import numpy as np
-from geometry import Line, Circle, Point
-from constraints import create_constraint
+from model.geometry import Line, Circle, Point
+from model.constraints import create_constraint
 
 def save_file(sim, session, filename):
     """

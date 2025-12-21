@@ -1,10 +1,10 @@
 import copy
 import numpy as np
 import math
-from geometry import Line, Circle, Point
-from constraints import create_constraint
-from solver import Solver
-from properties import Material
+from model.geometry import Line, Circle, Point
+from model.constraints import create_constraint
+from model.solver import Solver
+from model.properties import Material
 
 class Sketch:
     """
@@ -224,8 +224,8 @@ class Sketch:
 
     def restore(self, data):
         # Local imports
-        from geometry import Line, Circle, Point
-        from properties import Material
+        from model.geometry import Line, Circle, Point
+        from model.properties import Material
         
         if 'materials' in data:
             self.materials = {}

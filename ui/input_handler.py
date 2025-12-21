@@ -1,10 +1,12 @@
 import pygame
-import config
-import utils
+import core.config as config
+
+import core.utils as utils
+
 import sys
-from ui_widgets import MaterialDialog, RotationDialog, AnimationDialog, ContextMenu
-from constraints import Length
-from session import InteractionState
+from ui.ui_widgets import MaterialDialog, RotationDialog, AnimationDialog, ContextMenu
+from model.constraints import Length
+from core.session import InteractionState
 from tkinter import simpledialog
 
 class InputHandler:

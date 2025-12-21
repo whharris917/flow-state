@@ -1,12 +1,14 @@
 import pygame
 import numpy as np
 import math
-import config
-import utils
+import core.config as config
+
+import core.utils as utils
+
 import time
-from geometry import Line, Circle
-from constraints import Coincident, Length, Angle
-from session import InteractionState
+from model.geometry import Line, Circle
+from model.constraints import Coincident, Length, Angle
+from core.session import InteractionState
 
 class Tool:
     def __init__(self, app, name="Tool"):

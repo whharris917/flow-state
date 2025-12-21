@@ -1,6 +1,6 @@
 import math
 import numpy as np
-from geometry import Line, Circle
+from model.geometry import Line, Circle
 
 class Solver:
     @staticmethod

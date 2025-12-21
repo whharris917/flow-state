@@ -1,7 +1,8 @@
 import math
 import numpy as np
-import utils
-from geometry import Line, Circle, Point
+import core.utils as utils
+
+from model.geometry import Line, Circle, Point
 
 class GeometryManager:
     """
@@ -62,7 +63,7 @@ class GeometryManager:
                 self.sketch.entities.append(circ)
 
         # 2. Import Constraints (Offset indices)
-        from constraints import create_constraint
+        from model.constraints import create_constraint
         for c_data in data.get('constraints', []):
             # Remap indices
             new_indices = []

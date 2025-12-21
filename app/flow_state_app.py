@@ -2,24 +2,27 @@ import pygame
 pygame.mixer.pre_init(44100, -16, 1, 1024)
 pygame.init()
 
-import config
-import utils
-import file_io
+import core.config as config
+
+import core.utils as utils
+
+import core.file_io as file_io
+
 import time
 import sys
 import subprocess
 from tkinter import filedialog, Tk
 
-from simulation import Simulation
-from session import Session
-from ui_widgets import InputField
-from geometry import Line, Circle
-from renderer import Renderer
-from tools import SelectTool, BrushTool, LineTool, RectTool, CircleTool, PointTool
-from ui_manager import UIManager
-from input_handler import InputHandler
-from sound_manager import SoundManager
-from app_controller import AppController
+from engine.simulation import Simulation
+from core.session import Session
+from ui.ui_widgets import InputField
+from model.geometry import Line, Circle
+from ui.renderer import Renderer
+from ui.tools import SelectTool, BrushTool, LineTool, RectTool, CircleTool, PointTool
+from ui.ui_manager import UIManager
+from ui.input_handler import InputHandler
+from core.sound_manager import SoundManager
+from app.app_controller import AppController
 
 class FlowStateApp:
     def __init__(self, start_mode=config.MODE_SIM):

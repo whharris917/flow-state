@@ -1,7 +1,7 @@
 import math
 import numpy as np
-from geometry import Line, Circle
-from constraints import Length, EqualLength, Angle, Midpoint, Coincident, Collinear, FixedAngle
+from model.geometry import Line, Circle
+from model.constraints import Length, EqualLength, Angle, Midpoint, Coincident, Collinear, FixedAngle
 
 def get_l(s, w): 
     return np.linalg.norm(s.walls[w].end - s.walls[w].start)

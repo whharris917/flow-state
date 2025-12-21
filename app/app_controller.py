@@ -1,13 +1,15 @@
 import pygame
-import config
+import core.config as config
+
 import math
-import utils
-from ui_widgets import MaterialDialog, RotationDialog, AnimationDialog, ContextMenu
-from constraints import Length
-from geometry import Line, Circle
-from tools import PointTool
-from definitions import CONSTRAINT_DEFS
-from sound_manager import SoundManager
+import core.utils as utils
+
+from ui.ui_widgets import MaterialDialog, RotationDialog, AnimationDialog, ContextMenu
+from model.constraints import Length
+from model.geometry import Line, Circle
+from ui.tools import PointTool
+from core.definitions import CONSTRAINT_DEFS
+from core.sound_manager import SoundManager
 
 class AppController:
     """

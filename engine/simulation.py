@@ -3,14 +3,15 @@ import random
 import math
 import time
 import copy
-import config
-from physics_core import integrate_n_steps, build_neighbor_list, check_displacement, apply_thermostat, spatial_sort
-from geometry import Line, Point, Circle
-from constraints import create_constraint, Constraint, Length
-from definitions import CONSTRAINT_DEFS
-from simulation_geometry import GeometryManager
-from sketch import Sketch
-from compiler import Compiler
+import core.config as config
+
+from engine.physics_core import integrate_n_steps, build_neighbor_list, check_displacement, apply_thermostat, spatial_sort
+from model.geometry import Line, Point, Circle
+from model.constraints import create_constraint, Constraint, Length
+from core.definitions import CONSTRAINT_DEFS
+from model.simulation_geometry import GeometryManager
+from model.sketch import Sketch
+from engine.compiler import Compiler
 
 class Simulation:
     def __init__(self, skip_warmup=False):

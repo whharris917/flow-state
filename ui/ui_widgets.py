@@ -1,8 +1,9 @@
 import pygame
 import math
-import config
-from properties import Material
-from sound_manager import SoundManager
+import core.config as config
+
+from model.properties import Material
+from core.sound_manager import SoundManager
 
 # --- ANIMATION HELPER ---
 def lerp(start, end, t):

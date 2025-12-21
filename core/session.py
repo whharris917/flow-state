@@ -1,6 +1,7 @@
 import time
 from enum import Enum, auto
-import config
+import core.config as config
+
 
 class InteractionState(Enum):
     IDLE = auto()

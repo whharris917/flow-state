@@ -1,6 +1,6 @@
 import numpy as np
 import math
-from geometry import Line, Circle
+from model.geometry import Line, Circle
 
 class Compiler:
     """

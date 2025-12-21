@@ -1,8 +1,9 @@
 import pygame
 import math
-import config
-from utils import sim_to_screen, screen_to_sim, get_grouped_points, calculate_current_temp
-from geometry import Line, Circle, Point
+import core.config as config
+
+from core.utils import sim_to_screen, screen_to_sim, get_grouped_points, calculate_current_temp
+from model.geometry import Line, Circle, Point
 
 class Renderer:
     def __init__(self, screen, font, big_font):
