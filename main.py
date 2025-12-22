@@ -95,7 +95,7 @@ def run_dashboard(logger):
     """Initializes and runs the Dashboard GUI."""
     try:
         logger.info("Launching Dashboard...")
-        import dashboard
+        from app import dashboard
         dashboard.run()
     except Exception as e:
         logger.critical(f"Dashboard crashed: {e}", exc_info=True)
