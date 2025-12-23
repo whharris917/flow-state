@@ -36,11 +36,11 @@ class Scene:
         Args:
             skip_warmup: If True, skip Numba JIT warmup (for Editor-only mode)
         """
-        # CAD Domain
+        # CAD Domain - Create first
         self.sketch = Sketch()
         
-        # Physics Domain (no sketch reference!)
-        self.simulation = Simulation(skip_warmup=skip_warmup)
+        # Physics Domain - Inject shared Sketch (Phase 4 dependency injection)
+        self.simulation = Simulation(skip_warmup=skip_warmup, sketch=self.sketch)
         
         # Bridge: Compiler takes only simulation, receives sketch at rebuild time
         self.compiler = Compiler(self.simulation)

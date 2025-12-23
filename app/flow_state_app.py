@@ -13,7 +13,8 @@ import sys
 import subprocess
 from tkinter import filedialog, Tk
 
-from engine.simulation import Simulation
+# Phase 4: Import Scene instead of Simulation directly
+from core.scene import Scene
 from core.session import Session
 from ui.ui_widgets import InputField
 from model.geometry import Line, Circle
@@ -50,9 +51,20 @@ class FlowStateApp:
         self.session = Session()
         self.session.mode = start_mode 
         
+        # =====================================================================
+        # Phase 4: Scene Pattern Integration
+        # =====================================================================
+        # Create Scene as the document container
         is_editor = (start_mode == config.MODE_EDITOR)
-        self.sim = Simulation(skip_warmup=is_editor)
-        self.sketch = self.sim.sketch
+        self.scene = Scene(skip_warmup=is_editor)
+        
+        # Create aliases for backward compatibility
+        # All existing code uses self.sim and self.sketch - these aliases
+        # ensure everything continues to work without modification
+        self.sim = self.scene.simulation
+        self.sketch = self.scene.sketch
+        # =====================================================================
+        
         self.session.input_world = InputField(0, 0, 0, 0)
         self.session.zoom = 0.9
         
@@ -175,8 +187,8 @@ class FlowStateApp:
             self.sound_manager.play_sound('tool_select')
 
     def exit_editor_mode(self, backup_state=None):
-        self.sim.reset_simulation()
-        self.sim.sketch.clear()
+        # Phase 4: Use scene.new() for clean reset
+        self.scene.new()
         self.session.set_status("Reset/Discarded")
         self.sound_manager.play_sound('click')
     
@@ -194,8 +206,8 @@ class FlowStateApp:
         elif selection == "New Model":
             subprocess.Popen([sys.executable, "run_instance.py", "editor"])
         elif selection == "New": 
-            self.sim.reset_simulation()
-            self.sim.sketch.clear()
+            # Phase 4: Use scene.new() for clean reset
+            self.scene.new()
             self.session.input_world.set_value(config.DEFAULT_WORLD_SIZE)
             self.session.current_sim_filepath = None
             self.session.set_status("New Project Created")

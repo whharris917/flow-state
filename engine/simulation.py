@@ -14,7 +14,15 @@ from model.sketch import Sketch
 from engine.compiler import Compiler
 
 class Simulation:
-    def __init__(self, skip_warmup=False):
+    def __init__(self, skip_warmup=False, sketch=None):
+        """
+        Initialize the physics simulation.
+        
+        Args:
+            skip_warmup: If True, skip Numba JIT warmup (for Editor-only mode)
+            sketch: Optional Sketch instance for dependency injection (Phase 4).
+                   If None, creates an internal Sketch (backward compatibility).
+        """
         self.capacity = 5000
         self.count = 0
         
@@ -38,7 +46,8 @@ class Simulation:
         self.atom_eps_sqrt = np.zeros(self.capacity, dtype=np.float32)
         
         # --- Design / Sketch Data ---
-        self.sketch = Sketch()
+        # Phase 4: Accept injected Sketch or create internal one (backward compat)
+        self.sketch = sketch if sketch is not None else Sketch()
         self.compiler = Compiler(self)
         self.geo = GeometryManager(self)
         
