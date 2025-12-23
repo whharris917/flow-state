@@ -1,11 +1,14 @@
 """
-Scene - The Document Container
+Scene - The Document Container & Orchestrator
 
 The Scene is the central "document" in Flow State. It contains:
 - Sketch: CAD geometry, constraints, materials, solver
 - Simulation: Particle physics (atoms only, no geometry knowledge)
 - Compiler: The one-way bridge from Sketch → Simulation
 - GeometryManager: Import/export operations for CAD data
+
+The Scene also serves as the ORCHESTRATOR, managing the correct
+order of operations during each frame update.
 
 File formats:
 - .mdl (Model): Sketch only - reusable CAD components
@@ -19,17 +22,22 @@ from model.sketch import Sketch
 from model.simulation_geometry import GeometryManager
 from engine.simulation import Simulation
 from engine.compiler import Compiler
+from core.commands import CommandQueue
 
 
 class Scene:
     """
-    The document container - what gets saved and loaded.
+    The document container and orchestrator.
     
     Owns:
         - Sketch (CAD domain)
         - Simulation (Physics domain)
         - Compiler (bridge between them)
         - GeometryManager (CAD import/export operations)
+    
+    Orchestrates:
+        - Frame updates (drivers → constraints → physics)
+        - Geometry compilation (sketch → atoms)
     """
     
     def __init__(self, skip_warmup=False):
@@ -62,6 +70,119 @@ class Scene:
         # Backward compatibility: Simulation.geo references Scene's geo
         # This allows existing code using sim.geo to continue working
         self.simulation.geo = self.geo
+        
+        # Command Queue for undo/redo (Phase 8)
+        # This provides proper command-based undo instead of full state snapshots
+        self.commands = CommandQueue(max_history=50)
+    
+    # -------------------------------------------------------------------------
+    # Command Interface (Phase 8)
+    # -------------------------------------------------------------------------
+    
+    def execute(self, command):
+        """
+        Execute a command and add to history.
+        After execution, rebuilds static atoms if needed.
+        
+        Args:
+            command: A Command instance
+            
+        Returns:
+            True if command executed successfully
+        """
+        result = self.commands.execute(command)
+        if result:
+            self.compiler.rebuild()
+        return result
+    
+    def undo(self):
+        """
+        Undo the last command.
+        
+        Returns:
+            True if undo was successful
+        """
+        result = self.commands.undo()
+        if result:
+            self.compiler.rebuild()
+        return result
+    
+    def redo(self):
+        """
+        Redo the last undone command.
+        
+        Returns:
+            True if redo was successful
+        """
+        result = self.commands.redo()
+        if result:
+            self.compiler.rebuild()
+        return result
+    
+    def can_undo(self):
+        """Check if undo is available."""
+        return self.commands.can_undo()
+    
+    def can_redo(self):
+        """Check if redo is available."""
+        return self.commands.can_redo()
+    
+    # -------------------------------------------------------------------------
+    # Orchestrator: Frame Update
+    # -------------------------------------------------------------------------
+    
+    def update(self, dt, geo_time, run_physics=True, physics_steps=1):
+        """
+        Main frame update - orchestrates the correct order of operations.
+        
+        This is the SINGLE ENTRY POINT for frame updates. It ensures:
+        1. Constraint drivers are updated (animations)
+        2. Constraints are solved (geometry moves)
+        3. Static atoms are rebuilt if geometry changed
+        4. Physics step runs (if enabled)
+        
+        Args:
+            dt: Delta time since last frame (seconds)
+            geo_time: Current geometry/animation time (seconds)
+            run_physics: If True, run physics simulation step
+            physics_steps: Number of physics sub-steps to run
+        
+        Returns:
+            True if geometry was modified (rebuild occurred)
+        """
+        geometry_dirty = False
+        
+        # 1. Update constraint drivers (animation)
+        # This modifies constraint values (e.g., Length oscillates)
+        old_values = self._snapshot_constraint_values()
+        self.sketch.update_drivers(geo_time)
+        new_values = self._snapshot_constraint_values()
+        
+        if old_values != new_values:
+            geometry_dirty = True
+        
+        # 2. Solve constraints
+        # This moves geometry to satisfy constraints
+        if self.sketch.constraints:
+            self.sketch.solve()
+            geometry_dirty = True  # Conservative: assume solve moved something
+        
+        # 3. Rebuild static atoms if geometry changed
+        if geometry_dirty:
+            self.compiler.rebuild()
+        
+        # 4. Run physics step (if enabled)
+        if run_physics and not self.simulation.paused:
+            self.simulation.step(physics_steps)
+        
+        return geometry_dirty
+    
+    def _snapshot_constraint_values(self):
+        """Capture current constraint values for change detection."""
+        return tuple(
+            getattr(c, 'value', None) 
+            for c in self.sketch.constraints
+        )
     
     # -------------------------------------------------------------------------
     # Compiler Interface
@@ -365,6 +486,7 @@ class Scene:
         """
         self.sketch.clear()
         self.simulation.clear()
+        self.commands.clear()
     
     def new(self):
         """
@@ -372,3 +494,4 @@ class Scene:
         """
         self.sketch.clear()
         self.simulation.reset()
+        self.commands.clear()
