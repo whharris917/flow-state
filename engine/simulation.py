@@ -102,6 +102,88 @@ class Simulation:
         self.clear_particles()
         print("Warmup complete.")
 
+    # -------------------------------------------------------------------------
+    # Serialization for Scene (Phase 4)
+    # -------------------------------------------------------------------------
+    
+    def to_dict(self):
+        """
+        Serialize physics state for Scene.
+        Returns JSON-compatible dict (lists, not numpy arrays).
+        """
+        return {
+            'count': int(self.count),
+            'world_size': float(self.world_size),
+            'pos_x': self.pos_x[:self.count].tolist(),
+            'pos_y': self.pos_y[:self.count].tolist(),
+            'vel_x': self.vel_x[:self.count].tolist(),
+            'vel_y': self.vel_y[:self.count].tolist(),
+            'is_static': self.is_static[:self.count].tolist(),
+            'kinematic_props': self.kinematic_props[:self.count].tolist(),
+            'atom_sigma': self.atom_sigma[:self.count].tolist(),
+            'atom_eps_sqrt': self.atom_eps_sqrt[:self.count].tolist(),
+            # Physics parameters
+            'gravity': float(self.gravity),
+            'dt': float(self.dt),
+            'target_temp': float(self.target_temp),
+            'damping': float(self.damping),
+            'use_boundaries': bool(self.use_boundaries),
+            'use_thermostat': bool(self.use_thermostat),
+            'sigma': float(self.sigma),
+            'epsilon': float(self.epsilon),
+        }
+    
+    def restore(self, data):
+        """
+        Restore physics state from dict (JSON-compatible format).
+        Used by Scene.load_scene().
+        """
+        self.count = data.get('count', 0)
+        self.world_size = data.get('world_size', config.DEFAULT_WORLD_SIZE)
+        
+        # Resize arrays if needed
+        if self.count > self.capacity:
+            while self.capacity < self.count:
+                self.capacity *= 2
+            self._resize_arrays()
+        
+        # Restore particle arrays
+        if 'pos_x' in data and self.count > 0:
+            self.pos_x[:self.count] = np.array(data['pos_x'], dtype=np.float32)
+        if 'pos_y' in data and self.count > 0:
+            self.pos_y[:self.count] = np.array(data['pos_y'], dtype=np.float32)
+        if 'vel_x' in data and self.count > 0:
+            self.vel_x[:self.count] = np.array(data['vel_x'], dtype=np.float32)
+        if 'vel_y' in data and self.count > 0:
+            self.vel_y[:self.count] = np.array(data['vel_y'], dtype=np.float32)
+        if 'is_static' in data and self.count > 0:
+            self.is_static[:self.count] = np.array(data['is_static'], dtype=np.int32)
+        if 'kinematic_props' in data and self.count > 0:
+            self.kinematic_props[:self.count] = np.array(data['kinematic_props'], dtype=np.float32)
+        if 'atom_sigma' in data and self.count > 0:
+            self.atom_sigma[:self.count] = np.array(data['atom_sigma'], dtype=np.float32)
+        if 'atom_eps_sqrt' in data and self.count > 0:
+            self.atom_eps_sqrt[:self.count] = np.array(data['atom_eps_sqrt'], dtype=np.float32)
+        
+        # Restore physics parameters
+        self.gravity = data.get('gravity', config.DEFAULT_GRAVITY)
+        self.dt = data.get('dt', config.DEFAULT_DT)
+        self.target_temp = data.get('target_temp', 0.5)
+        self.damping = data.get('damping', config.DEFAULT_DAMPING)
+        self.use_boundaries = data.get('use_boundaries', False)
+        self.use_thermostat = data.get('use_thermostat', False)
+        self.sigma = data.get('sigma', config.ATOM_SIGMA)
+        self.epsilon = data.get('epsilon', config.ATOM_EPSILON)
+        
+        # Update derived parameters and flag for rebuild
+        self._update_derived_params()
+        self.rebuild_next = True
+        self.pair_count = 0
+
+    # -------------------------------------------------------------------------
+    # Undo/Redo System
+    # -------------------------------------------------------------------------
+
     def snapshot(self):
         state = {
             'count': self.count,
@@ -162,6 +244,10 @@ class Simulation:
             'world_size': self.world_size
         }
         stack.append(current_state)
+
+    # -------------------------------------------------------------------------
+    # World Management
+    # -------------------------------------------------------------------------
 
     def resize_world(self, new_size):
         self.snapshot()

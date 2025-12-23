@@ -42,8 +42,8 @@ class Scene:
         # Physics Domain (no sketch reference!)
         self.simulation = Simulation(skip_warmup=skip_warmup)
         
-        # Bridge
-        self.compiler = Compiler(self.sketch, self.simulation)
+        # Bridge: Compiler takes only simulation, receives sketch at rebuild time
+        self.compiler = Compiler(self.simulation)
     
     # -------------------------------------------------------------------------
     # Compiler Interface
@@ -54,7 +54,7 @@ class Scene:
         Recompiles Sketch geometry into Simulation atoms.
         Call this after geometry changes that should affect physics.
         """
-        self.compiler.rebuild()
+        self.compiler.rebuild(self.sketch)
     
     # -------------------------------------------------------------------------
     # Model I/O (.mdl) - Sketch Only
@@ -346,11 +346,11 @@ class Scene:
         Clears all content from the Scene.
         """
         self.sketch.clear()
-        self.simulation.clear()
+        self.simulation.clear_particles(snapshot=False)
     
     def new(self):
         """
         Resets the Scene to a fresh state.
         """
         self.sketch.clear()
-        self.simulation.reset()
+        self.simulation.reset_simulation()
