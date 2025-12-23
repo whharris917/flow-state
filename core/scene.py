@@ -40,10 +40,14 @@ class Scene:
         self.sketch = Sketch()
         
         # Physics Domain - Inject shared Sketch (Phase 4 dependency injection)
+        # Note: Simulation will create a temporary internal compiler
         self.simulation = Simulation(skip_warmup=skip_warmup, sketch=self.sketch)
         
-        # Bridge: Compiler takes only simulation, receives sketch at rebuild time
+        # Bridge: Scene owns the Compiler (Phase 5)
+        # Create our compiler and inject it into Simulation, replacing its internal one
         self.compiler = Compiler(self.simulation)
+        self.simulation.compiler = self.compiler  # Injection point
+        self.simulation._compiler_injected = True  # Mark as injected
     
     # -------------------------------------------------------------------------
     # Compiler Interface

@@ -14,7 +14,7 @@ from model.sketch import Sketch
 from engine.compiler import Compiler
 
 class Simulation:
-    def __init__(self, skip_warmup=False, sketch=None):
+    def __init__(self, skip_warmup=False, sketch=None, compiler=None):
         """
         Initialize the physics simulation.
         
@@ -22,6 +22,8 @@ class Simulation:
             skip_warmup: If True, skip Numba JIT warmup (for Editor-only mode)
             sketch: Optional Sketch instance for dependency injection (Phase 4).
                    If None, creates an internal Sketch (backward compatibility).
+            compiler: Optional Compiler instance for dependency injection (Phase 5).
+                     If None, creates an internal Compiler (backward compatibility).
         """
         self.capacity = 5000
         self.count = 0
@@ -48,7 +50,12 @@ class Simulation:
         # --- Design / Sketch Data ---
         # Phase 4: Accept injected Sketch or create internal one (backward compat)
         self.sketch = sketch if sketch is not None else Sketch()
-        self.compiler = Compiler(self)
+        
+        # Phase 5: Accept injected Compiler or create internal one (backward compat)
+        # Note: Compiler is created after sketch since it may need sketch reference
+        self._compiler_injected = compiler is not None
+        self.compiler = compiler if compiler is not None else Compiler(self)
+        
         self.geo = GeometryManager(self)
         
         # --- Neighbor List & Optimization ---
