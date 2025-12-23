@@ -36,18 +36,22 @@ class Scene:
         Args:
             skip_warmup: If True, skip Numba JIT warmup (for Editor-only mode)
         """
-        # CAD Domain - Create first
+        # CAD Domain
         self.sketch = Sketch()
         
-        # Physics Domain - Inject shared Sketch (Phase 4 dependency injection)
-        # Note: Simulation will create a temporary internal compiler
-        self.simulation = Simulation(skip_warmup=skip_warmup, sketch=self.sketch)
+        # Bridge (create first so we can inject into Simulation)
+        # We'll set the simulation reference after creating it
+        self.compiler = Compiler(self.sketch, None)
         
-        # Bridge: Scene owns the Compiler (Phase 5)
-        # Create our compiler and inject it into Simulation, replacing its internal one
-        self.compiler = Compiler(self.simulation)
-        self.simulation.compiler = self.compiler  # Injection point
-        self.simulation._compiler_injected = True  # Mark as injected
+        # Physics Domain (inject shared sketch and compiler)
+        self.simulation = Simulation(
+            skip_warmup=skip_warmup, 
+            sketch=self.sketch, 
+            compiler=self.compiler
+        )
+        
+        # Now update compiler's simulation reference
+        self.compiler.sim = self.simulation
     
     # -------------------------------------------------------------------------
     # Compiler Interface
@@ -58,7 +62,7 @@ class Scene:
         Recompiles Sketch geometry into Simulation atoms.
         Call this after geometry changes that should affect physics.
         """
-        self.compiler.rebuild(self.sketch)
+        self.compiler.rebuild()
     
     # -------------------------------------------------------------------------
     # Model I/O (.mdl) - Sketch Only
@@ -350,11 +354,11 @@ class Scene:
         Clears all content from the Scene.
         """
         self.sketch.clear()
-        self.simulation.clear_particles(snapshot=False)
+        self.simulation.clear()
     
     def new(self):
         """
         Resets the Scene to a fresh state.
         """
         self.sketch.clear()
-        self.simulation.reset_simulation()
+        self.simulation.reset()

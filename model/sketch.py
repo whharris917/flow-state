@@ -120,6 +120,31 @@ class Sketch:
             return self.entities[index]
         return None
 
+    def toggle_anchor(self, entity_idx, point_idx):
+        """
+        Toggles the anchor state of a point on an entity.
+        Anchored points are fixed in space during constraint solving.
+        """
+        if not (0 <= entity_idx < len(self.entities)):
+            return
+        
+        entity = self.entities[entity_idx]
+        
+        if hasattr(entity, 'anchored'):
+            if isinstance(entity.anchored, list):
+                if 0 <= point_idx < len(entity.anchored):
+                    entity.anchored[point_idx] = not entity.anchored[point_idx]
+            else:
+                # Point entity has single anchored bool
+                entity.anchored = not entity.anchored
+
+    # --- Compatibility Alias ---
+    
+    @property
+    def walls(self):
+        """Alias for entities - maintains compatibility with CONSTRAINT_DEFS."""
+        return self.entities
+
     # --- Material API ---
     
     def add_material(self, material):
@@ -146,6 +171,63 @@ class Sketch:
         if 0 <= index < len(self.constraints):
             self.constraints.pop(index)
             self.solve()
+
+    def add_constraint_object(self, constraint):
+        """
+        Adds a constraint object, handling conflicts with existing angle constraints.
+        For angle-type constraints on the same entities, new replaces old.
+        """
+        angle_types = ['PARALLEL', 'PERPENDICULAR', 'HORIZONTAL', 'VERTICAL']
+        
+        if hasattr(constraint, 'type') and constraint.type in angle_types:
+            new_indices = set(constraint.indices) if isinstance(constraint.indices, (list, tuple)) else {constraint.indices}
+            
+            keep = []
+            for c in self.constraints:
+                if getattr(c, 'type', '') in angle_types:
+                    old_indices = set(c.indices) if isinstance(c.indices, (list, tuple)) else {c.indices}
+                    if old_indices == new_indices:
+                        continue  # Remove conflicting constraint
+                keep.append(c)
+            self.constraints = keep
+        
+        self.constraints.append(constraint)
+        self.solve(iterations=500)
+
+    def attempt_apply_constraint(self, ctype, entity_idxs, point_idxs):
+        """
+        Attempts to create and apply a constraint based on selection.
+        
+        Args:
+            ctype: Constraint type string (e.g., 'LENGTH', 'PARALLEL')
+            entity_idxs: List of entity indices
+            point_idxs: List of (entity_idx, point_idx) tuples
+        
+        Returns:
+            True if constraint was successfully applied, False otherwise
+        """
+        from core.definitions import CONSTRAINT_DEFS
+        
+        rules = CONSTRAINT_DEFS.get(ctype, [])
+        
+        for rule in rules:
+            if len(entity_idxs) == rule['w'] and len(point_idxs) == rule['p']:
+                valid = True
+                
+                # Type check if required
+                if rule.get('t'):
+                    for idx in entity_idxs:
+                        if idx < len(self.entities) and not isinstance(self.entities[idx], rule['t']):
+                            valid = False
+                            break
+                
+                if valid:
+                    # Factory function expects (sketch, walls, pts)
+                    c_obj = rule['f'](self, entity_idxs, point_idxs)
+                    self.add_constraint_object(c_obj)
+                    return True
+        
+        return False
 
     def set_driver(self, constraint_index, driver_data):
         if 0 <= constraint_index < len(self.constraints):

@@ -7,13 +7,27 @@ class Compiler:
     The Bridge between the Sketch (CAD) and the Simulation (Physics).
     Reads geometry and materials, writes to static particle arrays.
     """
-    def __init__(self, sim):
-        self.sim = sim
+    def __init__(self, sketch, simulation):
+        """
+        Initialize the Compiler with references to both domains.
+        
+        Args:
+            sketch: The Sketch instance (CAD domain - geometry, materials)
+            simulation: The Simulation instance (Physics domain - particle arrays)
+        """
+        self.sketch = sketch
+        self.sim = simulation
 
-    def rebuild(self, sketch):
+    def rebuild(self, sketch=None):
         """
         Rebuilds the static atoms in the simulation based on the provided sketch.
+        
+        Args:
+            sketch: Optional Sketch to compile. If None, uses self.sketch.
         """
+        if sketch is None:
+            sketch = self.sketch
+            
         # 1. Compact Arrays: Keep dynamic particles, discard old static ones
         is_dynamic = self.sim.is_static[:self.sim.count] == 0
         dyn_indices = np.where(is_dynamic)[0]

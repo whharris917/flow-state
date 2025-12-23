@@ -153,15 +153,11 @@ class AppController:
         self.sound_manager.play_sound('click')
 
     def apply_rotation_from_dialog(self, dialog):
-        vals = dialog.get_values()
-        targets = []
-        if self.session.selected_walls: targets = list(self.session.selected_walls)
-        elif self.ctx_vars['wall'] != -1: targets = [self.ctx_vars['wall']]
-            
-        for idx in targets:
-            self.sim.set_wall_rotation(idx, vals)
-        self.session.set_status("Rotation Updated")
-        self.sound_manager.play_sound('click')
+        # Legacy rotation via entity.anim is removed.
+        # Animation should be done via constraint drivers instead.
+        # This method is kept for compatibility but does nothing.
+        self.session.set_status("Use constraint drivers for animation (right-click constraint > Animate)")
+        self.sound_manager.play_sound('error')
 
     def apply_animation_from_dialog(self, dialog):
         if self.ctx_vars['const'] != -1:
@@ -183,15 +179,9 @@ class AppController:
         self.prop_dialog = MaterialDialog(mx, my, self.sketch, current_mat)
 
     def open_rotation_dialog(self):
-        target_idx = -1
-        if self.session.selected_walls: target_idx = list(self.session.selected_walls)[0]
-        elif self.ctx_vars['wall'] != -1: target_idx = self.ctx_vars['wall']
-        if target_idx == -1:
-            self.session.set_status("Select walls to rotate")
-            return
-        mx, my = pygame.mouse.get_pos()
-        anim = getattr(self.sim.walls[target_idx], 'anim', None)
-        self.rot_dialog = RotationDialog(mx, my, anim)
+        # Legacy rotation dialog - show message about using constraint drivers
+        self.session.set_status("Use constraint drivers for animation (right-click constraint > Animate)")
+        self.sound_manager.play_sound('error')
         
     def open_animation_dialog(self):
         if self.ctx_vars['const'] != -1:
@@ -204,7 +194,7 @@ class AppController:
     def get_context_options(self, target_type, idx1, idx2=None):
         options = []
         if target_type == 'wall':
-            options = ["Properties", "Rotate", "Atomize", "Delete"]
+            options = ["Properties", "Atomize", "Delete"]
         elif target_type == 'point':
             w_idx, pt_idx = idx1, idx2
             walls = self.sim.walls
@@ -217,12 +207,11 @@ class AppController:
                 options.append("Un-Anchor" if is_anchored else "Anchor")
                 options.append("Set Length...") 
         elif target_type == 'constraint':
-            options = ["Delete Constraint", "Animate...", "Set Angle..."]
+            options = ["Delete Constraint", "Animate..."]
         return options
 
     def handle_context_menu_action(self, action):
         if action == "Properties": self.open_material_dialog()
-        elif action == "Rotate": self.open_rotation_dialog()
         elif action == "Animate...": self.open_animation_dialog()
         elif action == "Delete": self.action_delete_selection()
         elif action == "Delete Constraint": self.action_delete_constraint()
