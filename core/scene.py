@@ -5,6 +5,7 @@ The Scene is the central "document" in Flow State. It contains:
 - Sketch: CAD geometry, constraints, materials, solver
 - Simulation: Particle physics (atoms only, no geometry knowledge)
 - Compiler: The one-way bridge from Sketch → Simulation
+- GeometryManager: Import/export operations for CAD data
 
 File formats:
 - .mdl (Model): Sketch only - reusable CAD components
@@ -15,6 +16,7 @@ import json
 import os
 
 from model.sketch import Sketch
+from model.simulation_geometry import GeometryManager
 from engine.simulation import Simulation
 from engine.compiler import Compiler
 
@@ -27,6 +29,7 @@ class Scene:
         - Sketch (CAD domain)
         - Simulation (Physics domain)
         - Compiler (bridge between them)
+        - GeometryManager (CAD import/export operations)
     """
     
     def __init__(self, skip_warmup=False):
@@ -39,6 +42,9 @@ class Scene:
         # CAD Domain
         self.sketch = Sketch()
         
+        # CAD Import/Export Helper (operates on Sketch, NOT physics)
+        self.geo = GeometryManager(self.sketch)
+        
         # Bridge (create first so we can inject into Simulation)
         # We'll set the simulation reference after creating it
         self.compiler = Compiler(self.sketch, None)
@@ -50,8 +56,12 @@ class Scene:
             compiler=self.compiler
         )
         
-        # Now update compiler's simulation reference
+        # Complete circular references
         self.compiler.sim = self.simulation
+        
+        # Backward compatibility: Simulation.geo references Scene's geo
+        # This allows existing code using sim.geo to continue working
+        self.simulation.geo = self.geo
     
     # -------------------------------------------------------------------------
     # Compiler Interface

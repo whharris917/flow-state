@@ -23,7 +23,6 @@ import copy
 import core.config as config
 
 from engine.physics_core import integrate_n_steps, build_neighbor_list, check_displacement, apply_thermostat, spatial_sort
-from model.simulation_geometry import GeometryManager
 from model.sketch import Sketch
 
 
@@ -74,9 +73,10 @@ class Simulation:
             from engine.compiler import Compiler
             self.compiler = Compiler(self.sketch, self)
         
-        # GeometryManager for import/export operations
-        # TODO: Phase 6.5b - Consider moving to Scene
-        self.geo = GeometryManager(self)
+        # GeometryManager reference - injected by Scene
+        # Scene owns the GeometryManager (CAD operations, not physics)
+        # This attribute is set by Scene.__init__() for backward compatibility
+        self.geo = None
         
         # --- Neighbor List & Optimization ---
         self.max_pairs = self.capacity * 100

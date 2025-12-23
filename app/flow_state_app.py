@@ -88,12 +88,26 @@ class FlowStateApp:
         else:
             self.change_tool(config.TOOL_BRUSH) 
 
+    # =========================================================================
+    # Property Aliases (Backward Compatibility)
+    # =========================================================================
+    
     @property
-    def walls(self): return self.sim.walls
+    def walls(self):
+        return self.sim.walls
+    
     @property
-    def constraints(self): return self.sim.constraints
+    def constraints(self):
+        return self.sim.constraints
+    
     @property
-    def geo(self): return self.sim.geo
+    def geo(self):
+        # Phase 6.5b: GeometryManager is now owned by Scene
+        return self.scene.geo
+
+    # =========================================================================
+    # Initialization
+    # =========================================================================
 
     def init_layout(self, w, h):
         self.layout = {
@@ -128,6 +142,10 @@ class FlowStateApp:
         self.ui = UIManager(self.layout, self.session.input_world)
         self.input_handler = InputHandler(self)
         self.ui.menu.resize(w)
+
+    # =========================================================================
+    # Main Loop
+    # =========================================================================
 
     def run(self):
         while self.running:
@@ -179,6 +197,10 @@ class FlowStateApp:
         self.actions.draw_overlays(self.screen, self.font) # Delegate overlay drawing
         pygame.display.flip()
 
+    # =========================================================================
+    # Tool Management
+    # =========================================================================
+
     def change_tool(self, tool_id):
         self.session.change_tool(tool_id) 
         if hasattr(self, 'input_handler'):
@@ -186,12 +208,20 @@ class FlowStateApp:
                 btn.active = (tid == tool_id)
             self.sound_manager.play_sound('tool_select')
 
+    # =========================================================================
+    # Mode/State Management
+    # =========================================================================
+
     def exit_editor_mode(self, backup_state=None):
         # Phase 4: Use scene.new() for clean reset
         self.scene.new()
         self.session.set_status("Reset/Discarded")
         self.sound_manager.play_sound('click')
     
+    # =========================================================================
+    # File I/O Dialogs
+    # =========================================================================
+
     def save_geo_dialog(self):
         if self.root_tk:
             f = filedialog.asksaveasfilename(defaultextension=".geom", filetypes=[("Geometry Files", "*.geom")])
@@ -217,7 +247,8 @@ class FlowStateApp:
                 if f:
                     data, _ = file_io.load_geometry_file(f)
                     if data: 
-                        if hasattr(self.sim.geo, 'place_geometry'):
+                        # Phase 6.5b: Use self.geo (now from scene.geo)
+                        if self.geo and hasattr(self.geo, 'place_geometry'):
                             self.session.placing_geo_data = data
                             self.session.set_status("Place Model")
         elif self.root_tk:
