@@ -1,3 +1,20 @@
+"""
+Simulation - The Physics Domain
+
+This class is responsible for PARTICLE PHYSICS ONLY:
+- Particle arrays (position, velocity, force)
+- Physics parameters (gravity, dt, damping)
+- Neighbor lists and spatial optimization
+- Force calculation and integration
+
+It does NOT know about:
+- Lines, Circles, Points (geometry types)
+- Constraints (CAD relationships)
+- Materials (physical properties of geometry)
+
+Those belong to the Sketch (CAD domain). The Compiler bridges them.
+"""
+
 import numpy as np
 import random
 import math
@@ -6,10 +23,9 @@ import copy
 import core.config as config
 
 from engine.physics_core import integrate_n_steps, build_neighbor_list, check_displacement, apply_thermostat, spatial_sort
-from model.geometry import Line, Point, Circle
 from model.simulation_geometry import GeometryManager
 from model.sketch import Sketch
-from engine.compiler import Compiler
+
 
 class Simulation:
     def __init__(self, skip_warmup=False, sketch=None, compiler=None):
@@ -54,8 +70,12 @@ class Simulation:
         if compiler is not None:
             self.compiler = compiler
         else:
+            # Deferred import to avoid circular dependency
+            from engine.compiler import Compiler
             self.compiler = Compiler(self.sketch, self)
         
+        # GeometryManager for import/export operations
+        # TODO: Phase 6.5b - Consider moving to Scene
         self.geo = GeometryManager(self)
         
         # --- Neighbor List & Optimization ---
@@ -79,130 +99,238 @@ class Simulation:
         self._update_derived_params()
         
         # --- Metrics & History ---
-        self.total_steps = 0; self.sps = 0.0
-        self.steps_accumulator = 0; self.last_sps_update = time.time()
-        self.undo_stack = []; self.redo_stack = []
+        self.total_steps = 0
+        self.sps = 0.0
+        self.steps_accumulator = 0
+        self.last_sps_update = time.time()
+        self.undo_stack = []
+        self.redo_stack = []
         
         if not skip_warmup:
             self._warmup_compiler()
         else:
             print("Skipping Numba warmup (Model Builder Mode)")
 
-    # --- Properties ---
+    # =========================================================================
+    # Properties (Backward Compatibility Aliases)
+    # =========================================================================
+    
     @property
-    def walls(self): return self.sketch.entities
+    def walls(self):
+        """Alias for sketch.entities - backward compatibility."""
+        return self.sketch.entities
+    
     @walls.setter
-    def walls(self, value): self.sketch.entities = value
+    def walls(self, value):
+        self.sketch.entities = value
 
     @property
-    def constraints(self): return self.sketch.constraints
+    def constraints(self):
+        """Alias for sketch.constraints - backward compatibility."""
+        return self.sketch.constraints
+    
     @constraints.setter
-    def constraints(self, value): self.sketch.constraints = value
+    def constraints(self, value):
+        self.sketch.constraints = value
+
+    # =========================================================================
+    # Physics Parameter Management
+    # =========================================================================
 
     def _update_derived_params(self):
+        """Update derived physics parameters from base values."""
         self.r_list = self.r_cut_base + self.skin_distance
         self.r_list2 = self.r_list**2
         self.r_skin_sq_limit = (0.5 * self.skin_distance)**2
         self.cell_size = self.r_list
 
     def _warmup_compiler(self):
+        """Pre-compile Numba functions with dummy data."""
         print("Warming up Numba compiler...")
-        self.pos_x[0] = 10.0; self.pos_y[0] = 10.0
-        self.pos_x[1] = 12.0; self.pos_y[1] = 10.0
+        self.pos_x[0] = 10.0
+        self.pos_y[0] = 10.0
+        self.pos_x[1] = 12.0
+        self.pos_y[1] = 10.0
         self.count = 2
-        self.atom_sigma[:2] = 1.0; self.atom_eps_sqrt[:2] = 1.0
-        build_neighbor_list(self.pos_x[:2], self.pos_y[:2], self.r_list2, self.cell_size, self.world_size, self.pair_i, self.pair_j)
-        f32_vals = [np.float32(x) for x in [config.ATOM_MASS, self.dt, self.gravity, self.r_cut_base**2, self.r_skin_sq_limit, self.world_size, self.damping]]
-        integrate_n_steps(1, self.pos_x[:2], self.pos_y[:2], self.vel_x[:2], self.vel_y[:2], self.force_x[:2], self.force_y[:2], self.last_x[:2], self.last_y[:2], self.is_static[:2], self.kinematic_props[:2], self.atom_sigma[:2], self.atom_eps_sqrt[:2], f32_vals[0], self.pair_i, self.pair_j, self.pair_count, f32_vals[1], f32_vals[2], f32_vals[3], f32_vals[4], f32_vals[5], self.use_boundaries, f32_vals[6])
-        spatial_sort(self.pos_x[:2], self.pos_y[:2], self.vel_x[:2], self.vel_y[:2], self.force_x[:2], self.force_y[:2], self.is_static[:2], self.kinematic_props[:2], self.atom_sigma[:2], self.atom_eps_sqrt[:2], self.world_size, self.cell_size)
+        self.atom_sigma[:2] = 1.0
+        self.atom_eps_sqrt[:2] = 1.0
+        
+        build_neighbor_list(
+            self.pos_x[:2], self.pos_y[:2], self.r_list2, 
+            self.cell_size, self.world_size, self.pair_i, self.pair_j
+        )
+        
+        f32_vals = [
+            np.float32(x) for x in [
+                config.ATOM_MASS, self.dt, self.gravity, 
+                self.r_cut_base**2, self.r_skin_sq_limit, 
+                self.world_size, self.damping
+            ]
+        ]
+        
+        integrate_n_steps(
+            1, self.pos_x[:2], self.pos_y[:2], 
+            self.vel_x[:2], self.vel_y[:2],
+            self.force_x[:2], self.force_y[:2], 
+            self.last_x[:2], self.last_y[:2],
+            self.is_static[:2], self.kinematic_props[:2], 
+            self.atom_sigma[:2], self.atom_eps_sqrt[:2],
+            f32_vals[0], self.pair_i, self.pair_j, self.pair_count,
+            f32_vals[1], f32_vals[2], f32_vals[3], f32_vals[4], 
+            f32_vals[5], self.use_boundaries, f32_vals[6]
+        )
+        
+        spatial_sort(
+            self.pos_x[:2], self.pos_y[:2], self.vel_x[:2], self.vel_y[:2],
+            self.force_x[:2], self.force_y[:2], self.is_static[:2],
+            self.kinematic_props[:2], self.atom_sigma[:2], self.atom_eps_sqrt[:2],
+            self.world_size, self.cell_size
+        )
+        
         self.clear_particles()
         print("Warmup complete.")
 
+    # =========================================================================
+    # Undo/Redo System
+    # =========================================================================
+
     def snapshot(self):
+        """Save current state for undo."""
         state = {
             'count': self.count,
-            'pos_x': np.copy(self.pos_x[:self.count]), 'pos_y': np.copy(self.pos_y[:self.count]),
-            'vel_x': np.copy(self.vel_x[:self.count]), 'vel_y': np.copy(self.vel_y[:self.count]),
-            'is_static': np.copy(self.is_static[:self.count]), 'kinematic_props': np.copy(self.kinematic_props[:self.count]),
-            'atom_sigma': np.copy(self.atom_sigma[:self.count]), 'atom_eps_sqrt': np.copy(self.atom_eps_sqrt[:self.count]),
+            'pos_x': np.copy(self.pos_x[:self.count]),
+            'pos_y': np.copy(self.pos_y[:self.count]),
+            'vel_x': np.copy(self.vel_x[:self.count]),
+            'vel_y': np.copy(self.vel_y[:self.count]),
+            'is_static': np.copy(self.is_static[:self.count]),
+            'kinematic_props': np.copy(self.kinematic_props[:self.count]),
+            'atom_sigma': np.copy(self.atom_sigma[:self.count]),
+            'atom_eps_sqrt': np.copy(self.atom_eps_sqrt[:self.count]),
             'sketch_data': self.sketch.to_dict(),
             'world_size': self.world_size
         }
         self.undo_stack.append(state)
-        if len(self.undo_stack) > 50: self.undo_stack.pop(0)
+        if len(self.undo_stack) > 50:
+            self.undo_stack.pop(0)
         self.redo_stack.clear()
 
     def restore_state(self, state):
+        """Restore simulation from a saved state."""
         self.count = state['count']
         if self.count > self.capacity:
-            while self.capacity < self.count: self.capacity *= 2
+            while self.capacity < self.count:
+                self.capacity *= 2
             self._resize_arrays()
-        self.pos_x[:self.count] = state['pos_x']; self.pos_y[:self.count] = state['pos_y']
-        self.vel_x[:self.count] = state['vel_x']; self.vel_y[:self.count] = state['vel_y']
+        
+        self.pos_x[:self.count] = state['pos_x']
+        self.pos_y[:self.count] = state['pos_y']
+        self.vel_x[:self.count] = state['vel_x']
+        self.vel_y[:self.count] = state['vel_y']
         self.is_static[:self.count] = state['is_static']
-        if 'kinematic_props' in state: self.kinematic_props[:self.count] = state['kinematic_props']
-        else: self.kinematic_props[:self.count] = 0.0
-        self.atom_sigma[:self.count] = state['atom_sigma']; self.atom_eps_sqrt[:self.count] = state['atom_eps_sqrt']
+        
+        if 'kinematic_props' in state:
+            self.kinematic_props[:self.count] = state['kinematic_props']
+        else:
+            self.kinematic_props[:self.count] = 0.0
+        
+        self.atom_sigma[:self.count] = state['atom_sigma']
+        self.atom_eps_sqrt[:self.count] = state['atom_eps_sqrt']
         
         if 'sketch_data' in state:
             self.sketch.restore(state['sketch_data'])
         else:
+            # Legacy format support
             self.sketch.entities = copy.deepcopy(state.get('walls', []))
             self.sketch.constraints = copy.deepcopy(state.get('constraints', []))
             
         self.world_size = state['world_size']
-        self.rebuild_next = True; self.pair_count = 0 
+        self.rebuild_next = True
+        self.pair_count = 0
 
     def undo(self):
-        if not self.undo_stack: return
+        """Undo last action."""
+        if not self.undo_stack:
+            return
         self._push_redo()
         prev_state = self.undo_stack.pop()
         self.restore_state(prev_state)
 
     def redo(self):
-        if not self.redo_stack: return
+        """Redo last undone action."""
+        if not self.redo_stack:
+            return
         self._push_undo_internal()
         next_state = self.redo_stack.pop()
         self.restore_state(next_state)
 
-    def _push_redo(self): self._save_current_to_stack(self.redo_stack)
-    def _push_undo_internal(self): self._save_current_to_stack(self.undo_stack)
+    def _push_redo(self):
+        self._save_current_to_stack(self.redo_stack)
+    
+    def _push_undo_internal(self):
+        self._save_current_to_stack(self.undo_stack)
         
     def _save_current_to_stack(self, stack):
         current_state = {
-            'count': self.count, 'pos_x': np.copy(self.pos_x[:self.count]), 'pos_y': np.copy(self.pos_y[:self.count]), 
-            'vel_x': np.copy(self.vel_x[:self.count]), 'vel_y': np.copy(self.vel_y[:self.count]),
-            'is_static': np.copy(self.is_static[:self.count]), 'kinematic_props': np.copy(self.kinematic_props[:self.count]), 
-            'atom_sigma': np.copy(self.atom_sigma[:self.count]), 'atom_eps_sqrt': np.copy(self.atom_eps_sqrt[:self.count]),
-            'sketch_data': self.sketch.to_dict(), 
+            'count': self.count,
+            'pos_x': np.copy(self.pos_x[:self.count]),
+            'pos_y': np.copy(self.pos_y[:self.count]),
+            'vel_x': np.copy(self.vel_x[:self.count]),
+            'vel_y': np.copy(self.vel_y[:self.count]),
+            'is_static': np.copy(self.is_static[:self.count]),
+            'kinematic_props': np.copy(self.kinematic_props[:self.count]),
+            'atom_sigma': np.copy(self.atom_sigma[:self.count]),
+            'atom_eps_sqrt': np.copy(self.atom_eps_sqrt[:self.count]),
+            'sketch_data': self.sketch.to_dict(),
             'world_size': self.world_size
         }
         stack.append(current_state)
 
+    # =========================================================================
+    # World Management
+    # =========================================================================
+
     def resize_world(self, new_size):
+        """Resize the simulation world."""
         self.snapshot()
-        if new_size < 100.0: new_size = 100.0
+        if new_size < 100.0:
+            new_size = 100.0
         self.world_size = new_size
         self.clear_particles(snapshot=False)
 
     def clear_particles(self, snapshot=True):
-        if snapshot: self.snapshot()
-        self.count = 0; self.pair_count = 0; 
-        self.pos_x.fill(0); self.pos_y.fill(0); self.vel_x.fill(0); self.vel_y.fill(0)
-        self.is_static.fill(0); self.kinematic_props.fill(0); self.rebuild_next = True
+        """Remove all particles (keep geometry)."""
+        if snapshot:
+            self.snapshot()
+        self.count = 0
+        self.pair_count = 0
+        self.pos_x.fill(0)
+        self.pos_y.fill(0)
+        self.vel_x.fill(0)
+        self.vel_y.fill(0)
+        self.is_static.fill(0)
+        self.kinematic_props.fill(0)
+        self.rebuild_next = True
 
     def reset_simulation(self):
+        """Reset everything to defaults."""
         self.snapshot()
-        self.world_size = config.DEFAULT_WORLD_SIZE; self.dt = config.DEFAULT_DT
-        self.gravity = config.DEFAULT_GRAVITY; self.target_temp = 0.5
-        self.damping = config.DEFAULT_DAMPING; self.use_boundaries = False
-        self.sigma = config.ATOM_SIGMA; self.epsilon = config.ATOM_EPSILON
+        self.world_size = config.DEFAULT_WORLD_SIZE
+        self.dt = config.DEFAULT_DT
+        self.gravity = config.DEFAULT_GRAVITY
+        self.target_temp = 0.5
+        self.damping = config.DEFAULT_DAMPING
+        self.use_boundaries = False
+        self.sigma = config.ATOM_SIGMA
+        self.epsilon = config.ATOM_EPSILON
         self.skin_distance = config.DEFAULT_SKIN_DISTANCE
         self._update_derived_params()
         self.clear_particles(snapshot=False)
         self.sketch.clear()
 
-    # --- Serialization ---
+    # =========================================================================
+    # Serialization
+    # =========================================================================
+    
     def to_dict(self):
         """Serialize physics state for Scene."""
         return {
@@ -256,157 +384,332 @@ class Simulation:
         """Reset to defaults (alias for Scene compatibility)."""
         self.reset_simulation()
 
-    # --- Geometry / Sketch Wrappers ---
+    # =========================================================================
+    # Geometry Wrappers (Delegate to Sketch)
+    # 
+    # These methods exist for backward compatibility. They delegate all
+    # geometry operations to the Sketch (CAD domain). Simulation does NOT
+    # import or know about geometry types (Line, Circle, Point).
+    # =========================================================================
+    
     def add_wall(self, start_pos, end_pos, is_ref=False, material_id="Default"):
-        if is_ref: material_id = "Ghost"
-        idx = self.sketch.add_line(start_pos, end_pos, is_ref, material_id=material_id)
+        """
+        Add a line entity. Delegates to Sketch.
+        
+        Note: 'wall' is legacy naming. In the CAD domain, this is a Line entity.
+        """
+        if is_ref:
+            material_id = "Ghost"
+        self.sketch.add_line(start_pos, end_pos, is_ref, material_id=material_id)
         
     def add_circle(self, center, radius, material_id="Default"):
-        idx = self.sketch.add_circle(center, radius, material_id=material_id)
+        """Add a circle entity. Delegates to Sketch."""
+        self.sketch.add_circle(center, radius, material_id=material_id)
 
     def remove_wall(self, index):
+        """Remove an entity. Delegates to Sketch."""
         self.snapshot()
         self.sketch.remove_entity(index)
         self.rebuild_static_atoms()
 
     def toggle_anchor(self, wall_idx, pt_idx):
-        """Toggles anchor state. Delegates to Sketch."""
+        """Toggle anchor state of a point. Delegates to Sketch."""
         self.snapshot()
         self.sketch.toggle_anchor(wall_idx, pt_idx)
         self.rebuild_static_atoms()
 
     def update_wall(self, index, start_pos, end_pos):
+        """
+        Update an entity's position. Delegates to Sketch.
+        
+        This method does NOT check geometry types - Sketch.update_entity()
+        handles polymorphism via hasattr() checks.
+        
+        Args:
+            index: Entity index
+            start_pos: New start position (also used as center for circles)
+            end_pos: New end position (None for circles)
+        """
         if 0 <= index < len(self.walls):
-            w = self.walls[index]
-            if isinstance(w, Line):
-                self.sketch.update_entity(index, start=start_pos, end=end_pos)
-            elif isinstance(w, Circle):
-                self.sketch.update_entity(index, center=start_pos)
+            # Build kwargs based on what's provided
+            # Sketch.update_entity() will apply only what's relevant via hasattr()
+            kwargs = {}
+            if start_pos is not None:
+                kwargs['start'] = start_pos
+                kwargs['center'] = start_pos  # For circles
+            if end_pos is not None:
+                kwargs['end'] = end_pos
+            
+            self.sketch.update_entity(index, **kwargs)
             self.rebuild_static_atoms()
 
     def update_wall_props(self, index, props):
+        """Update entity properties. Delegates to Sketch."""
         self.snapshot()
         self.sketch.update_entity(index, **props)
         self.rebuild_static_atoms()
 
-    # --- Constraints ---
+    # =========================================================================
+    # Constraint Wrappers (Delegate to Sketch)
+    # =========================================================================
+
     def update_constraint_drivers(self, current_time):
+        """Update animated constraints. Delegates to Sketch."""
         self.sketch.update_drivers(current_time)
 
     def attempt_apply_constraint(self, ctype, wall_idxs, pt_idxs):
-        """Attempts to apply a constraint. Delegates to Sketch."""
+        """Attempt to apply a constraint. Delegates to Sketch."""
         result = self.sketch.attempt_apply_constraint(ctype, wall_idxs, pt_idxs)
         if result:
             self.rebuild_static_atoms()
         return result
 
     def apply_constraints(self, iterations=20):
+        """Solve constraints. Delegates to Sketch."""
         if self.constraints:
             self.sketch.solve(iterations)
             self.rebuild_static_atoms()
 
     def add_constraint_object(self, c_obj):
-        """Adds a constraint object. Delegates to Sketch."""
+        """Add a constraint object. Delegates to Sketch."""
         self.snapshot()
         self.sketch.add_constraint_object(c_obj)
         self.rebuild_static_atoms()
 
-    # --- Atomizer Logic ---
+    # =========================================================================
+    # Compiler Interface
+    # =========================================================================
+
     def rebuild_static_atoms(self):
+        """Recompile geometry to static atoms. Delegates to Compiler."""
         self.compiler.rebuild(self.sketch)
 
     def _compact_arrays(self, keep_indices):
+        """Compact particle arrays to remove gaps."""
         indices = np.array(keep_indices, dtype=np.int32)
         new_count = len(indices)
-        self.pos_x[:new_count] = self.pos_x[indices]; self.pos_y[:new_count] = self.pos_y[indices]
-        self.vel_x[:new_count] = self.vel_x[indices]; self.vel_y[:new_count] = self.vel_y[indices]
+        
+        self.pos_x[:new_count] = self.pos_x[indices]
+        self.pos_y[:new_count] = self.pos_y[indices]
+        self.vel_x[:new_count] = self.vel_x[indices]
+        self.vel_y[:new_count] = self.vel_y[indices]
         self.is_static[:new_count] = self.is_static[indices]
         self.kinematic_props[:new_count] = self.kinematic_props[indices]
         self.atom_sigma[:new_count] = self.atom_sigma[indices]
         self.atom_eps_sqrt[:new_count] = self.atom_eps_sqrt[indices]
+        
         self.count = new_count
 
+    # =========================================================================
+    # Physics Step (PURE PHYSICS - No Geometry Knowledge)
+    # =========================================================================
+
     def step(self, steps_to_run):
-        if self.paused: return
+        """
+        Run physics simulation steps.
+        
+        This method is PURE PHYSICS:
+        - Updates particle positions and velocities
+        - Calculates forces
+        - Handles collisions and boundaries
+        
+        It does NOT:
+        - Update geometry (that's Sketch's job)
+        - Update constraints (that's Sketch's job)
+        - Animate anything (that's done via constraint drivers before step())
+        """
+        if self.paused:
+            return
+        
+        # Update dynamic particle properties from UI sliders
         is_dyn = self.is_static[:self.count] == 0
         if np.any(is_dyn):
             self.atom_sigma[:self.count][is_dyn] = self.sigma
             self.atom_eps_sqrt[:self.count][is_dyn] = math.sqrt(self.epsilon)
+        
         self._update_derived_params()
 
+        # Periodic spatial sort for cache efficiency
         if self.total_steps % 100 == 0 and self.count > 0:
-            spatial_sort(self.pos_x[:self.count], self.pos_y[:self.count], self.vel_x[:self.count], self.vel_y[:self.count], self.force_x[:self.count], self.force_y[:self.count], self.is_static[:self.count], self.kinematic_props[:self.count], self.atom_sigma[:self.count], self.atom_eps_sqrt[:self.count], self.world_size, self.cell_size)
+            spatial_sort(
+                self.pos_x[:self.count], self.pos_y[:self.count],
+                self.vel_x[:self.count], self.vel_y[:self.count],
+                self.force_x[:self.count], self.force_y[:self.count],
+                self.is_static[:self.count], self.kinematic_props[:self.count],
+                self.atom_sigma[:self.count], self.atom_eps_sqrt[:self.count],
+                self.world_size, self.cell_size
+            )
             self.rebuild_next = True
+        
+        # Check if neighbor list needs rebuilding
         should_rebuild = False
-        if self.pair_count == 0 or self.rebuild_next: should_rebuild = True
-        elif self.count > 0: should_rebuild = check_displacement(self.pos_x[:self.count], self.pos_y[:self.count], self.last_x[:self.count], self.last_y[:self.count], self.r_skin_sq_limit)
+        if self.pair_count == 0 or self.rebuild_next:
+            should_rebuild = True
+        elif self.count > 0:
+            should_rebuild = check_displacement(
+                self.pos_x[:self.count], self.pos_y[:self.count],
+                self.last_x[:self.count], self.last_y[:self.count],
+                self.r_skin_sq_limit
+            )
+        
+        # Rebuild neighbor list if needed
         if should_rebuild and self.count > 0:
             while True:
-                count = build_neighbor_list(self.pos_x[:self.count], self.pos_y[:self.count], self.r_list2, self.cell_size, self.world_size, self.pair_i, self.pair_j)
-                if count >= self.max_pairs: self.max_pairs *= 2; self.pair_i = np.zeros(self.max_pairs, dtype=np.int32); self.pair_j = np.zeros(self.max_pairs, dtype=np.int32); continue 
-                self.pair_count = count; break 
-            self.last_x[:self.count] = self.pos_x[:self.count]; self.last_y[:self.count] = self.pos_y[:self.count]; self.rebuild_next = False
+                count = build_neighbor_list(
+                    self.pos_x[:self.count], self.pos_y[:self.count],
+                    self.r_list2, self.cell_size, self.world_size,
+                    self.pair_i, self.pair_j
+                )
+                if count >= self.max_pairs:
+                    self.max_pairs *= 2
+                    self.pair_i = np.zeros(self.max_pairs, dtype=np.int32)
+                    self.pair_j = np.zeros(self.max_pairs, dtype=np.int32)
+                    continue
+                self.pair_count = count
+                break
+            
+            self.last_x[:self.count] = self.pos_x[:self.count]
+            self.last_y[:self.count] = self.pos_y[:self.count]
+            self.rebuild_next = False
+        
+        # Run integration
         if self.count > 0:
-            steps_done = integrate_n_steps(steps_to_run, self.pos_x[:self.count], self.pos_y[:self.count], self.vel_x[:self.count], self.vel_y[:self.count], self.force_x[:self.count], self.force_y[:self.count], self.last_x[:self.count], self.last_y[:self.count], self.is_static[:self.count], self.kinematic_props[:self.count], self.atom_sigma[:self.count], self.atom_eps_sqrt[:self.count], np.float32(config.ATOM_MASS), self.pair_i, self.pair_j, self.pair_count, np.float32(self.dt), np.float32(self.gravity), np.float32(self.r_cut_base**2), np.float32(self.r_skin_sq_limit), np.float32(self.world_size), self.use_boundaries, np.float32(self.damping))
+            steps_done = integrate_n_steps(
+                steps_to_run,
+                self.pos_x[:self.count], self.pos_y[:self.count],
+                self.vel_x[:self.count], self.vel_y[:self.count],
+                self.force_x[:self.count], self.force_y[:self.count],
+                self.last_x[:self.count], self.last_y[:self.count],
+                self.is_static[:self.count], self.kinematic_props[:self.count],
+                self.atom_sigma[:self.count], self.atom_eps_sqrt[:self.count],
+                np.float32(config.ATOM_MASS),
+                self.pair_i, self.pair_j, self.pair_count,
+                np.float32(self.dt), np.float32(self.gravity),
+                np.float32(self.r_cut_base**2), np.float32(self.r_skin_sq_limit),
+                np.float32(self.world_size), self.use_boundaries,
+                np.float32(self.damping)
+            )
+            
             self.total_steps += steps_done
             self.steps_accumulator += steps_done
-            now = time.time(); elapsed = now - self.last_sps_update
-            if elapsed >= 0.5: self.sps = self.steps_accumulator / elapsed; self.steps_accumulator = 0; self.last_sps_update = now
-            if steps_done < steps_to_run: self.rebuild_next = True
-            if self.use_thermostat: apply_thermostat(self.vel_x[:self.count], self.vel_y[:self.count], np.float32(config.ATOM_MASS), self.is_static[:self.count], np.float32(self.target_temp), np.float32(0.1))
-            active_x = self.pos_x[:self.count]; active_y = self.pos_y[:self.count]; w = self.world_size
+            
+            # Update SPS metric
+            now = time.time()
+            elapsed = now - self.last_sps_update
+            if elapsed >= 0.5:
+                self.sps = self.steps_accumulator / elapsed
+                self.steps_accumulator = 0
+                self.last_sps_update = now
+            
+            if steps_done < steps_to_run:
+                self.rebuild_next = True
+            
+            # Apply thermostat if enabled
+            if self.use_thermostat:
+                apply_thermostat(
+                    self.vel_x[:self.count], self.vel_y[:self.count],
+                    np.float32(config.ATOM_MASS), self.is_static[:self.count],
+                    np.float32(self.target_temp), np.float32(0.1)
+                )
+            
+            # Remove particles that escaped the world
+            active_x = self.pos_x[:self.count]
+            active_y = self.pos_y[:self.count]
+            w = self.world_size
             is_inside = (active_x >= 0) & (active_x <= w) & (active_y >= 0) & (active_y <= w)
+            
             if not np.all(is_inside):
                 keep_indices = np.where(is_inside)[0]
                 self._compact_arrays(keep_indices)
                 self.rebuild_next = True
 
+    # =========================================================================
+    # Particle Brush (Physics Domain - Creates Dynamic Particles)
+    # =========================================================================
+
     def add_particles_brush(self, x, y, radius):
-        sigma = self.sigma; spacing = 1.12246 * sigma  
-        row_height = spacing * 0.866025; r_sq = radius * radius
-        n_rows = int(radius / row_height) + 1; n_cols = int(radius / spacing) + 1
+        """Add dynamic particles in a circular brush pattern."""
+        sigma = self.sigma
+        spacing = 1.12246 * sigma  # Optimal LJ spacing
+        row_height = spacing * 0.866025  # sqrt(3)/2
+        r_sq = radius * radius
+        
+        n_rows = int(radius / row_height) + 1
+        n_cols = int(radius / spacing) + 1
+        
+        # Estimate capacity needed
         estimated_add = int(3.14159 * radius * radius / (spacing * row_height)) + 10
-        if self.count + estimated_add >= self.capacity: self._resize_arrays()
+        if self.count + estimated_add >= self.capacity:
+            self._resize_arrays()
 
         for row in range(-n_rows, n_rows + 1):
             offset_x = 0.5 * spacing if (row % 2 != 0) else 0.0
             y_curr = y + row * row_height
+            
             for col in range(-n_cols, n_cols + 1):
                 x_curr = x + col * spacing + offset_x
-                dx = x_curr - x; dy = y_curr - y
+                dx = x_curr - x
+                dy = y_curr - y
+                
                 if dx*dx + dy*dy <= r_sq:
                     if 0 < x_curr < self.world_size and 0 < y_curr < self.world_size:
                         if not self._check_overlap(x_curr, y_curr, 0.8 * sigma):
-                            if self.count >= self.capacity: self._resize_arrays()
+                            if self.count >= self.capacity:
+                                self._resize_arrays()
+                            
                             idx = self.count
-                            self.pos_x[idx] = x_curr; self.pos_y[idx] = y_curr
-                            self.vel_x[idx] = 0.0; self.vel_y[idx] = 0.0
-                            self.is_static[idx] = 0 
-                            self.atom_sigma[idx] = self.sigma; self.atom_eps_sqrt[idx] = math.sqrt(self.epsilon)
+                            self.pos_x[idx] = x_curr
+                            self.pos_y[idx] = y_curr
+                            self.vel_x[idx] = 0.0
+                            self.vel_y[idx] = 0.0
+                            self.is_static[idx] = 0
+                            self.atom_sigma[idx] = self.sigma
+                            self.atom_eps_sqrt[idx] = math.sqrt(self.epsilon)
                             self.count += 1
+        
         self.rebuild_next = True
 
     def _check_overlap(self, x, y, threshold):
-        if self.count == 0: return False
+        """Check if position overlaps existing particles."""
+        if self.count == 0:
+            return False
+        
         threshold_sq = threshold * threshold
-        dx = self.pos_x[:self.count] - x; dy = self.pos_y[:self.count] - y
+        dx = self.pos_x[:self.count] - x
+        dy = self.pos_y[:self.count] - y
         dist_sq = dx*dx + dy*dy
-        if np.any(dist_sq < threshold_sq): return True
-        return False
+        
+        return np.any(dist_sq < threshold_sq)
 
     def delete_particles_brush(self, x, y, radius):
+        """Delete dynamic particles in a circular brush pattern."""
         r2 = radius**2
         keep_indices = []
+        
         for i in range(self.count):
-            if self.is_static[i] == 1 or self.is_static[i] == 2: keep_indices.append(i); continue
-            dx = self.pos_x[i] - x; dy = self.pos_y[i] - y
-            if dx*dx + dy*dy > r2: keep_indices.append(i)
+            # Keep static/kinematic particles
+            if self.is_static[i] == 1 or self.is_static[i] == 2:
+                keep_indices.append(i)
+                continue
+            
+            dx = self.pos_x[i] - x
+            dy = self.pos_y[i] - y
+            if dx*dx + dy*dy > r2:
+                keep_indices.append(i)
+        
         if len(keep_indices) < self.count:
-            self._compact_arrays(keep_indices); self.rebuild_next = True
+            self._compact_arrays(keep_indices)
+            self.rebuild_next = True
+
+    # =========================================================================
+    # Array Management
+    # =========================================================================
 
     def _resize_arrays(self):
+        """Double the capacity of all particle arrays."""
         self.capacity *= 2
         print(f"Resizing simulation capacity to {self.capacity}")
+        
         self.pos_x = np.resize(self.pos_x, self.capacity)
         self.pos_y = np.resize(self.pos_y, self.capacity)
         self.vel_x = np.resize(self.vel_x, self.capacity)
