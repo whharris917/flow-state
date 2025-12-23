@@ -11,6 +11,10 @@ from ui.tools import PointTool
 from core.definitions import CONSTRAINT_DEFS
 from core.sound_manager import SoundManager
 
+# Phase 8b: Import commands
+from core.commands import RemoveEntityCommand, RemoveConstraintCommand, CompositeCommand
+
+
 class AppController:
     """
     Handles high-level application logic, user actions, and UI coordination.
@@ -34,17 +38,28 @@ class AppController:
     # --- SIMULATION CONTROL ---
     
     def action_undo(self):
-        self.sim.undo()
-        self.session.set_status("Undo")
+        # Try command-based undo first, fall back to snapshot-based
+        if self.app.scene.can_undo():
+            self.app.scene.undo()
+            self.session.set_status("Undo")
+        else:
+            self.sim.undo()
+            self.session.set_status("Undo (snapshot)")
         self.sound_manager.play_sound('click')
 
     def action_redo(self):
-        self.sim.redo()
-        self.session.set_status("Redo")
+        # Try command-based redo first, fall back to snapshot-based
+        if self.app.scene.can_redo():
+            self.app.scene.redo()
+            self.session.set_status("Redo")
+        else:
+            self.sim.redo()
+            self.session.set_status("Redo (snapshot)")
         self.sound_manager.play_sound('click')
 
     def action_reset(self):
         self.sim.reset_simulation()
+        self.app.scene.commands.clear()  # Clear command history on reset
         self.session.set_status("Reset Simulation")
         self.sound_manager.play_sound('click')
         
@@ -109,29 +124,58 @@ class AppController:
             self.sound_manager.play_sound('click')
 
     def action_delete_selection(self):
+        """
+        Delete selected entities using commands for proper undo/redo.
+        Phase 8b: Uses RemoveEntityCommand.
+        """
         deleted_count = 0
+        
         if self.session.selected_walls:
-            for idx in sorted(list(self.session.selected_walls), reverse=True):
-                self.sim.remove_wall(idx)
-                deleted_count += 1
+            # Delete in reverse order to preserve indices
+            indices_to_delete = sorted(list(self.session.selected_walls), reverse=True)
+            
+            if len(indices_to_delete) == 1:
+                # Single delete - simple command
+                idx = indices_to_delete[0]
+                cmd = RemoveEntityCommand(self.sketch, idx)
+                self.app.scene.execute(cmd)
+                deleted_count = 1
+            else:
+                # Multiple deletes - use composite command
+                # Note: indices shift as we delete, so we need to be careful
+                # RemoveEntityCommand stores the entity data, so we can delete in reverse
+                # and restore in forward order
+                commands = []
+                for idx in indices_to_delete:
+                    commands.append(RemoveEntityCommand(self.sketch, idx))
+                
+                composite = CompositeCommand(commands, "Delete Selection")
+                self.app.scene.execute(composite)
+                deleted_count = len(indices_to_delete)
+            
             self.session.selected_walls.clear()
-            self.session.selected_points.clear() 
-            self.sim.rebuild_static_atoms()
+            self.session.selected_points.clear()
             self.sound_manager.play_sound('click')
             self.session.set_status(f"Deleted {deleted_count} Items")
+            
         elif self.ctx_vars['wall'] != -1:
-             self.sim.remove_wall(self.ctx_vars['wall'])
-             self.ctx_vars['wall'] = -1
-             self.sim.rebuild_static_atoms()
-             self.session.set_status("Deleted Item")
-             self.sound_manager.play_sound('click')
+            # Context menu delete
+            cmd = RemoveEntityCommand(self.sketch, self.ctx_vars['wall'])
+            self.app.scene.execute(cmd)
+            self.ctx_vars['wall'] = -1
+            self.session.set_status("Deleted Item")
+            self.sound_manager.play_sound('click')
 
     def action_delete_constraint(self):
+        """
+        Delete constraint using command for proper undo/redo.
+        Phase 8b: Uses RemoveConstraintCommand.
+        """
         if self.ctx_vars['const'] != -1:
             if self.ctx_vars['const'] < len(self.sim.constraints):
-                self.sim.constraints.pop(self.ctx_vars['const'])
+                cmd = RemoveConstraintCommand(self.sketch, self.ctx_vars['const'])
+                self.app.scene.execute(cmd)
                 self.session.set_status("Deleted Constraint")
-                self.sim.apply_constraints()
                 self.ctx_vars['const'] = -1
                 self.sound_manager.play_sound('click')
 
@@ -273,6 +317,8 @@ class AppController:
     # --- CONSTRAINT TRIGGERS ---
 
     def trigger_constraint(self, ctype):
+        from core.commands import AddConstraintCommand
+        
         for btn, c_val in self.app.input_handler.constraint_btn_map.items(): btn.active = (c_val == ctype)
         is_multi = False
         if ctype in CONSTRAINT_DEFS and CONSTRAINT_DEFS[ctype][0].get('multi'):
