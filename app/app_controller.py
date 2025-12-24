@@ -6,7 +6,8 @@ import core.utils as utils
 
 from ui.ui_widgets import MaterialDialog, RotationDialog, AnimationDialog, ContextMenu
 from model.constraints import Length
-from model.geometry import Line, Circle, Point  # FIXED: Added Point, removed PointTool import
+from model.geometry import Line, Circle, Point
+from ui.tools import PointTool
 from core.definitions import CONSTRAINT_DEFS
 from core.sound_manager import SoundManager
 
@@ -23,7 +24,7 @@ class AppController:
         self.app = app
         self.sim = app.sim
         self.session = app.session
-        self.sketch = app.sketch
+        # Access sketch via app.scene.sketch (no local alias needed)
         self.renderer = app.renderer
         self.sound_manager = SoundManager.get()
         
@@ -33,6 +34,15 @@ class AppController:
         self.rot_dialog = None
         self.anim_dialog = None
         self.ctx_vars = {'wall': -1, 'pt': None, 'const': -1}
+
+    # -------------------------------------------------------------------------
+    # Property for Sketch Access (via Scene)
+    # -------------------------------------------------------------------------
+    
+    @property
+    def sketch(self):
+        """Access Sketch via Scene - single source of truth."""
+        return self.app.scene.sketch
 
     # --- SIMULATION CONTROL ---
     
@@ -244,10 +254,9 @@ class AppController:
             if w_idx < len(walls):
                 w = walls[w_idx]
                 is_anchored = False
-                # FIXED: Use Point geometry type, not PointTool (which is a UI tool)
                 if isinstance(w, Line): is_anchored = w.anchored[pt_idx]
                 elif isinstance(w, Circle): is_anchored = w.anchored[0]
-                elif isinstance(w, Point): is_anchored = w.anchored
+                elif isinstance(w, Point): is_anchored = w.anchored 
                 options.append("Un-Anchor" if is_anchored else "Anchor")
                 options.append("Set Length...") 
         elif target_type == 'constraint':

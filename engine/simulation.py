@@ -451,11 +451,10 @@ class Simulation:
 
     # =========================================================================
     # Constraint Wrappers (Delegate to Sketch)
+    # 
+    # NOTE: update_constraint_drivers() has been REMOVED.
+    # The Scene.update() orchestrator now calls sketch.update_drivers() directly.
     # =========================================================================
-
-    def update_constraint_drivers(self, current_time):
-        """Update animated constraints. Delegates to Sketch."""
-        self.sketch.update_drivers(current_time)
 
     def attempt_apply_constraint(self, ctype, wall_idxs, pt_idxs):
         """Attempt to apply a constraint. Delegates to Sketch."""

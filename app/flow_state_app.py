@@ -17,7 +17,6 @@ from tkinter import filedialog, Tk
 from core.scene import Scene
 from core.session import Session
 from ui.ui_widgets import InputField
-# REMOVED: from model.geometry import Line, Circle  # Unused imports (SoC violation)
 from ui.renderer import Renderer
 from ui.tools import SelectTool, BrushTool, LineTool, RectTool, CircleTool, PointTool
 from ui.ui_manager import UIManager
@@ -52,17 +51,20 @@ class FlowStateApp:
         self.session.mode = start_mode 
         
         # =====================================================================
-        # Phase 4: Scene Pattern Integration
+        # Scene Pattern - Document Container
         # =====================================================================
-        # Create Scene as the document container
+        # Create Scene as the document container that owns:
+        # - Sketch (CAD domain)
+        # - Simulation (Physics domain)  
+        # - Compiler (bridge between them)
+        # - GeometryManager (CAD import/export)
+        # - CommandQueue (undo/redo)
         is_editor = (start_mode == config.MODE_EDITOR)
         self.scene = Scene(skip_warmup=is_editor)
         
-        # Create aliases for backward compatibility
-        # All existing code uses self.sim and self.sketch - these aliases
-        # ensure everything continues to work without modification
+        # Alias for Simulation - still used for physics parameter access
+        # Access Sketch via self.scene.sketch (no alias needed)
         self.sim = self.scene.simulation
-        self.sketch = self.scene.sketch
         # =====================================================================
         
         self.session.input_world = InputField(0, 0, 0, 0)
@@ -94,15 +96,22 @@ class FlowStateApp:
     
     @property
     def walls(self):
-        return self.sim.walls
+        """Alias for scene.sketch.entities - used by renderer, tools, etc."""
+        return self.scene.sketch.entities
     
     @property
     def constraints(self):
-        return self.sim.constraints
+        """Alias for scene.sketch.constraints - used by renderer, tools, etc."""
+        return self.scene.sketch.constraints
+    
+    @property
+    def sketch(self):
+        """Alias for scene.sketch - used by tools that need Sketch access."""
+        return self.scene.sketch
     
     @property
     def geo(self):
-        # Phase 6.5b: GeometryManager is now owned by Scene
+        """Alias for scene.geo - GeometryManager for CAD import/export."""
         return self.scene.geo
 
     # =========================================================================
@@ -160,8 +169,8 @@ class FlowStateApp:
         """
         Main frame update - delegates to Scene.update() for proper orchestration.
         
-        Phase 7 Fix: Now uses the Orchestrator pattern via scene.update()
-        instead of manually calling individual methods.
+        Uses the Orchestrator pattern via scene.update() which ensures correct
+        ordering: drivers → constraints → rebuild → physics
         """
         now = time.time()
         dt = now - self.last_time
@@ -176,7 +185,7 @@ class FlowStateApp:
             self.session.geo_time += dt
 
         # =====================================================================
-        # Phase 7: Use Orchestrator Pattern
+        # Orchestrator Pattern - Scene.update() handles correct ordering
         # =====================================================================
         # Update simulation parameters from UI BEFORE orchestration
         if self.session.mode == config.MODE_SIM:
@@ -215,7 +224,7 @@ class FlowStateApp:
     def render(self):
         self.renderer.draw_app(self, self.layout, [])
         self.ui.draw(self.screen, self.font, self.session.mode)
-        self.actions.draw_overlays(self.screen, self.font) # Delegate overlay drawing
+        self.actions.draw_overlays(self.screen, self.font)
         pygame.display.flip()
 
     # =========================================================================
@@ -234,7 +243,6 @@ class FlowStateApp:
     # =========================================================================
 
     def exit_editor_mode(self, backup_state=None):
-        # Phase 4: Use scene.new() for clean reset
         self.scene.new()
         self.session.set_status("Reset/Discarded")
         self.sound_manager.play_sound('click')
@@ -257,7 +265,6 @@ class FlowStateApp:
         elif selection == "New Model":
             subprocess.Popen([sys.executable, "run_instance.py", "editor"])
         elif selection == "New": 
-            # Phase 4: Use scene.new() for clean reset
             self.scene.new()
             self.session.input_world.set_value(config.DEFAULT_WORLD_SIZE)
             self.session.current_sim_filepath = None
@@ -268,7 +275,6 @@ class FlowStateApp:
                 if f:
                     data, _ = file_io.load_geometry_file(f)
                     if data: 
-                        # Phase 6.5b: Use self.geo (now from scene.geo)
                         if self.geo and hasattr(self.geo, 'place_geometry'):
                             self.session.placing_geo_data = data
                             self.session.set_status("Place Model")
