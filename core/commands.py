@@ -4,11 +4,25 @@ Command Pattern for Undo/Redo
 Commands encapsulate actions that can be executed and undone.
 This replaces the expensive full-state snapshot approach.
 
+Key Concept: historize flag
+- historize=True (default): Command is added to undo stack after execution
+- historize=False: Command executes but is NOT added to history
+  Used for intermediate/preview states during drag operations.
+  The final "commit" command should have historize=True.
+
 Usage:
     queue = CommandQueue(scene)
+    
+    # Normal undoable command
     queue.execute(AddLineCommand(sketch, start, end))
-    queue.undo()  # Removes the line
-    queue.redo()  # Adds it back
+    
+    # Preview during drag (not undoable individually)
+    queue.execute(MovePointCommand(sketch, idx, pt, new_pos, historize=False))
+    
+    # Final commit (undoable - captures full delta)
+    queue.execute(MovePointCommand(sketch, idx, pt, final_pos, historize=True))
+    
+    queue.undo()  # Only undoes historized commands
 """
 
 from abc import ABC, abstractmethod
@@ -27,10 +41,16 @@ class Command(ABC):
     Optionally:
     - redo(): Re-perform (defaults to calling execute())
     - merge(other): Combine with another command (for drag operations)
+    
+    Args:
+        historize: If True (default), command is added to undo stack.
+                   If False, command executes but is not recorded in history.
+                   Use False for intermediate/preview states during drags.
     """
     
-    def __init__(self):
+    def __init__(self, historize=True):
         self.description = "Command"
+        self.historize = historize
     
     @abstractmethod
     def execute(self) -> bool:
@@ -62,6 +82,8 @@ class CommandQueue:
     Features:
     - Configurable history limit
     - Command merging for drag operations
+    - historize flag support: commands with historize=False execute
+      but are not added to the undo stack
     - Clear separation from domain logic
     """
     
@@ -72,26 +94,36 @@ class CommandQueue:
     
     def execute(self, command: Command) -> bool:
         """
-        Execute a command and add to history.
+        Execute a command and optionally add to history.
+        
+        If command.historize is True:
+            - Command is added to undo stack (or merged with previous)
+            - Redo stack is cleared
+        If command.historize is False:
+            - Command executes but is NOT added to history
+            - Redo stack is NOT cleared (preserves ability to redo)
         
         Returns True if command executed successfully.
         """
         if command.execute():
-            # Try to merge with previous command
-            if self.undo_stack and self.undo_stack[-1].merge(command):
-                pass  # Merged into existing command
-            else:
-                self.undo_stack.append(command)
-                if len(self.undo_stack) > self.max_history:
-                    self.undo_stack.pop(0)
+            # Only add to history if historize=True
+            if command.historize:
+                # Try to merge with previous command
+                if self.undo_stack and self.undo_stack[-1].merge(command):
+                    pass  # Merged into existing command
+                else:
+                    self.undo_stack.append(command)
+                    if len(self.undo_stack) > self.max_history:
+                        self.undo_stack.pop(0)
+                
+                # Clear redo stack on new historized action
+                self.redo_stack.clear()
             
-            # Clear redo stack on new action
-            self.redo_stack.clear()
             return True
         return False
     
     def undo(self) -> bool:
-        """Undo the last command. Returns True if successful."""
+        """Undo the last historized command. Returns True if successful."""
         if not self.undo_stack:
             return False
         
@@ -129,8 +161,8 @@ class CommandQueue:
 class AddLineCommand(Command):
     """Add a line to the sketch."""
     
-    def __init__(self, sketch, start, end, is_ref=False, material_id="Default"):
-        super().__init__()
+    def __init__(self, sketch, start, end, is_ref=False, material_id="Default", historize=True):
+        super().__init__(historize)
         self.sketch = sketch
         self.start = tuple(start)
         self.end = tuple(end)
@@ -156,8 +188,8 @@ class AddLineCommand(Command):
 class AddCircleCommand(Command):
     """Add a circle to the sketch."""
     
-    def __init__(self, sketch, center, radius, material_id="Default"):
-        super().__init__()
+    def __init__(self, sketch, center, radius, material_id="Default", historize=True):
+        super().__init__(historize)
         self.sketch = sketch
         self.center = tuple(center)
         self.radius = radius
@@ -181,8 +213,8 @@ class AddCircleCommand(Command):
 class RemoveEntityCommand(Command):
     """Remove an entity from the sketch."""
     
-    def __init__(self, sketch, entity_index):
-        super().__init__()
+    def __init__(self, sketch, entity_index, historize=True):
+        super().__init__(historize)
         self.sketch = sketch
         self.entity_index = entity_index
         self.entity_data = None  # Stored on execute for undo
@@ -219,8 +251,8 @@ class RemoveEntityCommand(Command):
 class MoveEntityCommand(Command):
     """Move an entity by a delta."""
     
-    def __init__(self, sketch, entity_index, dx, dy, point_indices=None):
-        super().__init__()
+    def __init__(self, sketch, entity_index, dx, dy, point_indices=None, historize=True):
+        super().__init__(historize)
         self.sketch = sketch
         self.entity_index = entity_index
         self.dx = dx
@@ -244,7 +276,8 @@ class MoveEntityCommand(Command):
         """Merge consecutive moves of the same entity."""
         if isinstance(other, MoveEntityCommand):
             if (other.entity_index == self.entity_index and 
-                other.point_indices == self.point_indices):
+                other.point_indices == self.point_indices and
+                other.historize == self.historize):
                 self.dx += other.dx
                 self.dy += other.dy
                 return True
@@ -254,8 +287,8 @@ class MoveEntityCommand(Command):
 class MoveMultipleCommand(Command):
     """Move multiple entities by a delta."""
     
-    def __init__(self, sketch, entity_indices, dx, dy):
-        super().__init__()
+    def __init__(self, sketch, entity_indices, dx, dy, historize=True):
+        super().__init__(historize)
         self.sketch = sketch
         self.entity_indices = list(entity_indices)
         self.dx = dx
@@ -276,9 +309,132 @@ class MoveMultipleCommand(Command):
     def merge(self, other: Command) -> bool:
         """Merge consecutive moves of the same selection."""
         if isinstance(other, MoveMultipleCommand):
-            if set(other.entity_indices) == set(self.entity_indices):
+            if (set(other.entity_indices) == set(self.entity_indices) and
+                other.historize == self.historize):
                 self.dx += other.dx
                 self.dy += other.dy
+                return True
+        return False
+
+
+# =============================================================================
+# Point Editing Commands (NEW)
+# =============================================================================
+
+class SetPointCommand(Command):
+    """
+    Set a specific point on an entity to an absolute position.
+    
+    This is the fundamental command for point editing. During drags:
+    - Execute with historize=False for intermediate positions
+    - Execute with historize=True for final commit, with old_position
+      explicitly set to the position at drag start
+    
+    Args:
+        sketch: The Sketch instance
+        entity_index: Index of the entity in sketch.entities
+        point_index: Which point on the entity (0, 1, etc.)
+        new_position: Target position (x, y)
+        old_position: Optional original position for undo. If None, captured on execute.
+        historize: Whether to add to undo stack
+    """
+    
+    def __init__(self, sketch, entity_index, point_index, new_position, old_position=None, historize=True):
+        super().__init__(historize)
+        self.sketch = sketch
+        self.entity_index = entity_index
+        self.point_index = point_index
+        self.new_position = tuple(new_position)
+        # old_position can be pre-set (for commit commands) or captured on first execute
+        self.old_position = tuple(old_position) if old_position is not None else None
+        self.description = "Edit Point"
+    
+    def execute(self) -> bool:
+        if 0 <= self.entity_index < len(self.sketch.entities):
+            entity = self.sketch.entities[self.entity_index]
+            
+            # Capture old position only if not pre-set
+            if self.old_position is None:
+                old_pt = entity.get_point(self.point_index)
+                self.old_position = (float(old_pt[0]), float(old_pt[1]))
+            
+            entity.set_point(self.point_index, np.array(self.new_position))
+            return True
+        return False
+    
+    def undo(self):
+        if self.old_position is not None:
+            if 0 <= self.entity_index < len(self.sketch.entities):
+                entity = self.sketch.entities[self.entity_index]
+                entity.set_point(self.point_index, np.array(self.old_position))
+    
+    def merge(self, other: Command) -> bool:
+        """Merge consecutive point edits on the same point."""
+        if isinstance(other, SetPointCommand):
+            if (other.entity_index == self.entity_index and 
+                other.point_index == self.point_index and
+                other.historize == self.historize):
+                # Keep our old_position, take their new_position
+                self.new_position = other.new_position
+                return True
+        return False
+
+
+# =============================================================================
+# Circle Commands (NEW)
+# =============================================================================
+
+class SetCircleRadiusCommand(Command):
+    """
+    Set the radius of a circle entity.
+    
+    During resize drags:
+    - Execute with historize=False for intermediate sizes
+    - Execute with historize=True for final commit, with old_radius
+      explicitly set to the radius at drag start
+    
+    Args:
+        sketch: The Sketch instance
+        entity_index: Index of the circle entity
+        new_radius: Target radius
+        old_radius: Optional original radius for undo. If None, captured on execute.
+        historize: Whether to add to undo stack
+    """
+    
+    def __init__(self, sketch, entity_index, new_radius, old_radius=None, historize=True):
+        super().__init__(historize)
+        self.sketch = sketch
+        self.entity_index = entity_index
+        self.new_radius = float(new_radius)
+        # old_radius can be pre-set (for commit commands) or captured on first execute
+        self.old_radius = float(old_radius) if old_radius is not None else None
+        self.description = "Resize Circle"
+    
+    def execute(self) -> bool:
+        if 0 <= self.entity_index < len(self.sketch.entities):
+            entity = self.sketch.entities[self.entity_index]
+            if hasattr(entity, 'radius'):
+                # Capture old radius only if not pre-set
+                if self.old_radius is None:
+                    self.old_radius = float(entity.radius)
+                entity.radius = self.new_radius
+                return True
+        return False
+    
+    def undo(self):
+        if self.old_radius is not None:
+            if 0 <= self.entity_index < len(self.sketch.entities):
+                entity = self.sketch.entities[self.entity_index]
+                if hasattr(entity, 'radius'):
+                    entity.radius = self.old_radius
+    
+    def merge(self, other: Command) -> bool:
+        """Merge consecutive radius changes on the same circle."""
+        if isinstance(other, SetCircleRadiusCommand):
+            if (other.entity_index == self.entity_index and
+                other.historize == self.historize):
+                # Keep our old_radius, take their new_radius
+                self.new_radius = other.new_radius
                 return True
         return False
 
@@ -290,8 +446,8 @@ class MoveMultipleCommand(Command):
 class AddConstraintCommand(Command):
     """Add a constraint to the sketch."""
     
-    def __init__(self, sketch, constraint):
-        super().__init__()
+    def __init__(self, sketch, constraint, historize=True):
+        super().__init__(historize)
         self.sketch = sketch
         self.constraint = constraint
         self.description = f"Add {constraint.type}"
@@ -309,8 +465,8 @@ class AddConstraintCommand(Command):
 class RemoveConstraintCommand(Command):
     """Remove a constraint from the sketch."""
     
-    def __init__(self, sketch, constraint_index):
-        super().__init__()
+    def __init__(self, sketch, constraint_index, historize=True):
+        super().__init__(historize)
         self.sketch = sketch
         self.constraint_index = constraint_index
         self.constraint_data = None
@@ -335,8 +491,8 @@ class RemoveConstraintCommand(Command):
 class ToggleAnchorCommand(Command):
     """Toggle anchor state of a point."""
     
-    def __init__(self, sketch, entity_index, point_index):
-        super().__init__()
+    def __init__(self, sketch, entity_index, point_index, historize=True):
+        super().__init__(historize)
         self.sketch = sketch
         self.entity_index = entity_index
         self.point_index = point_index
@@ -361,8 +517,8 @@ class CompositeCommand(Command):
     All sub-commands are executed/undone as a unit.
     """
     
-    def __init__(self, commands, description="Multiple Actions"):
-        super().__init__()
+    def __init__(self, commands, description="Multiple Actions", historize=True):
+        super().__init__(historize)
         self.commands = list(commands)
         self.description = description
     
@@ -380,18 +536,18 @@ class CompositeCommand(Command):
 class AddRectangleCommand(CompositeCommand):
     """Add a rectangle (4 lines + constraints)."""
     
-    def __init__(self, sketch, x1, y1, x2, y2, material_id="Default"):
+    def __init__(self, sketch, x1, y1, x2, y2, material_id="Default", historize=True):
         from model.constraints import Coincident, Angle
         
         # Create 4 lines
         line_cmds = [
-            AddLineCommand(sketch, (x1, y1), (x2, y1), material_id=material_id),
-            AddLineCommand(sketch, (x2, y1), (x2, y2), material_id=material_id),
-            AddLineCommand(sketch, (x2, y2), (x1, y2), material_id=material_id),
-            AddLineCommand(sketch, (x1, y2), (x1, y1), material_id=material_id),
+            AddLineCommand(sketch, (x1, y1), (x2, y1), material_id=material_id, historize=False),
+            AddLineCommand(sketch, (x2, y1), (x2, y2), material_id=material_id, historize=False),
+            AddLineCommand(sketch, (x2, y2), (x1, y2), material_id=material_id, historize=False),
+            AddLineCommand(sketch, (x1, y2), (x1, y1), material_id=material_id, historize=False),
         ]
         
-        super().__init__(line_cmds, "Add Rectangle")
+        super().__init__(line_cmds, "Add Rectangle", historize)
         self.sketch = sketch
         
         # We'll add constraints after lines are created
@@ -419,7 +575,7 @@ class AddRectangleCommand(CompositeCommand):
                 ]
                 
                 for c in constraints:
-                    cmd = AddConstraintCommand(self.sketch, c)
+                    cmd = AddConstraintCommand(self.sketch, c, historize=False)
                     cmd.execute()
                     self._constraint_cmds.append(cmd)
         

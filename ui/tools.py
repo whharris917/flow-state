@@ -7,10 +7,12 @@ Each tool handles mouse events for a specific operation:
 - RectTool: Draw rectangles (via commands)
 - CircleTool: Draw circles (via commands)
 - PointTool: Create points (via commands)
-- SelectTool: Select and move entities
+- SelectTool: Select and move entities (via commands)
 
 Architecture:
-- Tools use Commands for CAD operations (undo-able)
+- ALL geometry mutations go through Commands
+- Commands with historize=False are used during drag for visual feedback
+- Commands with historize=True are used on release for undoable commits
 - Tools call scene.rebuild() after geometry changes
 - Tools call sketch.solve() for constraint solving during drags
 - BrushTool operates on physics (not CAD), uses sim directly
@@ -32,7 +34,8 @@ from core.session import InteractionState
 from core.commands import (
     AddLineCommand, AddCircleCommand, RemoveEntityCommand,
     MoveEntityCommand, MoveMultipleCommand, AddConstraintCommand,
-    AddRectangleCommand, CompositeCommand
+    AddRectangleCommand, CompositeCommand,
+    SetPointCommand, SetCircleRadiusCommand
 )
 
 
@@ -467,9 +470,11 @@ class SelectTool(Tool):
     """
     Selection and manipulation tool.
     
-    Note: Move operations currently mutate directly during drag for
-    responsiveness, then don't use Commands. Future improvement would
-    be to use MoveEntityCommand on release.
+    ALL geometry mutations go through Commands:
+    - During drag: Commands with historize=False for visual feedback
+    - On release: Command with historize=True for undoable commit
+    
+    This ensures all mutations are tracked and the final state is undoable.
     """
     def __init__(self, app):
         super().__init__(app, "Select")
@@ -485,7 +490,13 @@ class SelectTool(Tool):
         self.DOUBLE_CLICK_TIME = 0.3
         self.DOUBLE_CLICK_DIST = 5
         
-        # Track accumulated movement for potential command
+        # === DRAG STATE FOR PROPER UNDO ===
+        # Store original state at drag start for proper undo
+        self.original_position = None      # For EDIT mode (point position)
+        self.original_radius = None        # For RESIZE_CIRCLE mode
+        self.original_positions = {}       # For MOVE_WALL/MOVE_GROUP mode: {entity_idx: [(pt_idx, pos), ...]}
+        
+        # Track accumulated movement for commit command
         self.total_dx = 0.0
         self.total_dy = 0.0
 
@@ -515,29 +526,67 @@ class SelectTool(Tool):
         return False
 
     def cancel(self):
-        if self.mode in ['MOVE_WALL', 'MOVE_GROUP', 'EDIT']:
-            # Reverse the accumulated movement
-            if self.mode == 'MOVE_GROUP':
-                for idx in self.group_indices:
-                    if idx < len(self.sketch.entities):
-                        self.sketch.entities[idx].move(-self.total_dx, -self.total_dy)
-            elif self.mode in ['MOVE_WALL', 'EDIT']:
-                if self.target_idx < len(self.sketch.entities):
-                    entity = self.sketch.entities[self.target_idx]
-                    if self.mode == 'EDIT':
-                        indices = [self.target_pt] if self.target_pt >= 0 else None
-                        entity.move(-self.total_dx, -self.total_dy, indices)
-                    else:
-                        entity.move(-self.total_dx, -self.total_dy)
-            
+        """Cancel current drag and restore original state."""
+        if self.mode == 'EDIT' and self.original_position is not None:
+            # Restore original point position
+            if self.target_idx < len(self.sketch.entities):
+                entity = self.sketch.entities[self.target_idx]
+                entity.set_point(self.target_pt, np.array(self.original_position))
+                self.scene.rebuild()
+                
+        elif self.mode == 'RESIZE_CIRCLE' and self.original_radius is not None:
+            # Restore original radius
+            if self.target_idx < len(self.sketch.entities):
+                entity = self.sketch.entities[self.target_idx]
+                if hasattr(entity, 'radius'):
+                    entity.radius = self.original_radius
+                self.scene.rebuild()
+                
+        elif self.mode in ['MOVE_WALL', 'MOVE_GROUP'] and self.original_positions:
+            # Restore original positions
+            for idx, points in self.original_positions.items():
+                if idx < len(self.sketch.entities):
+                    entity = self.sketch.entities[idx]
+                    for pt_idx, pos in points:
+                        entity.set_point(pt_idx, np.array(pos))
             self.scene.rebuild()
         
+        self._reset_drag_state()
+        self.app.session.state = InteractionState.IDLE
+        self.app.session.set_status("Cancelled")
+
+    def _reset_drag_state(self):
+        """Reset all drag-related state."""
         self.mode = None
         self.group_indices = []
         self.total_dx = 0.0
         self.total_dy = 0.0
-        self.app.session.state = InteractionState.IDLE
-        self.app.session.set_status("Move Cancelled")
+        self.original_position = None
+        self.original_radius = None
+        self.original_positions = {}
+        self.app.session.current_snap_target = None
+        
+        # Remove temp constraint
+        if self.app.session.temp_constraint_active:
+            self.sketch.constraints = [c for c in self.sketch.constraints if not c.temp]
+            self.app.session.temp_constraint_active = False
+
+    def _capture_entity_positions(self, entity_indices):
+        """Capture all point positions for a set of entities."""
+        positions = {}
+        for idx in entity_indices:
+            if idx < len(self.sketch.entities):
+                entity = self.sketch.entities[idx]
+                points = []
+                if isinstance(entity, Line):
+                    points.append((0, tuple(entity.start)))
+                    points.append((1, tuple(entity.end)))
+                elif isinstance(entity, Circle):
+                    points.append((0, tuple(entity.center)))
+                elif hasattr(entity, 'pos'):
+                    points.append((0, tuple(entity.pos)))
+                positions[idx] = points
+        return positions
 
     def _handle_left_click(self, mx, my, layout):
         now = time.time()
@@ -573,6 +622,13 @@ class SelectTool(Tool):
                 self.app.session.zoom, self.app.session.pan_x, self.app.session.pan_y, 
                 self.app.sim.world_size, layout
             )
+            
+            # === CAPTURE ORIGINAL POSITION ===
+            if self.target_idx < len(self.sketch.entities):
+                entity = self.sketch.entities[self.target_idx]
+                pt = entity.get_point(self.target_pt)
+                self.original_position = (float(pt[0]), float(pt[1]))
+            
             self.total_dx = 0.0
             self.total_dy = 0.0
             self.app.session.state = InteractionState.DRAGGING_GEOMETRY
@@ -602,6 +658,10 @@ class SelectTool(Tool):
                 self.mode = 'RESIZE_CIRCLE'
                 self.target_idx = hit_wall
                 self.drag_start_mouse = (mx, my)
+                
+                # === CAPTURE ORIGINAL RADIUS ===
+                self.original_radius = float(w.radius)
+                
                 self.app.session.state = InteractionState.DRAGGING_GEOMETRY
                 return True
             
@@ -609,9 +669,16 @@ class SelectTool(Tool):
             if is_part_of_selection and len(self.app.session.selected_walls) > 1:
                 self.mode = 'MOVE_GROUP'
                 self.group_indices = list(self.app.session.selected_walls)
+                
+                # === CAPTURE ORIGINAL POSITIONS FOR ALL GROUP ENTITIES ===
+                self.original_positions = self._capture_entity_positions(self.group_indices)
             else:
                 self.mode = 'MOVE_WALL'
                 self.target_idx = hit_wall
+                
+                # === CAPTURE ORIGINAL POSITIONS ===
+                self.original_positions = self._capture_entity_positions([hit_wall])
+                
                 # Add temp length constraint for editor mode
                 if isinstance(w, Line) and self.app.session.mode == config.MODE_EDITOR:
                     l = np.linalg.norm(w.end - w.start)
@@ -655,82 +722,141 @@ class SelectTool(Tool):
         self.drag_start_mouse = (mx, my)
         
         if self.mode == 'EDIT':
-            entities = self.sketch.entities
-            if self.target_idx >= len(entities):
-                return False
-            w = entities[self.target_idx]
-            
-            if isinstance(w, Line):
-                anchor = w.end if self.target_pt == 0 else w.start
-                dest_x, dest_y, snap = utils.get_snapped_pos(
-                    mx, my, entities, 
-                    self.app.session.zoom, self.app.session.pan_x, self.app.session.pan_y, 
-                    self.app.sim.world_size, layout, anchor, self.target_idx
-                )
-                
-                self.app.session.current_snap_target = snap
-                
-                old_pt = w.get_point(self.target_pt)
-                actual_dx = dest_x - old_pt[0]
-                actual_dy = dest_y - old_pt[1]
-                
-                if self.target_pt == 0:
-                    w.start[:] = (dest_x, dest_y)
-                else:
-                    w.end[:] = (dest_x, dest_y)
-                
-                self.total_dx += actual_dx
-                self.total_dy += actual_dy
-            
-            elif isinstance(w, Circle):
-                dest_x, dest_y, snap = utils.get_snapped_pos(
-                    mx, my, entities, 
-                    self.app.session.zoom, self.app.session.pan_x, self.app.session.pan_y, 
-                    self.app.sim.world_size, layout, None, self.target_idx
-                )
-                self.app.session.current_snap_target = snap
-                
-                old_center = w.center.copy()
-                w.center[:] = (dest_x, dest_y)
-                self.total_dx += dest_x - old_center[0]
-                self.total_dy += dest_y - old_center[1]
-            
-            self.scene.rebuild()
-            if self.app.session.mode == config.MODE_EDITOR:
-                self.sketch.solve()
-            return True
-
+            return self._handle_edit_drag(mx, my, dx, dy, layout)
         elif self.mode == 'RESIZE_CIRCLE':
-            w = self.sketch.entities[self.target_idx]
-            if isinstance(w, Circle):
-                new_r = math.hypot(curr_sim[0] - w.center[0], curr_sim[1] - w.center[1])
-                w.radius = max(0.1, new_r)
-                self.scene.rebuild()
-            return True
-
+            return self._handle_resize_drag(mx, my, curr_sim, layout)
         elif self.mode in ['MOVE_WALL', 'MOVE_GROUP']:
-            self.total_dx += dx
-            self.total_dy += dy
-            
-            targets = self.group_indices if self.mode == 'MOVE_GROUP' else [self.target_idx]
-            
-            for idx in targets:
-                entities = self.sketch.entities
-                if idx < len(entities):
-                    entities[idx].move(dx, dy) 
-            
-            self.scene.rebuild()
-            if self.app.session.mode == config.MODE_EDITOR:
-                self.sketch.solve()
-            return True
+            return self._handle_move_drag(dx, dy, layout)
             
         return False
+
+    def _handle_edit_drag(self, mx, my, dx, dy, layout):
+        """Handle point editing drag using commands."""
+        entities = self.sketch.entities
+        if self.target_idx >= len(entities):
+            return False
+        w = entities[self.target_idx]
+        
+        if isinstance(w, Line):
+            anchor = w.end if self.target_pt == 0 else w.start
+            dest_x, dest_y, snap = utils.get_snapped_pos(
+                mx, my, entities, 
+                self.app.session.zoom, self.app.session.pan_x, self.app.session.pan_y, 
+                self.app.sim.world_size, self.app.layout, anchor, self.target_idx
+            )
+            
+            self.app.session.current_snap_target = snap
+            
+            # Use command for mutation (historize=False for drag preview)
+            cmd = SetPointCommand(
+                self.sketch, self.target_idx, self.target_pt,
+                (dest_x, dest_y),
+                historize=False
+            )
+            self.scene.execute(cmd)
+        
+        elif isinstance(w, Circle):
+            dest_x, dest_y, snap = utils.get_snapped_pos(
+                mx, my, entities, 
+                self.app.session.zoom, self.app.session.pan_x, self.app.session.pan_y, 
+                self.app.sim.world_size, self.app.layout, None, self.target_idx
+            )
+            self.app.session.current_snap_target = snap
+            
+            # Use command for mutation (historize=False for drag preview)
+            cmd = SetPointCommand(
+                self.sketch, self.target_idx, 0,
+                (dest_x, dest_y),
+                historize=False
+            )
+            self.scene.execute(cmd)
+        
+        self.scene.rebuild()
+        if self.app.session.mode == config.MODE_EDITOR:
+            self.sketch.solve()
+        return True
+
+    def _handle_resize_drag(self, mx, my, curr_sim, layout):
+        """Handle circle resize drag using commands."""
+        w = self.sketch.entities[self.target_idx]
+        if isinstance(w, Circle):
+            new_r = math.hypot(curr_sim[0] - w.center[0], curr_sim[1] - w.center[1])
+            new_r = max(0.1, new_r)
+            
+            # Use command for mutation (historize=False for drag preview)
+            cmd = SetCircleRadiusCommand(
+                self.sketch, self.target_idx, new_r,
+                historize=False
+            )
+            self.scene.execute(cmd)
+            self.scene.rebuild()
+        return True
+
+    def _handle_move_drag(self, dx, dy, layout):
+        """Handle entity/group move drag using commands."""
+        self.total_dx += dx
+        self.total_dy += dy
+        
+        if self.mode == 'MOVE_GROUP':
+            # Use command for mutation (historize=False for drag preview)
+            cmd = MoveMultipleCommand(
+                self.sketch, self.group_indices, dx, dy,
+                historize=False
+            )
+            self.scene.execute(cmd)
+        else:
+            # Single entity move
+            cmd = MoveEntityCommand(
+                self.sketch, self.target_idx, dx, dy,
+                historize=False
+            )
+            self.scene.execute(cmd)
+        
+        self.scene.rebuild()
+        if self.app.session.mode == config.MODE_EDITOR:
+            self.sketch.solve()
+        return True
 
     def _handle_release(self, mouse_pos, layout):
         mx, my = mouse_pos
         
-        # Handle snap connection on point edit release
-        if self.mode == 'EDIT' and self.app.session.current_snap_target:
+        if self.mode == 'EDIT':
+            self._commit_edit(mx, my, layout)
+        elif self.mode == 'RESIZE_CIRCLE':
+            self._commit_resize()
+        elif self.mode in ['MOVE_WALL', 'MOVE_GROUP']:
+            self._commit_move()
+        
+        self._reset_drag_state()
+        self.app.session.state = InteractionState.IDLE
+        self.sketch.solve()
+        self.scene.rebuild()
+        return True
+
+    def _commit_edit(self, mx, my, layout):
+        """Commit point edit with historized command."""
+        if self.target_idx >= len(self.sketch.entities):
+            return
+        
+        entity = self.sketch.entities[self.target_idx]
+        current_pt = entity.get_point(self.target_pt)
+        final_position = (float(current_pt[0]), float(current_pt[1]))
+        
+        # Only commit if position actually changed
+        if self.original_position and self.original_position != final_position:
+            # Create historized command with explicit original position
+            cmd = SetPointCommand(
+                self.sketch, self.target_idx, self.target_pt,
+                final_position,
+                old_position=self.original_position,
+                historize=True
+            )
+            # Execute directly on queue (not through scene.execute to avoid double-execution)
+            self.scene.commands.undo_stack.append(cmd)
+            self.scene.commands.redo_stack.clear()
+        
+        # Handle snap connection
+        if self.app.session.current_snap_target:
             snap = self.app.session.current_snap_target
             if not (self.target_idx == snap[0] and self.target_pt == snap[1]):
                 c = Coincident(
@@ -740,20 +866,55 @@ class SelectTool(Tool):
                 self.scene.execute(AddConstraintCommand(self.sketch, c))
                 self.app.session.set_status("Snapped & Connected")
 
-        self.mode = None
-        self.app.session.current_snap_target = None
-        self.app.session.state = InteractionState.IDLE
-        self.total_dx = 0.0
-        self.total_dy = 0.0
+    def _commit_resize(self):
+        """Commit circle resize with historized command."""
+        if self.target_idx >= len(self.sketch.entities):
+            return
         
-        # Remove temp constraint
-        if self.app.session.temp_constraint_active:
-            self.sketch.constraints = [c for c in self.sketch.constraints if not c.temp]
-            self.app.session.temp_constraint_active = False
+        entity = self.sketch.entities[self.target_idx]
+        if not hasattr(entity, 'radius'):
+            return
         
-        self.sketch.solve()
-        self.scene.rebuild()
-        return True
+        final_radius = float(entity.radius)
+        
+        # Only commit if radius actually changed
+        if self.original_radius is not None and abs(self.original_radius - final_radius) > 1e-6:
+            cmd = SetCircleRadiusCommand(
+                self.sketch, self.target_idx,
+                final_radius,
+                old_radius=self.original_radius,
+                historize=True
+            )
+            # Add directly to queue
+            self.scene.commands.undo_stack.append(cmd)
+            self.scene.commands.redo_stack.clear()
+
+    def _commit_move(self):
+        """Commit entity/group move with historized command."""
+        # Only commit if there was actual movement
+        if abs(self.total_dx) < 1e-6 and abs(self.total_dy) < 1e-6:
+            return
+        
+        if self.mode == 'MOVE_GROUP' and self.group_indices:
+            # For group move, we need to store the reverse delta
+            cmd = MoveMultipleCommand(
+                self.sketch, self.group_indices,
+                self.total_dx, self.total_dy,
+                historize=True
+            )
+            # The entities are already moved, so we just record the command
+            # Set dx/dy so undo will reverse the full movement
+            self.scene.commands.undo_stack.append(cmd)
+            self.scene.commands.redo_stack.clear()
+            
+        elif self.mode == 'MOVE_WALL' and self.target_idx >= 0:
+            cmd = MoveEntityCommand(
+                self.sketch, self.target_idx,
+                self.total_dx, self.total_dy,
+                historize=True
+            )
+            self.scene.commands.undo_stack.append(cmd)
+            self.scene.commands.redo_stack.clear()
 
     def _hit_test_points(self, mx, my, point_map):
         base_r, step_r = 5, 4
