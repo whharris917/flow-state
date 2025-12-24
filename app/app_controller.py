@@ -6,8 +6,7 @@ import core.utils as utils
 
 from ui.ui_widgets import MaterialDialog, RotationDialog, AnimationDialog, ContextMenu
 from model.constraints import Length
-from model.geometry import Line, Circle
-from ui.tools import PointTool
+from model.geometry import Line, Circle, Point  # FIXED: Added Point, removed PointTool import
 from core.definitions import CONSTRAINT_DEFS
 from core.sound_manager import SoundManager
 
@@ -245,9 +244,10 @@ class AppController:
             if w_idx < len(walls):
                 w = walls[w_idx]
                 is_anchored = False
+                # FIXED: Use Point geometry type, not PointTool (which is a UI tool)
                 if isinstance(w, Line): is_anchored = w.anchored[pt_idx]
                 elif isinstance(w, Circle): is_anchored = w.anchored[0]
-                elif isinstance(w, PointTool): is_anchored = w.anchored 
+                elif isinstance(w, Point): is_anchored = w.anchored
                 options.append("Un-Anchor" if is_anchored else "Anchor")
                 options.append("Set Length...") 
         elif target_type == 'constraint':

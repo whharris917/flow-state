@@ -17,7 +17,7 @@ from tkinter import filedialog, Tk
 from core.scene import Scene
 from core.session import Session
 from ui.ui_widgets import InputField
-from model.geometry import Line, Circle
+# REMOVED: from model.geometry import Line, Circle  # Unused imports (SoC violation)
 from ui.renderer import Renderer
 from ui.tools import SelectTool, BrushTool, LineTool, RectTool, CircleTool, PointTool
 from ui.ui_manager import UIManager
@@ -157,19 +157,28 @@ class FlowStateApp:
         pygame.quit()
 
     def update_physics(self):
+        """
+        Main frame update - delegates to Scene.update() for proper orchestration.
+        
+        Phase 7 Fix: Now uses the Orchestrator pattern via scene.update()
+        instead of manually calling individual methods.
+        """
         now = time.time()
         dt = now - self.last_time
         self.last_time = now
         
+        # Update UI widgets
         self.ui.update(dt)
-        self.actions.update(dt) # Delegate dialog updates
+        self.actions.update(dt)
         
+        # Update geometry animation time (unless paused)
         if not self.session.editor_paused:
             self.session.geo_time += dt
 
-        self.sim.update_constraint_drivers(self.session.geo_time)
-        self.sim.apply_constraints()
-
+        # =====================================================================
+        # Phase 7: Use Orchestrator Pattern
+        # =====================================================================
+        # Update simulation parameters from UI BEFORE orchestration
         if self.session.mode == config.MODE_SIM:
             self.sim.paused = not self.ui.buttons['play'].active
             self.sim.gravity = self.ui.sliders['gravity'].val
@@ -182,9 +191,21 @@ class FlowStateApp:
             self.sim.use_thermostat = self.ui.buttons['thermostat'].active
             self.sim.use_boundaries = self.ui.buttons['boundaries'].active
             
-            if not self.sim.paused:
-                self.sim.step(int(self.ui.sliders['speed'].val))
+            physics_steps = int(self.ui.sliders['speed'].val)
+        else:
+            # Editor mode: no physics, but still update geometry/constraints
+            physics_steps = 0
         
+        # Delegate to Scene orchestrator for correct update ordering:
+        # 1. Update constraint drivers (animations)
+        # 2. Solve constraints (geometry moves)
+        # 3. Rebuild static atoms if geometry changed
+        # 4. Run physics step (if enabled)
+        run_physics = (self.session.mode == config.MODE_SIM)
+        self.scene.update(dt, self.session.geo_time, run_physics, physics_steps)
+        # =====================================================================
+        
+        # Update tool state
         if self.session.current_tool:
             if self.session.current_tool.name == "Brush":
                 if 'brush_size' in self.ui.sliders:
