@@ -1,19 +1,24 @@
+"""
+FlowStateApp - The Main Application
+
+This is the application shell that:
+- Initializes all systems (Scene, Session, UI, Renderer)
+- Runs the main game loop
+- Delegates physics updates to Scene.update()
+- Handles mode switching and file I/O dialogs
+"""
+
 import pygame
 pygame.mixer.pre_init(44100, -16, 1, 1024)
 pygame.init()
 
 import core.config as config
-
-import core.utils as utils
-
 import core.file_io as file_io
-
 import time
 import sys
 import subprocess
 from tkinter import filedialog, Tk
 
-# Phase 4: Import Scene instead of Simulation directly
 from core.scene import Scene
 from core.session import Session
 from ui.ui_widgets import InputField
@@ -24,12 +29,19 @@ from ui.input_handler import InputHandler
 from core.sound_manager import SoundManager
 from app.app_controller import AppController
 
+
 class FlowStateApp:
     def __init__(self, start_mode=config.MODE_SIM):
-        try: self.root_tk = Tk(); self.root_tk.withdraw()
-        except: self.root_tk = None
+        try:
+            self.root_tk = Tk()
+            self.root_tk.withdraw()
+        except:
+            self.root_tk = None
 
-        self.screen = pygame.display.set_mode((config.WINDOW_WIDTH, config.WINDOW_HEIGHT), pygame.RESIZABLE)
+        self.screen = pygame.display.set_mode(
+            (config.WINDOW_WIDTH, config.WINDOW_HEIGHT), 
+            pygame.RESIZABLE
+        )
         
         title_suffix = "Simulation" if start_mode == config.MODE_SIM else "Model Builder"
         pygame.display.set_caption(f"Flow State - {title_suffix}")
@@ -51,19 +63,12 @@ class FlowStateApp:
         self.session.mode = start_mode 
         
         # =====================================================================
-        # Scene Pattern - Document Container
+        # Scene Pattern: Scene owns Sketch, Simulation, Compiler
         # =====================================================================
-        # Create Scene as the document container that owns:
-        # - Sketch (CAD domain)
-        # - Simulation (Physics domain)  
-        # - Compiler (bridge between them)
-        # - GeometryManager (CAD import/export)
-        # - CommandQueue (undo/redo)
         is_editor = (start_mode == config.MODE_EDITOR)
         self.scene = Scene(skip_warmup=is_editor)
         
-        # Alias for Simulation - still used for physics parameter access
-        # Access Sketch via self.scene.sketch (no alias needed)
+        # Alias for physics parameters access (used in update_physics)
         self.sim = self.scene.simulation
         # =====================================================================
         
@@ -80,7 +85,7 @@ class FlowStateApp:
         
         self.ui = UIManager(self.layout, self.session.input_world, mode=self.session.mode)
         
-        # --- NEW CONTROLLER ---
+        # Controller handles actions and dialogs
         self.actions = AppController(self)
         self.input_handler = InputHandler(self) 
         
@@ -91,27 +96,17 @@ class FlowStateApp:
             self.change_tool(config.TOOL_BRUSH) 
 
     # =========================================================================
-    # Property Aliases (Backward Compatibility)
+    # Property Accessors (Clean SoC - single source of truth)
     # =========================================================================
     
     @property
-    def walls(self):
-        """Alias for scene.sketch.entities - used by renderer, tools, etc."""
-        return self.scene.sketch.entities
-    
-    @property
-    def constraints(self):
-        """Alias for scene.sketch.constraints - used by renderer, tools, etc."""
-        return self.scene.sketch.constraints
-    
-    @property
     def sketch(self):
-        """Alias for scene.sketch - used by tools that need Sketch access."""
+        """Access to CAD domain via Scene."""
         return self.scene.sketch
     
     @property
     def geo(self):
-        """Alias for scene.geo - GeometryManager for CAD import/export."""
+        """Access to GeometryManager via Scene."""
         return self.scene.geo
 
     # =========================================================================
@@ -122,21 +117,27 @@ class FlowStateApp:
         self.layout = {
             'W': w, 'H': h,
             'LEFT_X': 0, 'LEFT_W': config.PANEL_LEFT_WIDTH,
-            'RIGHT_W': config.PANEL_RIGHT_WIDTH, 'RIGHT_X': w - config.PANEL_RIGHT_WIDTH,
-            'MID_X': config.PANEL_LEFT_WIDTH, 'MID_W': w - config.PANEL_LEFT_WIDTH - config.PANEL_RIGHT_WIDTH,
+            'RIGHT_W': config.PANEL_RIGHT_WIDTH, 
+            'RIGHT_X': w - config.PANEL_RIGHT_WIDTH,
+            'MID_X': config.PANEL_LEFT_WIDTH, 
+            'MID_W': w - config.PANEL_LEFT_WIDTH - config.PANEL_RIGHT_WIDTH,
             'MID_H': h - config.TOP_MENU_H
         }
 
     def init_tools(self):
         tool_registry = [
-            (config.TOOL_SELECT, SelectTool, None), (config.TOOL_BRUSH, BrushTool, None),
-            (config.TOOL_LINE, LineTool, None), (config.TOOL_RECT, RectTool, None),
-            (config.TOOL_CIRCLE, CircleTool, None), (config.TOOL_POINT, PointTool, None),
+            (config.TOOL_SELECT, SelectTool, None),
+            (config.TOOL_BRUSH, BrushTool, None),
+            (config.TOOL_LINE, LineTool, None),
+            (config.TOOL_RECT, RectTool, None),
+            (config.TOOL_CIRCLE, CircleTool, None),
+            (config.TOOL_POINT, PointTool, None),
             (config.TOOL_REF, LineTool, "Ref Line"), 
         ]
         for tid, cls, name in tool_registry:
             self.session.tools[tid] = cls(self) 
-            if name: self.session.tools[tid].name = name
+            if name:
+                self.session.tools[tid].name = name
 
     def handle_resize(self, w, h):
         old_mid_w = self.layout['MID_W']
@@ -162,16 +163,11 @@ class FlowStateApp:
             self.update_physics()
             self.render()
             self.clock.tick()
-        if self.root_tk: self.root_tk.destroy()
+        if self.root_tk:
+            self.root_tk.destroy()
         pygame.quit()
 
     def update_physics(self):
-        """
-        Main frame update - delegates to Scene.update() for proper orchestration.
-        
-        Uses the Orchestrator pattern via scene.update() which ensures correct
-        ordering: drivers → constraints → rebuild → physics
-        """
         now = time.time()
         dt = now - self.last_time
         self.last_time = now
@@ -180,14 +176,11 @@ class FlowStateApp:
         self.ui.update(dt)
         self.actions.update(dt)
         
-        # Update geometry animation time (unless paused)
+        # Update geometry time (for animations)
         if not self.session.editor_paused:
             self.session.geo_time += dt
 
-        # =====================================================================
-        # Orchestrator Pattern - Scene.update() handles correct ordering
-        # =====================================================================
-        # Update simulation parameters from UI BEFORE orchestration
+        # Update physics parameters from UI sliders (Sim mode only)
         if self.session.mode == config.MODE_SIM:
             self.sim.paused = not self.ui.buttons['play'].active
             self.sim.gravity = self.ui.sliders['gravity'].val
@@ -202,19 +195,14 @@ class FlowStateApp:
             
             physics_steps = int(self.ui.sliders['speed'].val)
         else:
-            # Editor mode: no physics, but still update geometry/constraints
-            physics_steps = 0
+            physics_steps = 1
         
-        # Delegate to Scene orchestrator for correct update ordering:
-        # 1. Update constraint drivers (animations)
-        # 2. Solve constraints (geometry moves)
-        # 3. Rebuild static atoms if geometry changed
-        # 4. Run physics step (if enabled)
-        run_physics = (self.session.mode == config.MODE_SIM)
+        # === SCENE ORCHESTRATOR ===
+        # Scene.update() handles: drivers → solve → rebuild → physics
+        run_physics = (self.session.mode == config.MODE_SIM and not self.sim.paused)
         self.scene.update(dt, self.session.geo_time, run_physics, physics_steps)
-        # =====================================================================
         
-        # Update tool state
+        # Update current tool
         if self.session.current_tool:
             if self.session.current_tool.name == "Brush":
                 if 'brush_size' in self.ui.sliders:
@@ -253,47 +241,64 @@ class FlowStateApp:
 
     def save_geo_dialog(self):
         if self.root_tk:
-            f = filedialog.asksaveasfilename(defaultextension=".geom", filetypes=[("Geometry Files", "*.geom")])
+            f = filedialog.asksaveasfilename(
+                defaultextension=".geom", 
+                filetypes=[("Geometry Files", "*.geom")]
+            )
             if f: 
                 self.session.current_geom_filepath = f
-                self.session.set_status(file_io.save_geometry_file(self.sim, self.session, f))
+                # Use file_io which now works with scene
+                self.session.set_status(
+                    file_io.save_geometry_file(self.scene, self.session, f)
+                )
     
     def _execute_menu(self, selection):
         self.sound_manager.play_sound('click')
+        
         if selection == "New Simulation":
             subprocess.Popen([sys.executable, "run_instance.py", "sim"])
+            
         elif selection == "New Model":
             subprocess.Popen([sys.executable, "run_instance.py", "editor"])
+            
         elif selection == "New": 
             self.scene.new()
             self.session.input_world.set_value(config.DEFAULT_WORLD_SIZE)
             self.session.current_sim_filepath = None
             self.session.set_status("New Project Created")
+            
         elif selection == "Import Geometry":
             if self.root_tk:
-                f = filedialog.askopenfilename(filetypes=[("Geometry Files", "*.geom"), ("All Files", "*.*")])
+                f = filedialog.askopenfilename(
+                    filetypes=[("Geometry Files", "*.geom"), ("All Files", "*.*")]
+                )
                 if f:
                     data, _ = file_io.load_geometry_file(f)
                     if data: 
-                        if self.geo and hasattr(self.geo, 'place_geometry'):
-                            self.session.placing_geo_data = data
-                            self.session.set_status("Place Model")
+                        self.session.placing_geo_data = data
+                        self.session.set_status("Place Model")
+                        
         elif self.root_tk:
-            if selection == "Save As..." or (selection == "Save"):
+            if selection == "Save As..." or selection == "Save":
                 is_save_as = (selection == "Save As...")
                 if is_save_as or not self.session.current_sim_filepath:
                     ext = ".sim" if self.session.mode == config.MODE_SIM else ".mdl"
                     ft = [("Simulation Files", "*.sim")] if ext == ".sim" else [("Model Files", "*.mdl")]
                     f = filedialog.asksaveasfilename(defaultextension=ext, filetypes=ft)
-                    if f: self.session.current_sim_filepath = f
+                    if f:
+                        self.session.current_sim_filepath = f
+                        
                 if self.session.current_sim_filepath:
-                    self.session.set_status(file_io.save_file(self.sim, self.session, self.session.current_sim_filepath))
+                    self.session.set_status(
+                        file_io.save_file(self.scene, self.session, self.session.current_sim_filepath)
+                    )
+                    
             elif selection == "Open...":
                 ext = "*.sim" if self.session.mode == config.MODE_SIM else "*.mdl"
                 f = filedialog.askopenfilename(filetypes=[("Project Files", ext)])
                 if f:
                     self.session.current_sim_filepath = f
-                    success, msg, view_state = file_io.load_file(self.sim, f)
+                    success, msg, view_state = file_io.load_file(self.scene, f)
                     self.session.set_status(msg)
                     if success: 
                         self.session.input_world.set_value(self.sim.world_size)
@@ -301,4 +306,5 @@ class FlowStateApp:
                             self.session.zoom = view_state['zoom']
                             self.session.pan_x = view_state['pan_x']
                             self.session.pan_y = view_state['pan_y']
+                            
         pygame.event.pump()

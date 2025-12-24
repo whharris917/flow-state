@@ -1,5 +1,5 @@
 """
-Simulation - The Physics Domain
+Simulation - The Physics Domain (PURE)
 
 This class is responsible for PARTICLE PHYSICS ONLY:
 - Particle arrays (position, velocity, force)
@@ -11,30 +11,31 @@ It does NOT know about:
 - Lines, Circles, Points (geometry types)
 - Constraints (CAD relationships)
 - Materials (physical properties of geometry)
+- Compilation (that's the Compiler's job)
+- Orchestration (that's the Scene's job)
 
 Those belong to the Sketch (CAD domain). The Compiler bridges them.
+The Scene orchestrates all operations.
 """
 
 import numpy as np
-import random
 import math
 import time
-import copy
 import core.config as config
 
-from engine.physics_core import integrate_n_steps, build_neighbor_list, check_displacement, apply_thermostat, spatial_sort
-from model.sketch import Sketch
+from engine.physics_core import (
+    integrate_n_steps, build_neighbor_list, check_displacement, 
+    apply_thermostat, spatial_sort
+)
 
 
 class Simulation:
-    def __init__(self, skip_warmup=False, sketch=None, compiler=None):
+    def __init__(self, skip_warmup=False):
         """
         Initialize the physics simulation.
         
         Args:
             skip_warmup: If True, skip Numba JIT warmup (for Editor-only mode)
-            sketch: Optional external Sketch instance (for Scene pattern)
-            compiler: Optional external Compiler instance (for Scene pattern)
         """
         self.capacity = 5000
         self.count = 0
@@ -58,26 +59,6 @@ class Simulation:
         self.atom_sigma = np.zeros(self.capacity, dtype=np.float32)
         self.atom_eps_sqrt = np.zeros(self.capacity, dtype=np.float32)
         
-        # --- Design / Sketch Data ---
-        # Use injected sketch or create our own
-        if sketch is not None:
-            self.sketch = sketch
-        else:
-            self.sketch = Sketch()
-        
-        # Use injected compiler or create our own
-        if compiler is not None:
-            self.compiler = compiler
-        else:
-            # Deferred import to avoid circular dependency
-            from engine.compiler import Compiler
-            self.compiler = Compiler(self.sketch, self)
-        
-        # GeometryManager reference - injected by Scene
-        # Scene owns the GeometryManager (CAD operations, not physics)
-        # This attribute is set by Scene.__init__() for backward compatibility
-        self.geo = None
-        
         # --- Neighbor List & Optimization ---
         self.max_pairs = self.capacity * 100
         self.pair_i = np.zeros(self.max_pairs, dtype=np.int32)
@@ -98,11 +79,13 @@ class Simulation:
         self.r_cut_base = 2.5
         self._update_derived_params()
         
-        # --- Metrics & History ---
+        # --- Metrics ---
         self.total_steps = 0
         self.sps = 0.0
         self.steps_accumulator = 0
         self.last_sps_update = time.time()
+        
+        # --- Physics Undo Stack (particles only, not CAD) ---
         self.undo_stack = []
         self.redo_stack = []
         
@@ -110,28 +93,6 @@ class Simulation:
             self._warmup_compiler()
         else:
             print("Skipping Numba warmup (Model Builder Mode)")
-
-    # =========================================================================
-    # Properties (Backward Compatibility Aliases)
-    # =========================================================================
-    
-    @property
-    def walls(self):
-        """Alias for sketch.entities - backward compatibility."""
-        return self.sketch.entities
-    
-    @walls.setter
-    def walls(self, value):
-        self.sketch.entities = value
-
-    @property
-    def constraints(self):
-        """Alias for sketch.constraints - backward compatibility."""
-        return self.sketch.constraints
-    
-    @constraints.setter
-    def constraints(self, value):
-        self.sketch.constraints = value
 
     # =========================================================================
     # Physics Parameter Management
@@ -187,15 +148,18 @@ class Simulation:
             self.world_size, self.cell_size
         )
         
-        self.clear_particles()
+        self.clear()
         print("Warmup complete.")
 
     # =========================================================================
-    # Undo/Redo System
+    # Physics Undo/Redo (Particle State Only)
+    # 
+    # Note: CAD operations use the Command Queue in Scene.
+    # This undo system is for particle brush operations only.
     # =========================================================================
 
     def snapshot(self):
-        """Save current state for undo."""
+        """Save current particle state for undo (physics only, not CAD)."""
         state = {
             'count': self.count,
             'pos_x': np.copy(self.pos_x[:self.count]),
@@ -206,7 +170,6 @@ class Simulation:
             'kinematic_props': np.copy(self.kinematic_props[:self.count]),
             'atom_sigma': np.copy(self.atom_sigma[:self.count]),
             'atom_eps_sqrt': np.copy(self.atom_eps_sqrt[:self.count]),
-            'sketch_data': self.sketch.to_dict(),
             'world_size': self.world_size
         }
         self.undo_stack.append(state)
@@ -214,8 +177,8 @@ class Simulation:
             self.undo_stack.pop(0)
         self.redo_stack.clear()
 
-    def restore_state(self, state):
-        """Restore simulation from a saved state."""
+    def _restore_physics_state(self, state):
+        """Restore particle physics state from a saved state."""
         self.count = state['count']
         if self.count > self.capacity:
             while self.capacity < self.count:
@@ -227,50 +190,34 @@ class Simulation:
         self.vel_x[:self.count] = state['vel_x']
         self.vel_y[:self.count] = state['vel_y']
         self.is_static[:self.count] = state['is_static']
-        
-        if 'kinematic_props' in state:
-            self.kinematic_props[:self.count] = state['kinematic_props']
-        else:
-            self.kinematic_props[:self.count] = 0.0
-        
+        self.kinematic_props[:self.count] = state['kinematic_props']
         self.atom_sigma[:self.count] = state['atom_sigma']
         self.atom_eps_sqrt[:self.count] = state['atom_eps_sqrt']
-        
-        if 'sketch_data' in state:
-            self.sketch.restore(state['sketch_data'])
-        else:
-            # Legacy format support
-            self.sketch.entities = copy.deepcopy(state.get('walls', []))
-            self.sketch.constraints = copy.deepcopy(state.get('constraints', []))
-            
         self.world_size = state['world_size']
         self.rebuild_next = True
         self.pair_count = 0
 
     def undo(self):
-        """Undo last action."""
+        """Undo last particle operation."""
         if not self.undo_stack:
-            return
-        self._push_redo()
+            return False
+        self._push_to_stack(self.redo_stack)
         prev_state = self.undo_stack.pop()
-        self.restore_state(prev_state)
+        self._restore_physics_state(prev_state)
+        return True
 
     def redo(self):
-        """Redo last undone action."""
+        """Redo last undone particle operation."""
         if not self.redo_stack:
-            return
-        self._push_undo_internal()
+            return False
+        self._push_to_stack(self.undo_stack)
         next_state = self.redo_stack.pop()
-        self.restore_state(next_state)
-
-    def _push_redo(self):
-        self._save_current_to_stack(self.redo_stack)
-    
-    def _push_undo_internal(self):
-        self._save_current_to_stack(self.undo_stack)
+        self._restore_physics_state(next_state)
+        return True
         
-    def _save_current_to_stack(self, stack):
-        current_state = {
+    def _push_to_stack(self, stack):
+        """Save current state to a stack."""
+        state = {
             'count': self.count,
             'pos_x': np.copy(self.pos_x[:self.count]),
             'pos_y': np.copy(self.pos_y[:self.count]),
@@ -280,10 +227,9 @@ class Simulation:
             'kinematic_props': np.copy(self.kinematic_props[:self.count]),
             'atom_sigma': np.copy(self.atom_sigma[:self.count]),
             'atom_eps_sqrt': np.copy(self.atom_eps_sqrt[:self.count]),
-            'sketch_data': self.sketch.to_dict(),
             'world_size': self.world_size
         }
-        stack.append(current_state)
+        stack.append(state)
 
     # =========================================================================
     # World Management
@@ -292,13 +238,13 @@ class Simulation:
     def resize_world(self, new_size):
         """Resize the simulation world."""
         self.snapshot()
-        if new_size < 100.0:
-            new_size = 100.0
+        if new_size < 10.0:
+            new_size = 10.0
         self.world_size = new_size
-        self.clear_particles(snapshot=False)
+        self.clear(snapshot=False)
 
-    def clear_particles(self, snapshot=True):
-        """Remove all particles (keep geometry)."""
+    def clear(self, snapshot=True):
+        """Remove all particles."""
         if snapshot:
             self.snapshot()
         self.count = 0
@@ -311,8 +257,8 @@ class Simulation:
         self.kinematic_props.fill(0)
         self.rebuild_next = True
 
-    def reset_simulation(self):
-        """Reset everything to defaults."""
+    def reset(self):
+        """Reset physics to defaults."""
         self.snapshot()
         self.world_size = config.DEFAULT_WORLD_SIZE
         self.dt = config.DEFAULT_DT
@@ -324,15 +270,14 @@ class Simulation:
         self.epsilon = config.ATOM_EPSILON
         self.skin_distance = config.DEFAULT_SKIN_DISTANCE
         self._update_derived_params()
-        self.clear_particles(snapshot=False)
-        self.sketch.clear()
+        self.clear(snapshot=False)
 
     # =========================================================================
-    # Serialization
+    # Serialization (Physics State Only)
     # =========================================================================
     
     def to_dict(self):
-        """Serialize physics state for Scene."""
+        """Serialize physics state."""
         return {
             'count': int(self.count),
             'world_size': float(self.world_size),
@@ -376,115 +321,15 @@ class Simulation:
         self.rebuild_next = True
         self.pair_count = 0
 
-    def clear(self):
-        """Clear all particles (alias for Scene compatibility)."""
-        self.clear_particles(snapshot=False)
-
-    def reset(self):
-        """Reset to defaults (alias for Scene compatibility)."""
-        self.reset_simulation()
-
     # =========================================================================
-    # Geometry Wrappers (Delegate to Sketch)
-    # 
-    # These methods exist for backward compatibility. They delegate all
-    # geometry operations to the Sketch (CAD domain). Simulation does NOT
-    # import or know about geometry types (Line, Circle, Point).
+    # Compiler Interface (Called by Scene/Compiler)
     # =========================================================================
-    
-    def add_wall(self, start_pos, end_pos, is_ref=False, material_id="Default"):
+
+    def compact_arrays(self, keep_indices):
         """
-        Add a line entity. Delegates to Sketch.
-        
-        Note: 'wall' is legacy naming. In the CAD domain, this is a Line entity.
+        Compact particle arrays to remove gaps.
+        Called by Compiler during rebuild.
         """
-        if is_ref:
-            material_id = "Ghost"
-        self.sketch.add_line(start_pos, end_pos, is_ref, material_id=material_id)
-        
-    def add_circle(self, center, radius, material_id="Default"):
-        """Add a circle entity. Delegates to Sketch."""
-        self.sketch.add_circle(center, radius, material_id=material_id)
-
-    def remove_wall(self, index):
-        """Remove an entity. Delegates to Sketch."""
-        self.snapshot()
-        self.sketch.remove_entity(index)
-        self.rebuild_static_atoms()
-
-    def toggle_anchor(self, wall_idx, pt_idx):
-        """Toggle anchor state of a point. Delegates to Sketch."""
-        self.snapshot()
-        self.sketch.toggle_anchor(wall_idx, pt_idx)
-        self.rebuild_static_atoms()
-
-    def update_wall(self, index, start_pos, end_pos):
-        """
-        Update an entity's position. Delegates to Sketch.
-        
-        This method does NOT check geometry types - Sketch.update_entity()
-        handles polymorphism via hasattr() checks.
-        
-        Args:
-            index: Entity index
-            start_pos: New start position (also used as center for circles)
-            end_pos: New end position (None for circles)
-        """
-        if 0 <= index < len(self.walls):
-            # Build kwargs based on what's provided
-            # Sketch.update_entity() will apply only what's relevant via hasattr()
-            kwargs = {}
-            if start_pos is not None:
-                kwargs['start'] = start_pos
-                kwargs['center'] = start_pos  # For circles
-            if end_pos is not None:
-                kwargs['end'] = end_pos
-            
-            self.sketch.update_entity(index, **kwargs)
-            self.rebuild_static_atoms()
-
-    def update_wall_props(self, index, props):
-        """Update entity properties. Delegates to Sketch."""
-        self.snapshot()
-        self.sketch.update_entity(index, **props)
-        self.rebuild_static_atoms()
-
-    # =========================================================================
-    # Constraint Wrappers (Delegate to Sketch)
-    # 
-    # NOTE: update_constraint_drivers() has been REMOVED.
-    # The Scene.update() orchestrator now calls sketch.update_drivers() directly.
-    # =========================================================================
-
-    def attempt_apply_constraint(self, ctype, wall_idxs, pt_idxs):
-        """Attempt to apply a constraint. Delegates to Sketch."""
-        result = self.sketch.attempt_apply_constraint(ctype, wall_idxs, pt_idxs)
-        if result:
-            self.rebuild_static_atoms()
-        return result
-
-    def apply_constraints(self, iterations=20):
-        """Solve constraints. Delegates to Sketch."""
-        if self.constraints:
-            self.sketch.solve(iterations)
-            self.rebuild_static_atoms()
-
-    def add_constraint_object(self, c_obj):
-        """Add a constraint object. Delegates to Sketch."""
-        self.snapshot()
-        self.sketch.add_constraint_object(c_obj)
-        self.rebuild_static_atoms()
-
-    # =========================================================================
-    # Compiler Interface
-    # =========================================================================
-
-    def rebuild_static_atoms(self):
-        """Recompile geometry to static atoms. Delegates to Compiler."""
-        self.compiler.rebuild(self.sketch)
-
-    def _compact_arrays(self, keep_indices):
-        """Compact particle arrays to remove gaps."""
         indices = np.array(keep_indices, dtype=np.int32)
         new_count = len(indices)
         
@@ -500,7 +345,7 @@ class Simulation:
         self.count = new_count
 
     # =========================================================================
-    # Physics Step (PURE PHYSICS - No Geometry Knowledge)
+    # Physics Step (PURE PHYSICS)
     # =========================================================================
 
     def step(self, steps_to_run):
@@ -515,6 +360,7 @@ class Simulation:
         It does NOT:
         - Update geometry (that's Sketch's job)
         - Update constraints (that's Sketch's job)
+        - Compile geometry (that's Compiler's job)
         - Animate anything (that's done via constraint drivers before step())
         """
         if self.paused:
@@ -619,7 +465,7 @@ class Simulation:
             
             if not np.all(is_inside):
                 keep_indices = np.where(is_inside)[0]
-                self._compact_arrays(keep_indices)
+                self.compact_arrays(keep_indices)
                 self.rebuild_next = True
 
     # =========================================================================
@@ -697,7 +543,7 @@ class Simulation:
                 keep_indices.append(i)
         
         if len(keep_indices) < self.count:
-            self._compact_arrays(keep_indices)
+            self.compact_arrays(keep_indices)
             self.rebuild_next = True
 
     # =========================================================================

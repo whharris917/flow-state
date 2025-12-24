@@ -1,11 +1,12 @@
 """
 Scene - The Document Container & Orchestrator
 
-The Scene is the central "document" in Flow State. It contains:
+The Scene is the central "document" in Flow State. It contains and OWNS:
 - Sketch: CAD geometry, constraints, materials, solver
 - Simulation: Particle physics (atoms only, no geometry knowledge)
 - Compiler: The one-way bridge from Sketch → Simulation
 - GeometryManager: Import/export operations for CAD data
+- CommandQueue: Undo/redo for CAD operations
 
 The Scene also serves as the ORCHESTRATOR, managing the correct
 order of operations during each frame update.
@@ -13,6 +14,12 @@ order of operations during each frame update.
 File formats:
 - .mdl (Model): Sketch only - reusable CAD components
 - .scn (Scene): Full state - Sketch + Simulation + View
+
+Architecture:
+- Scene OWNS: Sketch, Simulation, Compiler, GeometryManager, CommandQueue
+- Sketch OWNS: entities, constraints, materials
+- Simulation OWNS: particle arrays (pure physics)
+- Compiler READS Sketch, WRITES to Simulation (one-way bridge)
 """
 
 import json
@@ -33,11 +40,13 @@ class Scene:
         - Sketch (CAD domain)
         - Simulation (Physics domain)
         - Compiler (bridge between them)
-        - GeometryManager (CAD import/export operations)
+        - GeometryManager (CAD import/export)
+        - CommandQueue (undo/redo for CAD)
     
     Orchestrates:
-        - Frame updates (drivers → constraints → physics)
+        - Frame updates (drivers → constraints → compile → physics)
         - Geometry compilation (sketch → atoms)
+        - Undo/redo via commands
     """
     
     def __init__(self, skip_warmup=False):
@@ -50,39 +59,48 @@ class Scene:
         # CAD Domain
         self.sketch = Sketch()
         
-        # CAD Import/Export Helper (operates on Sketch, NOT physics)
+        # CAD Import/Export Helper
         self.geo = GeometryManager(self.sketch)
         
-        # Bridge (create first so we can inject into Simulation)
-        # We'll set the simulation reference after creating it
-        self.compiler = Compiler(self.sketch, None)
+        # Physics Domain (pure - no CAD knowledge)
+        self.simulation = Simulation(skip_warmup=skip_warmup)
         
-        # Physics Domain (inject shared sketch and compiler)
-        self.simulation = Simulation(
-            skip_warmup=skip_warmup, 
-            sketch=self.sketch, 
-            compiler=self.compiler
-        )
+        # Bridge (knows both domains)
+        self.compiler = Compiler(self.sketch, self.simulation)
         
-        # Complete circular references
-        self.compiler.sim = self.simulation
-        
-        # Backward compatibility: Simulation.geo references Scene's geo
-        # This allows existing code using sim.geo to continue working
-        self.simulation.geo = self.geo
-        
-        # Command Queue for undo/redo (Phase 8)
-        # This provides proper command-based undo instead of full state snapshots
+        # Command Queue for CAD undo/redo
         self.commands = CommandQueue(max_history=50)
+        
+        # Track geometry changes for rebuild optimization
+        self._geometry_dirty = False
     
-    # -------------------------------------------------------------------------
-    # Command Interface (Phase 8)
-    # -------------------------------------------------------------------------
+    # =========================================================================
+    # Convenience Aliases (for common access patterns)
+    # =========================================================================
+    
+    @property
+    def entities(self):
+        """Alias for sketch.entities."""
+        return self.sketch.entities
+    
+    @property
+    def constraints(self):
+        """Alias for sketch.constraints."""
+        return self.sketch.constraints
+    
+    @property
+    def materials(self):
+        """Alias for sketch.materials."""
+        return self.sketch.materials
+    
+    # =========================================================================
+    # Command Interface (CAD Undo/Redo)
+    # =========================================================================
     
     def execute(self, command):
         """
         Execute a command and add to history.
-        After execution, rebuilds static atoms if needed.
+        After execution, marks geometry dirty for rebuild.
         
         Args:
             command: A Command instance
@@ -92,44 +110,46 @@ class Scene:
         """
         result = self.commands.execute(command)
         if result:
-            self.compiler.rebuild()
+            self._geometry_dirty = True
         return result
     
     def undo(self):
         """
-        Undo the last command.
+        Undo the last CAD command.
         
         Returns:
             True if undo was successful
         """
         result = self.commands.undo()
         if result:
-            self.compiler.rebuild()
+            self._geometry_dirty = True
+            self.rebuild()
         return result
     
     def redo(self):
         """
-        Redo the last undone command.
+        Redo the last undone CAD command.
         
         Returns:
             True if redo was successful
         """
         result = self.commands.redo()
         if result:
-            self.compiler.rebuild()
+            self._geometry_dirty = True
+            self.rebuild()
         return result
     
     def can_undo(self):
-        """Check if undo is available."""
+        """Check if CAD undo is available."""
         return self.commands.can_undo()
     
     def can_redo(self):
-        """Check if redo is available."""
+        """Check if CAD redo is available."""
         return self.commands.can_redo()
     
-    # -------------------------------------------------------------------------
+    # =========================================================================
     # Orchestrator: Frame Update
-    # -------------------------------------------------------------------------
+    # =========================================================================
     
     def update(self, dt, geo_time, run_physics=True, physics_steps=1):
         """
@@ -150,32 +170,31 @@ class Scene:
         Returns:
             True if geometry was modified (rebuild occurred)
         """
-        geometry_dirty = False
+        geometry_changed = False
         
         # 1. Update constraint drivers (animation)
-        # This modifies constraint values (e.g., Length oscillates)
-        old_values = self._snapshot_constraint_values()
-        self.sketch.update_drivers(geo_time)
-        new_values = self._snapshot_constraint_values()
-        
-        if old_values != new_values:
-            geometry_dirty = True
-        
-        # 2. Solve constraints
-        # This moves geometry to satisfy constraints
         if self.sketch.constraints:
+            old_values = self._snapshot_constraint_values()
+            self.sketch.update_drivers(geo_time)
+            new_values = self._snapshot_constraint_values()
+            
+            if old_values != new_values:
+                geometry_changed = True
+            
+            # 2. Solve constraints
             self.sketch.solve()
-            geometry_dirty = True  # Conservative: assume solve moved something
+            geometry_changed = True  # Conservative: assume solve moved something
         
         # 3. Rebuild static atoms if geometry changed
-        if geometry_dirty:
-            self.compiler.rebuild()
+        if geometry_changed or self._geometry_dirty:
+            self.rebuild()
+            self._geometry_dirty = False
         
         # 4. Run physics step (if enabled)
         if run_physics and not self.simulation.paused:
             self.simulation.step(physics_steps)
         
-        return geometry_dirty
+        return geometry_changed
     
     def _snapshot_constraint_values(self):
         """Capture current constraint values for change detection."""
@@ -184,9 +203,9 @@ class Scene:
             for c in self.sketch.constraints
         )
     
-    # -------------------------------------------------------------------------
+    # =========================================================================
     # Compiler Interface
-    # -------------------------------------------------------------------------
+    # =========================================================================
     
     def rebuild(self):
         """
@@ -195,9 +214,13 @@ class Scene:
         """
         self.compiler.rebuild()
     
-    # -------------------------------------------------------------------------
+    def mark_dirty(self):
+        """Mark geometry as needing rebuild on next update."""
+        self._geometry_dirty = True
+    
+    # =========================================================================
     # Model I/O (.mdl) - Sketch Only
-    # -------------------------------------------------------------------------
+    # =========================================================================
     
     def save_model(self, path):
         """
@@ -234,8 +257,8 @@ class Scene:
         
         Args:
             path: File path to .mdl file
-            offset_x: X position for placement (None = use model's original position)
-            offset_y: Y position for placement (None = use model's original position)
+            offset_x: X position for placement (None = original position)
+            offset_y: Y position for placement (None = original position)
             
         Returns:
             Tuple of (success: bool, message: str)
@@ -247,19 +270,17 @@ class Scene:
             with open(path, 'r') as f:
                 data = json.load(f)
             
-            # Validate format
             if data.get('type') != 'MODEL':
                 return False, "Invalid model file format"
             
             sketch_data = data.get('sketch', {})
             
-            # If offset provided, place at that location
-            # Otherwise merge at original coordinates
             if offset_x is not None and offset_y is not None:
                 self._import_sketch_at_offset(sketch_data, offset_x, offset_y)
             else:
                 self._import_sketch_direct(sketch_data)
             
+            self._geometry_dirty = True
             return True, f"Model imported: {os.path.basename(path)}"
             
         except json.JSONDecodeError as e:
@@ -268,10 +289,7 @@ class Scene:
             return False, f"Import error: {e}"
     
     def _import_sketch_at_offset(self, sketch_data, offset_x, offset_y):
-        """
-        Imports sketch data at a specific world position.
-        Calculates centroid and offsets all geometry.
-        """
+        """Import sketch data at a specific world position."""
         from model.geometry import Line, Circle, Point
         from model.constraints import create_constraint
         from model.properties import Material
@@ -304,7 +322,6 @@ class Scene:
         if min_x == float('inf'):
             return
         
-        # Calculate offset from centroid to target position
         center_x = (min_x + max_x) / 2
         center_y = (min_y + max_y) / 2
         dx = offset_x - center_x
@@ -315,7 +332,6 @@ class Scene:
             if mat_name not in self.sketch.materials:
                 self.sketch.materials[mat_name] = Material.from_dict(mat_data)
         
-        # Track base index for constraint remapping
         base_idx = len(self.sketch.entities)
         
         # Import entities with offset
@@ -351,21 +367,17 @@ class Scene:
                 self.sketch.constraints.append(c)
     
     def _import_sketch_direct(self, sketch_data):
-        """
-        Imports sketch data at its original coordinates (simple merge).
-        """
+        """Import sketch data at its original coordinates."""
         from model.geometry import Line, Circle, Point
         from model.constraints import create_constraint
         from model.properties import Material
         
-        # Import materials
         for mat_name, mat_data in sketch_data.get('materials', {}).items():
             if mat_name not in self.sketch.materials:
                 self.sketch.materials[mat_name] = Material.from_dict(mat_data)
         
         base_idx = len(self.sketch.entities)
         
-        # Import entities
         for e in sketch_data.get('entities', []):
             if e['type'] == 'line':
                 self.sketch.entities.append(Line.from_dict(e))
@@ -374,7 +386,6 @@ class Scene:
             elif e['type'] == 'point':
                 self.sketch.entities.append(Point.from_dict(e))
         
-        # Import constraints
         for c_data in sketch_data.get('constraints', []):
             remapped = self._remap_constraint_indices(c_data, base_idx)
             c = create_constraint(remapped)
@@ -382,9 +393,7 @@ class Scene:
                 self.sketch.constraints.append(c)
     
     def _remap_constraint_indices(self, c_data, base_idx):
-        """
-        Remaps constraint indices by adding base_idx offset.
-        """
+        """Remap constraint indices by adding base_idx offset."""
         c_copy = c_data.copy()
         new_indices = []
         
@@ -397,9 +406,9 @@ class Scene:
         c_copy['indices'] = new_indices
         return c_copy
     
-    # -------------------------------------------------------------------------
+    # =========================================================================
     # Scene I/O (.scn) - Full State
-    # -------------------------------------------------------------------------
+    # =========================================================================
     
     def save_scene(self, path, view_state=None):
         """
@@ -451,22 +460,17 @@ class Scene:
             with open(path, 'r') as f:
                 data = json.load(f)
             
-            # Validate format
             if data.get('type') != 'SCENE':
                 return None, None, "Invalid scene file format"
             
-            # Create new Scene
             scene = cls(skip_warmup=skip_warmup)
             
-            # Restore Sketch
             if 'sketch' in data:
                 scene.sketch.restore(data['sketch'])
             
-            # Restore Simulation
             if 'simulation' in data:
                 scene.simulation.restore(data['simulation'])
             
-            # Extract view state (not stored in Scene)
             view_state = data.get('view', None)
             
             return scene, view_state, f"Scene loaded: {os.path.basename(path)}"
@@ -476,22 +480,20 @@ class Scene:
         except Exception as e:
             return None, None, f"Load error: {e}"
     
-    # -------------------------------------------------------------------------
+    # =========================================================================
     # Convenience Methods
-    # -------------------------------------------------------------------------
+    # =========================================================================
     
     def clear(self):
-        """
-        Clears all content from the Scene.
-        """
+        """Clears all content from the Scene."""
         self.sketch.clear()
-        self.simulation.clear()
+        self.simulation.clear(snapshot=False)
         self.commands.clear()
+        self._geometry_dirty = False
     
     def new(self):
-        """
-        Resets the Scene to a fresh state.
-        """
+        """Resets the Scene to a fresh state."""
         self.sketch.clear()
         self.simulation.reset()
         self.commands.clear()
+        self._geometry_dirty = False

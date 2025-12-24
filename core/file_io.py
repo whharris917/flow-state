@@ -6,6 +6,9 @@ Handles saving and loading of:
 - Model/geometry only (.mdl, .geom files)
 
 All serialization uses JSON for portability and human-readability.
+
+Architecture note: These functions receive Scene (the document container)
+and access Sketch/Simulation through it.
 """
 
 import json
@@ -15,12 +18,12 @@ from model.geometry import Line, Circle, Point
 from model.constraints import create_constraint
 
 
-def save_file(sim, session, filepath):
+def save_file(scene, session, filepath):
     """
     Saves the complete simulation state (particles + geometry + view) to a JSON file.
     
     Args:
-        sim: Simulation instance
+        scene: Scene instance (owns Sketch and Simulation)
         session: Session instance (for view state)
         filepath: Target file path (.sim recommended)
     
@@ -30,14 +33,13 @@ def save_file(sim, session, filepath):
     if not filepath:
         return "Cancelled"
     
-    # Serialize geometry
-    walls_dicts = [w.to_dict() for w in sim.walls]
-    constraints_dicts = [c.to_dict() for c in sim.constraints]
+    sketch = scene.sketch
+    simulation = scene.simulation
     
-    # Serialize materials from sketch
-    materials_dicts = {}
-    if hasattr(sim, 'sketch') and hasattr(sim.sketch, 'materials'):
-        materials_dicts = {k: v.to_dict() for k, v in sim.sketch.materials.items()}
+    # Serialize geometry
+    walls_dicts = [e.to_dict() for e in sketch.entities]
+    constraints_dicts = [c.to_dict() for c in sketch.constraints]
+    materials_dicts = {k: v.to_dict() for k, v in sketch.materials.items()}
     
     # Capture view state from session
     view_state = {
@@ -52,14 +54,14 @@ def save_file(sim, session, filepath):
         'type': 'SIMULATION',
         
         # Physics arrays
-        'count': sim.count,
-        'pos_x': sim.pos_x[:sim.count].tolist(),
-        'pos_y': sim.pos_y[:sim.count].tolist(),
-        'vel_x': sim.vel_x[:sim.count].tolist(),
-        'vel_y': sim.vel_y[:sim.count].tolist(),
-        'is_static': sim.is_static[:sim.count].tolist(),
-        'atom_sigma': sim.atom_sigma[:sim.count].tolist(),
-        'atom_eps_sqrt': sim.atom_eps_sqrt[:sim.count].tolist(),
+        'count': simulation.count,
+        'pos_x': simulation.pos_x[:simulation.count].tolist(),
+        'pos_y': simulation.pos_y[:simulation.count].tolist(),
+        'vel_x': simulation.vel_x[:simulation.count].tolist(),
+        'vel_y': simulation.vel_y[:simulation.count].tolist(),
+        'is_static': simulation.is_static[:simulation.count].tolist(),
+        'atom_sigma': simulation.atom_sigma[:simulation.count].tolist(),
+        'atom_eps_sqrt': simulation.atom_eps_sqrt[:simulation.count].tolist(),
         
         # Geometry
         'walls': walls_dicts,
@@ -67,7 +69,7 @@ def save_file(sim, session, filepath):
         'materials': materials_dicts,
         
         # World config
-        'world_size': sim.world_size,
+        'world_size': simulation.world_size,
         
         # View state
         'view_state': view_state
@@ -81,12 +83,12 @@ def save_file(sim, session, filepath):
         return f"Save Error: {e}"
 
 
-def load_file(sim, filepath):
+def load_file(scene, filepath):
     """
     Loads a complete simulation state from a JSON file.
     
     Args:
-        sim: Simulation instance to load into
+        scene: Scene instance to load into
         filepath: Source file path
     
     Returns:
@@ -99,58 +101,59 @@ def load_file(sim, filepath):
         with open(filepath, 'r') as f:
             data = json.load(f)
         
+        sketch = scene.sketch
+        simulation = scene.simulation
+        
         # 1. Restore Materials (before geometry, as geometry references materials)
-        if 'materials' in data and hasattr(sim, 'sketch'):
+        if 'materials' in data:
             from model.properties import Material
-            sim.sketch.materials = {}
+            sketch.materials = {}
             for k, v in data['materials'].items():
-                sim.sketch.materials[k] = Material.from_dict(v)
+                sketch.materials[k] = Material.from_dict(v)
             # Ensure defaults exist
-            if "Default" not in sim.sketch.materials:
-                sim.sketch.materials["Default"] = Material("Default")
-            if "Ghost" not in sim.sketch.materials:
-                sim.sketch.materials["Ghost"] = Material("Ghost", physical=False)
+            if "Default" not in sketch.materials:
+                sketch.materials["Default"] = Material("Default")
+            if "Ghost" not in sketch.materials:
+                sketch.materials["Ghost"] = Material("Ghost", physical=False)
         
         # 2. Restore Geometry
-        walls = []
+        sketch.entities = []
         for w_data in data.get('walls', []):
             if w_data['type'] == 'line':
-                walls.append(Line.from_dict(w_data))
+                sketch.entities.append(Line.from_dict(w_data))
             elif w_data['type'] == 'circle':
-                walls.append(Circle.from_dict(w_data))
+                sketch.entities.append(Circle.from_dict(w_data))
             elif w_data['type'] == 'point':
-                walls.append(Point.from_dict(w_data))
+                sketch.entities.append(Point.from_dict(w_data))
         
         # 3. Restore Constraints
-        constraints = []
+        sketch.constraints = []
         for c_data in data.get('constraints', []):
             c = create_constraint(c_data)
             if c:
-                constraints.append(c)
+                sketch.constraints.append(c)
         
-        # 4. Build state dict for Simulation.restore_state()
-        restored_state = {
+        # 4. Restore Physics State
+        physics_data = {
             'count': data.get('count', 0),
             'world_size': data.get('world_size', 50.0),
-            'walls': walls,
-            'constraints': constraints,
         }
         
-        # Convert arrays
         array_fields = ['pos_x', 'pos_y', 'vel_x', 'vel_y', 'atom_sigma', 'atom_eps_sqrt']
         for field in array_fields:
             if field in data:
-                restored_state[field] = np.array(data[field], dtype=np.float32)
+                physics_data[field] = np.array(data[field], dtype=np.float32)
         
         if 'is_static' in data:
-            restored_state['is_static'] = np.array(data['is_static'], dtype=np.int32)
+            physics_data['is_static'] = np.array(data['is_static'], dtype=np.int32)
         
-        # Handle kinematic_props if present
         if 'kinematic_props' in data:
-            restored_state['kinematic_props'] = np.array(data['kinematic_props'], dtype=np.float32)
+            physics_data['kinematic_props'] = np.array(data['kinematic_props'], dtype=np.float32)
         
-        # 5. Apply to simulation
-        sim.restore_state(restored_state)
+        simulation.restore(physics_data)
+        
+        # 5. Mark geometry dirty and rebuild
+        scene.mark_dirty()
         
         # 6. Extract view state
         view_state = data.get('view_state', None)
@@ -163,13 +166,13 @@ def load_file(sim, filepath):
         return False, f"Load Error: {e}", None
 
 
-def save_geometry_file(sim, session, filepath):
+def save_geometry_file(scene, session, filepath):
     """
     Saves only geometry (entities, constraints, materials) without particle state.
     Useful for exporting reusable models/components.
     
     Args:
-        sim: Simulation instance
+        scene: Scene instance
         session: Session instance (for view state)
         filepath: Target file path (.geom or .mdl recommended)
     
@@ -179,23 +182,22 @@ def save_geometry_file(sim, session, filepath):
     if not filepath:
         return "Cancelled"
     
+    sketch = scene.sketch
+    
     # Check if there's any geometry to export
-    if not sim.walls:
+    if not sketch.entities:
         return "No geometry to export"
     
-    # Get geometry data from GeometryManager if available, otherwise build directly
-    if hasattr(sim, 'geo') and hasattr(sim.geo, 'export_geometry_data'):
-        geo_data = sim.geo.export_geometry_data()
+    # Get geometry data from GeometryManager if available
+    if scene.geo and hasattr(scene.geo, 'export_geometry_data'):
+        geo_data = scene.geo.export_geometry_data()
     else:
-        # Fallback: build directly from sim
+        # Fallback: build directly from sketch
         geo_data = {
-            'walls': [w.to_dict() for w in sim.walls],
-            'constraints': [c.to_dict() for c in sim.constraints],
+            'walls': [e.to_dict() for e in sketch.entities],
+            'constraints': [c.to_dict() for c in sketch.constraints],
+            'materials': {k: v.to_dict() for k, v in sketch.materials.items()}
         }
-        
-        # Include materials
-        if hasattr(sim, 'sketch') and hasattr(sim.sketch, 'materials'):
-            geo_data['materials'] = {k: v.to_dict() for k, v in sim.sketch.materials.items()}
     
     # Capture view state
     view_state = {
@@ -223,7 +225,7 @@ def save_geometry_file(sim, session, filepath):
 def load_geometry_file(filepath):
     """
     Loads geometry data for placement into an existing world.
-    Does NOT directly modify simulation - returns data for caller to place.
+    Does NOT directly modify scene - returns data for caller to place.
     
     Args:
         filepath: Source file path

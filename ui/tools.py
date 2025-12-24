@@ -1,16 +1,34 @@
+"""
+Tools - Input Handling Tools for the Editor
+
+Each tool handles mouse events for a specific operation:
+- BrushTool: Paint/erase particles (physics domain)
+- LineTool: Draw lines (via commands)
+- RectTool: Draw rectangles (via commands)
+- CircleTool: Draw circles (via commands)
+- PointTool: Create points (via commands)
+- SelectTool: Select and move entities
+
+Architecture:
+- Tools use Commands for CAD operations (undo-able)
+- Tools call scene.rebuild() after geometry changes
+- Tools call sketch.solve() for constraint solving during drags
+- BrushTool operates on physics (not CAD), uses sim directly
+"""
+
 import pygame
 import numpy as np
 import math
-import core.config as config
+import time
 
+import core.config as config
 import core.utils as utils
 
-import time
 from model.geometry import Line, Circle
 from model.constraints import Coincident, Length, Angle
 from core.session import InteractionState
 
-# Phase 8b: Import commands for proper undo/redo
+# Commands for proper undo/redo
 from core.commands import (
     AddLineCommand, AddCircleCommand, RemoveEntityCommand,
     MoveEntityCommand, MoveMultipleCommand, AddConstraintCommand,
@@ -45,8 +63,9 @@ class Tool:
 class BrushTool(Tool):
     """
     Brush tool for painting/erasing particles.
-    Does NOT use commands - particle operations are not undoable
-    (they're physics state, not CAD state).
+    
+    Note: This operates on PHYSICS (particles), not CAD (geometry).
+    Particle operations use Simulation's snapshot system, not Commands.
     """
     def __init__(self, app):
         super().__init__(app, "Brush")
@@ -56,17 +75,23 @@ class BrushTool(Tool):
         if self.app.session.state == InteractionState.PAINTING:
             mx, my = pygame.mouse.get_pos()
             if layout['LEFT_X'] < mx < layout['RIGHT_X'] and config.TOP_MENU_H < my < config.WINDOW_HEIGHT:
-                sx, sy = utils.screen_to_sim(mx, my, self.app.session.zoom, self.app.session.pan_x, self.app.session.pan_y, self.app.sim.world_size, layout)
+                sim = self.app.sim
+                sx, sy = utils.screen_to_sim(
+                    mx, my, 
+                    self.app.session.zoom, self.app.session.pan_x, self.app.session.pan_y, 
+                    sim.world_size, layout
+                )
                 
                 radius = self.brush_radius
                 
                 if pygame.mouse.get_pressed()[0]: 
-                    self.app.sim.add_particles_brush(sx, sy, radius)
+                    sim.add_particles_brush(sx, sy, radius)
                 elif pygame.mouse.get_pressed()[2]: 
-                    self.app.sim.delete_particles_brush(sx, sy, radius)
+                    sim.delete_particles_brush(sx, sy, radius)
 
     def handle_event(self, event, layout):
-        if self.app.session.mode != config.MODE_SIM: return False
+        if self.app.session.mode != config.MODE_SIM:
+            return False
         
         if event.type == pygame.MOUSEBUTTONDOWN:
             mx, my = event.pos
@@ -75,8 +100,7 @@ class BrushTool(Tool):
 
             if event.button == 1:
                 self.app.session.state = InteractionState.PAINTING
-                # Note: No snapshot - particle operations use old system
-                self.app.sim.snapshot()
+                self.app.sim.snapshot()  # Physics snapshot (not CAD)
                 return True
             elif event.button == 3:
                 self.app.session.state = InteractionState.PAINTING
@@ -104,32 +128,49 @@ class BrushTool(Tool):
 class GeometryTool(Tool):
     """
     Base class for geometry creation tools.
-    Phase 8b: Uses commands for undoable operations.
+    Uses Commands for undoable CAD operations.
     """
     def __init__(self, app, name):
         super().__init__(app, name)
         self.dragging = False
         self.start_pos = None
         self.created_indices = []
-        self.pending_commands = []  # Commands to execute on completion
+        self.pending_commands = []
+
+    @property
+    def sketch(self):
+        return self.app.scene.sketch
+    
+    @property
+    def scene(self):
+        return self.app.scene
 
     def get_world_pos(self, mx, my, layout):
-        return utils.screen_to_sim(mx, my, self.app.session.zoom, self.app.session.pan_x, self.app.session.pan_y, self.app.sim.world_size, layout)
+        return utils.screen_to_sim(
+            mx, my, 
+            self.app.session.zoom, self.app.session.pan_x, self.app.session.pan_y, 
+            self.app.sim.world_size, layout
+        )
 
     def get_snapped(self, mx, my, layout, anchor=None, exclude_idx=-1):
-        return utils.get_snapped_pos(mx, my, self.app.sketch.entities, self.app.session.zoom, self.app.session.pan_x, self.app.session.pan_y, self.app.sim.world_size, layout, anchor, exclude_idx)
+        return utils.get_snapped_pos(
+            mx, my, 
+            self.sketch.entities, 
+            self.app.session.zoom, self.app.session.pan_x, self.app.session.pan_y, 
+            self.app.sim.world_size, layout, anchor, exclude_idx
+        )
 
     def cancel(self):
         """Cancel current operation - undo any pending geometry."""
         if self.dragging:
             # Remove any geometry created during this drag
             for idx in sorted(self.created_indices, reverse=True):
-                if idx < len(self.app.sketch.entities):
-                    self.app.sketch.entities.pop(idx)
+                if idx < len(self.sketch.entities):
+                    self.sketch.entities.pop(idx)
             self.dragging = False
             self.created_indices = []
             self.pending_commands = []
-            self.app.sim.rebuild_static_atoms()
+            self.scene.rebuild()
             self.app.session.set_status("Cancelled")
         self.app.session.current_snap_target = None
 
@@ -142,12 +183,12 @@ class GeometryTool(Tool):
 class LineTool(GeometryTool):
     """
     Line drawing tool.
-    Phase 8b: Uses AddLineCommand for undoable line creation.
+    Uses AddLineCommand for undoable line creation.
     """
     def __init__(self, app):
         super().__init__(app, "Line")
         self.current_wall_idx = -1
-        self.start_snap = None  # Store snap target from start point
+        self.start_snap = None
 
     def handle_event(self, event, layout):
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
@@ -157,11 +198,10 @@ class LineTool(GeometryTool):
                 self.start_snap = snap
                 self.start_pos = (sx, sy)
                 
-                # Create line directly for visual feedback during drag
-                # We'll convert to command on completion
+                # Create preview line for visual feedback during drag
                 is_ref = (self.name == "Ref Line")
-                self.app.sketch.add_line((sx, sy), (sx, sy), is_ref=is_ref)
-                self.current_wall_idx = len(self.app.sketch.entities) - 1
+                self.sketch.add_line((sx, sy), (sx, sy), is_ref=is_ref)
+                self.current_wall_idx = len(self.sketch.entities) - 1
                 self.created_indices = [self.current_wall_idx]
                 self.dragging = True
                 self.app.session.state = InteractionState.DRAGGING_GEOMETRY
@@ -170,18 +210,17 @@ class LineTool(GeometryTool):
         elif event.type == pygame.MOUSEMOTION:
             mx, my = event.pos
             if self.dragging:
-                walls = self.app.sketch.entities
-                if self.current_wall_idx < len(walls):
-                    w = walls[self.current_wall_idx]
+                entities = self.sketch.entities
+                if self.current_wall_idx < len(entities):
+                    w = entities[self.current_wall_idx]
                     sx, sy, snap = self.get_snapped(mx, my, layout, w.start, self.current_wall_idx)
                     
-                    # Update line end point directly during drag
                     w.end[:] = (sx, sy)
                     self.app.session.current_snap_target = snap
-                    self.app.sim.rebuild_static_atoms()
+                    self.scene.rebuild()
                     
                     if self.app.session.mode == config.MODE_EDITOR:
-                        self.app.sim.apply_constraints()
+                        self.sketch.solve()
                 return True
             else:
                 self._update_hover_snap(mx, my, layout)
@@ -189,19 +228,18 @@ class LineTool(GeometryTool):
 
         elif event.type == pygame.MOUSEBUTTONUP and event.button == 1 and self.dragging:
             mx, my = event.pos
-            walls = self.app.sketch.entities
+            entities = self.sketch.entities
             
-            if self.current_wall_idx < len(walls):
-                w = walls[self.current_wall_idx]
+            if self.current_wall_idx < len(entities):
+                w = entities[self.current_wall_idx]
                 
                 # Check if line is too short (degenerate)
                 if np.linalg.norm(w.end - w.start) < 1e-4:
-                    # Remove the degenerate line
-                    self.app.sketch.entities.pop(self.current_wall_idx)
+                    self.sketch.entities.pop(self.current_wall_idx)
                     self.dragging = False
                     self.created_indices = []
                     self.app.session.state = InteractionState.IDLE
-                    self.app.sim.rebuild_static_atoms()
+                    self.scene.rebuild()
                     return True
 
                 # Line is valid - finalize with command
@@ -212,55 +250,47 @@ class LineTool(GeometryTool):
                 end = tuple(w.end)
                 is_ref = w.ref
                 material_id = w.material_id
-                self.app.sketch.entities.pop(self.current_wall_idx)
+                self.sketch.entities.pop(self.current_wall_idx)
                 
-                # Build composite command with line + any constraints
-                commands = []
-                
-                # Main line command
-                line_cmd = AddLineCommand(self.app.sketch, start, end, is_ref=is_ref, material_id=material_id)
-                commands.append(line_cmd)
-                
-                # Execute line first to get its index
-                self.app.scene.execute(line_cmd)
+                # Create line via command
+                line_cmd = AddLineCommand(self.sketch, start, end, is_ref=is_ref, material_id=material_id)
+                self.scene.execute(line_cmd)
                 line_idx = line_cmd.created_index
                 
                 # Add snap constraints if Ctrl was held
                 if pygame.key.get_mods() & pygame.KMOD_CTRL:
                     if self.start_snap:
                         c = Coincident(line_idx, 0, self.start_snap[0], self.start_snap[1])
-                        self.app.scene.execute(AddConstraintCommand(self.app.sketch, c))
+                        self.scene.execute(AddConstraintCommand(self.sketch, c))
                     
                     if end_snap:
                         c = Coincident(line_idx, 1, end_snap[0], end_snap[1])
-                        self.app.scene.execute(AddConstraintCommand(self.app.sketch, c))
+                        self.scene.execute(AddConstraintCommand(self.sketch, c))
                 
                 # Add orientation constraints if Shift was held
                 if pygame.key.get_mods() & pygame.KMOD_SHIFT:
                     dx = abs(start[0] - end[0])
                     dy = abs(start[1] - end[1])
                     if dy < 0.001:
-                        self.app.scene.execute(AddConstraintCommand(self.app.sketch, Angle('HORIZONTAL', line_idx)))
+                        self.scene.execute(AddConstraintCommand(self.sketch, Angle('HORIZONTAL', line_idx)))
                     elif dx < 0.001:
-                        self.app.scene.execute(AddConstraintCommand(self.app.sketch, Angle('VERTICAL', line_idx)))
+                        self.scene.execute(AddConstraintCommand(self.sketch, Angle('VERTICAL', line_idx)))
 
             self.dragging = False
             self.created_indices = []
             self.start_snap = None
             self.app.session.current_snap_target = None
             self.app.session.state = InteractionState.IDLE
-            self.app.sim.apply_constraints()
+            self.sketch.solve()
+            self.scene.rebuild()
             return True
         return False
-
-    def draw_overlay(self, screen, renderer, layout):
-        pass
 
 
 class RectTool(GeometryTool):
     """
     Rectangle drawing tool.
-    Phase 8b: Uses AddRectangleCommand for undoable rectangle creation.
+    Uses AddRectangleCommand for undoable rectangle creation.
     """
     def __init__(self, app):
         super().__init__(app, "Rectangle")
@@ -275,9 +305,9 @@ class RectTool(GeometryTool):
                 self.rect_start_pos = (sx, sy)
                 
                 # Create 4 preview lines
-                self.base_idx = len(self.app.sketch.entities)
+                self.base_idx = len(self.sketch.entities)
                 for _ in range(4):
-                    self.app.sketch.add_line((sx, sy), (sx, sy))
+                    self.sketch.add_line((sx, sy), (sx, sy))
                 self.created_indices = [self.base_idx + i for i in range(4)]
                 self.dragging = True
                 self.app.session.state = InteractionState.DRAGGING_GEOMETRY
@@ -289,37 +319,35 @@ class RectTool(GeometryTool):
                 cur_x, cur_y = self.get_world_pos(mx, my, layout)
                 sx, sy = self.rect_start_pos
                 
-                # Update preview lines
-                walls = self.app.sketch.entities
-                if self.base_idx + 3 < len(walls):
-                    walls[self.base_idx].start[:] = (sx, sy)
-                    walls[self.base_idx].end[:] = (cur_x, sy)
-                    walls[self.base_idx+1].start[:] = (cur_x, sy)
-                    walls[self.base_idx+1].end[:] = (cur_x, cur_y)
-                    walls[self.base_idx+2].start[:] = (cur_x, cur_y)
-                    walls[self.base_idx+2].end[:] = (sx, cur_y)
-                    walls[self.base_idx+3].start[:] = (sx, cur_y)
-                    walls[self.base_idx+3].end[:] = (sx, sy)
-                    self.app.sim.rebuild_static_atoms()
+                entities = self.sketch.entities
+                if self.base_idx + 3 < len(entities):
+                    entities[self.base_idx].start[:] = (sx, sy)
+                    entities[self.base_idx].end[:] = (cur_x, sy)
+                    entities[self.base_idx+1].start[:] = (cur_x, sy)
+                    entities[self.base_idx+1].end[:] = (cur_x, cur_y)
+                    entities[self.base_idx+2].start[:] = (cur_x, cur_y)
+                    entities[self.base_idx+2].end[:] = (sx, cur_y)
+                    entities[self.base_idx+3].start[:] = (sx, cur_y)
+                    entities[self.base_idx+3].end[:] = (sx, sy)
+                    self.scene.rebuild()
                 return True
             else:
                 self._update_hover_snap(mx, my, layout)
                 return False
 
         elif event.type == pygame.MOUSEBUTTONUP and event.button == 1 and self.dragging:
-            # Get final corners
             mx, my = event.pos
             cur_x, cur_y = self.get_world_pos(mx, my, layout)
             sx, sy = self.rect_start_pos
             
             # Remove preview lines
             for _ in range(4):
-                if self.base_idx < len(self.app.sketch.entities):
-                    self.app.sketch.entities.pop(self.base_idx)
+                if self.base_idx < len(self.sketch.entities):
+                    self.sketch.entities.pop(self.base_idx)
             
             # Create rectangle via command (includes constraints)
-            cmd = AddRectangleCommand(self.app.sketch, sx, sy, cur_x, cur_y)
-            self.app.scene.execute(cmd)
+            cmd = AddRectangleCommand(self.sketch, sx, sy, cur_x, cur_y)
+            self.scene.execute(cmd)
             
             self.dragging = False
             self.created_indices = []
@@ -331,7 +359,7 @@ class RectTool(GeometryTool):
 class CircleTool(GeometryTool):
     """
     Circle drawing tool.
-    Phase 8b: Uses AddCircleCommand for undoable circle creation.
+    Uses AddCircleCommand for undoable circle creation.
     """
     def __init__(self, app):
         super().__init__(app, "Circle")
@@ -347,8 +375,8 @@ class CircleTool(GeometryTool):
                 self.start_pos = (sx, sy)
                 
                 # Create preview circle
-                self.app.sketch.add_circle((sx, sy), 0.1)
-                self.circle_idx = len(self.app.sketch.entities) - 1
+                self.sketch.add_circle((sx, sy), 0.1)
+                self.circle_idx = len(self.sketch.entities) - 1
                 self.created_indices = [self.circle_idx]
                 self.dragging = True
                 self.app.session.state = InteractionState.DRAGGING_GEOMETRY
@@ -358,36 +386,36 @@ class CircleTool(GeometryTool):
             mx, my = event.pos
             if self.dragging:
                 cur_x, cur_y = self.get_world_pos(mx, my, layout)
-                walls = self.app.sketch.entities
-                if self.circle_idx < len(walls):
-                    c = walls[self.circle_idx]
+                entities = self.sketch.entities
+                if self.circle_idx < len(entities):
+                    c = entities[self.circle_idx]
                     c.radius = max(0.1, math.hypot(cur_x - c.center[0], cur_y - c.center[1]))
-                    self.app.sim.rebuild_static_atoms()
+                    self.scene.rebuild()
                 return True
             else:
                 self._update_hover_snap(mx, my, layout)
                 return False
 
         elif event.type == pygame.MOUSEBUTTONUP and event.button == 1 and self.dragging:
-            walls = self.app.sketch.entities
-            if self.circle_idx < len(walls):
-                c = walls[self.circle_idx]
+            entities = self.sketch.entities
+            if self.circle_idx < len(entities):
+                c = entities[self.circle_idx]
                 center = tuple(c.center)
                 radius = c.radius
                 material_id = c.material_id
                 
                 # Remove preview
-                self.app.sketch.entities.pop(self.circle_idx)
+                self.sketch.entities.pop(self.circle_idx)
                 
                 # Create via command
-                cmd = AddCircleCommand(self.app.sketch, center, radius, material_id=material_id)
-                self.app.scene.execute(cmd)
+                cmd = AddCircleCommand(self.sketch, center, radius, material_id=material_id)
+                self.scene.execute(cmd)
                 circle_idx = cmd.created_index
                 
                 # Add snap constraint if Ctrl held
                 if pygame.key.get_mods() & pygame.KMOD_CTRL and self.center_snap:
                     c = Coincident(circle_idx, 0, self.center_snap[0], self.center_snap[1])
-                    self.app.scene.execute(AddConstraintCommand(self.app.sketch, c))
+                    self.scene.execute(AddConstraintCommand(self.sketch, c))
 
             self.dragging = False
             self.created_indices = []
@@ -401,7 +429,7 @@ class CircleTool(GeometryTool):
 class PointTool(GeometryTool):
     """
     Point creation tool.
-    Phase 8b: Uses commands (Point is created as degenerate line for now).
+    Creates a degenerate line (start == end) via command.
     """
     def __init__(self, app):
         super().__init__(app, "Point")
@@ -418,27 +446,30 @@ class PointTool(GeometryTool):
                 sx, sy, snap = self.get_snapped(mx, my, layout)
                 
                 # Create point as degenerate line via command
-                cmd = AddLineCommand(self.app.sketch, (sx, sy), (sx, sy), is_ref=False)
-                self.app.scene.execute(cmd)
+                cmd = AddLineCommand(self.sketch, (sx, sy), (sx, sy), is_ref=False)
+                self.scene.execute(cmd)
                 wall_idx = cmd.created_index
                 
                 # Add snap constraint if Ctrl held
                 if snap and (pygame.key.get_mods() & pygame.KMOD_CTRL):
                     c = Coincident(wall_idx, 0, snap[0], snap[1])
-                    self.app.scene.execute(AddConstraintCommand(self.app.sketch, c))
+                    self.scene.execute(AddConstraintCommand(self.sketch, c))
                 return True
         return False
     
     def draw_overlay(self, screen, renderer, layout):
         mx, my = pygame.mouse.get_pos()
         if layout['MID_X'] < mx < layout['RIGHT_X']:
-             renderer.draw_tool_point(mx, my)
+            renderer.draw_tool_point(mx, my)
 
 
 class SelectTool(Tool):
     """
     Selection and manipulation tool.
-    Phase 8b: Uses MoveEntityCommand for undoable moves.
+    
+    Note: Move operations currently mutate directly during drag for
+    responsiveness, then don't use Commands. Future improvement would
+    be to use MoveEntityCommand on release.
     """
     def __init__(self, app):
         super().__init__(app, "Select")
@@ -447,16 +478,24 @@ class SelectTool(Tool):
         self.target_pt = -1
         self.group_indices = []
         self.drag_start_mouse = (0, 0)
-        self.drag_start_sim = (0, 0)  # Track sim coords for command
+        self.drag_start_sim = (0, 0)
         self.drag_rect = None
         self.last_click_time = 0.0
         self.last_click_pos = (0, 0)
         self.DOUBLE_CLICK_TIME = 0.3
         self.DOUBLE_CLICK_DIST = 5
         
-        # Phase 8b: Track accumulated movement for command
+        # Track accumulated movement for potential command
         self.total_dx = 0.0
         self.total_dy = 0.0
+
+    @property
+    def sketch(self):
+        return self.app.scene.sketch
+    
+    @property
+    def scene(self):
+        return self.app.scene
 
     def handle_event(self, event, layout):
         if event.type == pygame.MOUSEBUTTONDOWN:
@@ -476,24 +515,22 @@ class SelectTool(Tool):
         return False
 
     def cancel(self):
-        # If we were dragging, we need to undo the movement
         if self.mode in ['MOVE_WALL', 'MOVE_GROUP', 'EDIT']:
             # Reverse the accumulated movement
             if self.mode == 'MOVE_GROUP':
                 for idx in self.group_indices:
-                    if idx < len(self.app.sketch.entities):
-                        self.app.sketch.entities[idx].move(-self.total_dx, -self.total_dy)
+                    if idx < len(self.sketch.entities):
+                        self.sketch.entities[idx].move(-self.total_dx, -self.total_dy)
             elif self.mode in ['MOVE_WALL', 'EDIT']:
-                if self.target_idx < len(self.app.sketch.entities):
-                    entity = self.app.sketch.entities[self.target_idx]
+                if self.target_idx < len(self.sketch.entities):
+                    entity = self.sketch.entities[self.target_idx]
                     if self.mode == 'EDIT':
-                        # For point editing, only move the specific point
                         indices = [self.target_pt] if self.target_pt >= 0 else None
                         entity.move(-self.total_dx, -self.total_dy, indices)
                     else:
                         entity.move(-self.total_dx, -self.total_dy)
             
-            self.app.sim.rebuild_static_atoms()
+            self.scene.rebuild()
         
         self.mode = None
         self.group_indices = []
@@ -513,7 +550,11 @@ class SelectTool(Tool):
         self.last_click_pos = (mx, my)
 
         # 1. Check Points
-        point_map = utils.get_grouped_points(self.app.sketch.entities, self.app.session.zoom, self.app.session.pan_x, self.app.session.pan_y, self.app.sim.world_size, layout)
+        point_map = utils.get_grouped_points(
+            self.sketch.entities, 
+            self.app.session.zoom, self.app.session.pan_x, self.app.session.pan_y, 
+            self.app.sim.world_size, layout
+        )
         hit_pt = self._hit_test_points(mx, my, point_map)
         
         if hit_pt:
@@ -527,7 +568,11 @@ class SelectTool(Tool):
             self.target_idx = hit_pt[0]
             self.target_pt = hit_pt[1]
             self.drag_start_mouse = (mx, my)
-            self.drag_start_sim = utils.screen_to_sim(mx, my, self.app.session.zoom, self.app.session.pan_x, self.app.session.pan_y, self.app.sim.world_size, layout)
+            self.drag_start_sim = utils.screen_to_sim(
+                mx, my, 
+                self.app.session.zoom, self.app.session.pan_x, self.app.session.pan_y, 
+                self.app.sim.world_size, layout
+            )
             self.total_dx = 0.0
             self.total_dy = 0.0
             self.app.session.state = InteractionState.DRAGGING_GEOMETRY
@@ -536,10 +581,10 @@ class SelectTool(Tool):
         # 2. Check Walls
         hit_wall = self._hit_test_walls(mx, my, layout)
         if hit_wall != -1:
-            w = self.app.sketch.entities[hit_wall]
+            w = self.sketch.entities[hit_wall]
             
             if is_double:
-                group = utils.get_connected_group(self.app.sketch.constraints, hit_wall)
+                group = utils.get_connected_group(self.sketch.constraints, hit_wall)
                 self.app.session.selected_walls.update(group)
                 self.app.session.set_status("Group Selected")
                 return True
@@ -549,8 +594,8 @@ class SelectTool(Tool):
                     self._select_wall(hit_wall)
             else:
                 if not (pygame.key.get_mods() & pygame.KMOD_SHIFT):
-                     self.app.session.selected_walls.clear()
-                     self.app.session.selected_points.clear()
+                    self.app.session.selected_walls.clear()
+                    self.app.session.selected_points.clear()
                 self._select_wall(hit_wall)
             
             if isinstance(w, Circle):
@@ -572,11 +617,15 @@ class SelectTool(Tool):
                     l = np.linalg.norm(w.end - w.start)
                     c = Length(hit_wall, l)
                     c.temp = True
-                    self.app.sketch.constraints.append(c)
+                    self.sketch.constraints.append(c)
                     self.app.session.temp_constraint_active = True
             
             self.drag_start_mouse = (mx, my)
-            self.drag_start_sim = utils.screen_to_sim(mx, my, self.app.session.zoom, self.app.session.pan_x, self.app.session.pan_y, self.app.sim.world_size, layout)
+            self.drag_start_sim = utils.screen_to_sim(
+                mx, my, 
+                self.app.session.zoom, self.app.session.pan_x, self.app.session.pan_y, 
+                self.app.sim.world_size, layout
+            )
             self.total_dx = 0.0
             self.total_dy = 0.0
             self.app.session.state = InteractionState.DRAGGING_GEOMETRY
@@ -590,26 +639,37 @@ class SelectTool(Tool):
 
     def _handle_drag(self, mouse_pos, layout):
         mx, my = mouse_pos
-        curr_sim = utils.screen_to_sim(mx, my, self.app.session.zoom, self.app.session.pan_x, self.app.session.pan_y, self.app.sim.world_size, layout)
-        prev_sim = utils.screen_to_sim(self.drag_start_mouse[0], self.drag_start_mouse[1], self.app.session.zoom, self.app.session.pan_x, self.app.session.pan_y, self.app.sim.world_size, layout)
+        curr_sim = utils.screen_to_sim(
+            mx, my, 
+            self.app.session.zoom, self.app.session.pan_x, self.app.session.pan_y, 
+            self.app.sim.world_size, layout
+        )
+        prev_sim = utils.screen_to_sim(
+            self.drag_start_mouse[0], self.drag_start_mouse[1], 
+            self.app.session.zoom, self.app.session.pan_x, self.app.session.pan_y, 
+            self.app.sim.world_size, layout
+        )
         
         dx = curr_sim[0] - prev_sim[0]
         dy = curr_sim[1] - prev_sim[1]
         self.drag_start_mouse = (mx, my)
         
         if self.mode == 'EDIT':
-            walls = self.app.sketch.entities
-            if self.target_idx >= len(walls):
+            entities = self.sketch.entities
+            if self.target_idx >= len(entities):
                 return False
-            w = walls[self.target_idx]
+            w = entities[self.target_idx]
             
             if isinstance(w, Line):
                 anchor = w.end if self.target_pt == 0 else w.start
-                dest_x, dest_y, snap = utils.get_snapped_pos(mx, my, walls, self.app.session.zoom, self.app.session.pan_x, self.app.session.pan_y, self.app.sim.world_size, layout, anchor, self.target_idx)
+                dest_x, dest_y, snap = utils.get_snapped_pos(
+                    mx, my, entities, 
+                    self.app.session.zoom, self.app.session.pan_x, self.app.session.pan_y, 
+                    self.app.sim.world_size, layout, anchor, self.target_idx
+                )
                 
                 self.app.session.current_snap_target = snap
                 
-                # Calculate actual delta for this point
                 old_pt = w.get_point(self.target_pt)
                 actual_dx = dest_x - old_pt[0]
                 actual_dy = dest_y - old_pt[1]
@@ -623,7 +683,11 @@ class SelectTool(Tool):
                 self.total_dy += actual_dy
             
             elif isinstance(w, Circle):
-                dest_x, dest_y, snap = utils.get_snapped_pos(mx, my, walls, self.app.session.zoom, self.app.session.pan_x, self.app.session.pan_y, self.app.sim.world_size, layout, None, self.target_idx)
+                dest_x, dest_y, snap = utils.get_snapped_pos(
+                    mx, my, entities, 
+                    self.app.session.zoom, self.app.session.pan_x, self.app.session.pan_y, 
+                    self.app.sim.world_size, layout, None, self.target_idx
+                )
                 self.app.session.current_snap_target = snap
                 
                 old_center = w.center.copy()
@@ -631,17 +695,17 @@ class SelectTool(Tool):
                 self.total_dx += dest_x - old_center[0]
                 self.total_dy += dest_y - old_center[1]
             
-            self.app.sim.rebuild_static_atoms()
+            self.scene.rebuild()
             if self.app.session.mode == config.MODE_EDITOR:
-                self.app.sim.apply_constraints()
+                self.sketch.solve()
             return True
 
         elif self.mode == 'RESIZE_CIRCLE':
-            w = self.app.sketch.entities[self.target_idx]
+            w = self.sketch.entities[self.target_idx]
             if isinstance(w, Circle):
                 new_r = math.hypot(curr_sim[0] - w.center[0], curr_sim[1] - w.center[1])
                 w.radius = max(0.1, new_r)
-                self.app.sim.rebuild_static_atoms()
+                self.scene.rebuild()
             return True
 
         elif self.mode in ['MOVE_WALL', 'MOVE_GROUP']:
@@ -651,14 +715,13 @@ class SelectTool(Tool):
             targets = self.group_indices if self.mode == 'MOVE_GROUP' else [self.target_idx]
             
             for idx in targets:
-                walls = self.app.sketch.entities
-                if idx < len(walls):
-                    w = walls[idx]
-                    w.move(dx, dy) 
+                entities = self.sketch.entities
+                if idx < len(entities):
+                    entities[idx].move(dx, dy) 
             
-            self.app.sim.rebuild_static_atoms()
+            self.scene.rebuild()
             if self.app.session.mode == config.MODE_EDITOR:
-                self.app.sim.apply_constraints()
+                self.sketch.solve()
             return True
             
         return False
@@ -674,18 +737,8 @@ class SelectTool(Tool):
                     self.target_idx, self.target_pt,
                     snap[0], snap[1]
                 )
-                self.app.scene.execute(AddConstraintCommand(self.app.sketch, c))
+                self.scene.execute(AddConstraintCommand(self.sketch, c))
                 self.app.session.set_status("Snapped & Connected")
-
-        # Create command for the movement (if significant)
-        if abs(self.total_dx) > 1e-6 or abs(self.total_dy) > 1e-6:
-            if self.mode == 'MOVE_GROUP' and self.group_indices:
-                # Already moved during drag - just record for potential undo
-                # For now, we don't undo via command since movement already happened
-                pass
-            elif self.mode in ['MOVE_WALL', 'EDIT']:
-                # Already moved during drag
-                pass
 
         self.mode = None
         self.app.session.current_snap_target = None
@@ -695,10 +748,11 @@ class SelectTool(Tool):
         
         # Remove temp constraint
         if self.app.session.temp_constraint_active:
-            self.app.sketch.constraints = [c for c in self.app.sketch.constraints if not c.temp]
+            self.sketch.constraints = [c for c in self.sketch.constraints if not c.temp]
             self.app.session.temp_constraint_active = False
         
-        self.app.sim.apply_constraints()
+        self.sketch.solve()
+        self.scene.rebuild()
         return True
 
     def _hit_test_points(self, mx, my, point_map):
@@ -707,33 +761,43 @@ class SelectTool(Tool):
             dist = math.hypot(mx - center_pos[0], my - center_pos[1])
             max_r = base_r + (len(items) - 1) * step_r
             if dist <= max_r:
-                if dist < base_r: return items[0]
+                if dist < base_r:
+                    return items[0]
                 k = int((dist - base_r) / step_r) + 1
-                if k < len(items): return items[k]
+                if k < len(items):
+                    return items[k]
                 return items[-1]
         return None
 
     def _hit_test_walls(self, mx, my, layout):
-        sim_x, sim_y = utils.screen_to_sim(mx, my, self.app.session.zoom, self.app.session.pan_x, self.app.session.pan_y, self.app.sim.world_size, layout)
+        sim_x, sim_y = utils.screen_to_sim(
+            mx, my, 
+            self.app.session.zoom, self.app.session.pan_x, self.app.session.pan_y, 
+            self.app.sim.world_size, layout
+        )
         rad_sim = 5.0 / (((layout['MID_W'] - 50) / self.app.sim.world_size) * self.app.session.zoom)
         
-        walls = self.app.sketch.entities
-        for i, w in enumerate(walls):
+        entities = self.sketch.entities
+        for i, w in enumerate(entities):
             if isinstance(w, Line):
-                if np.array_equal(w.start, w.end): continue
+                if np.array_equal(w.start, w.end):
+                    continue
                 p1, p2 = w.start, w.end
                 p3 = np.array([sim_x, sim_y])
-                d_vec = p2-p1
+                d_vec = p2 - p1
                 len_sq = np.dot(d_vec, d_vec)
-                if len_sq == 0: dist = np.linalg.norm(p3-p1)
+                if len_sq == 0:
+                    dist = np.linalg.norm(p3 - p1)
                 else:
-                    t = max(0, min(1, np.dot(p3-p1, d_vec)/len_sq))
-                    proj = p1 + t*d_vec
-                    dist = np.linalg.norm(p3-proj)
-                if dist < rad_sim: return i
+                    t = max(0, min(1, np.dot(p3 - p1, d_vec) / len_sq))
+                    proj = p1 + t * d_vec
+                    dist = np.linalg.norm(p3 - proj)
+                if dist < rad_sim:
+                    return i
             elif isinstance(w, Circle):
                 d = math.hypot(sim_x - w.center[0], sim_y - w.center[1])
-                if abs(d - w.radius) < rad_sim: return i
+                if abs(d - w.radius) < rad_sim:
+                    return i
         return -1
 
     def _select_point(self, pt_tuple):
