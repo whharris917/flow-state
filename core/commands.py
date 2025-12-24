@@ -4,29 +4,44 @@ Command Pattern for Undo/Redo
 Commands encapsulate actions that can be executed and undone.
 This replaces the expensive full-state snapshot approach.
 
-Key Concept: historize flag
-- historize=True (default): Command is added to undo stack after execution
-- historize=False: Command executes but is NOT added to history
-  Used for intermediate/preview states during drag operations.
-  The final "commit" command should have historize=True.
+Key Concepts:
+
+1. historize flag:
+   - historize=True (default): Command is added to undo stack after execution
+   - historize=False: Command executes but is NOT added to history
+   Used for intermediate states during drag operations (SelectTool).
+
+2. supersede flag:
+   - supersede=True: Undo the previous command before executing this one
+   - Effectively "replaces" the previous command in the undo stack
+   Used for live preview during geometry creation (LineTool, CircleTool, etc.)
+
+Supersede Pattern (for geometry creation):
+    MOUSEDOWN  → Execute command (historize=True, supersede=False)
+    MOUSEMOVE  → Execute command (historize=True, supersede=True) - replaces previous
+    MOUSEUP    → Execute command (historize=True, supersede=True) - final version stays
+    CANCEL     → scene.undo() - removes preview, stack is clean
+
+Historize Pattern (for geometry editing):
+    MOUSEDOWN  → Capture original state
+    MOUSEMOVE  → Execute command (historize=False) - responsive feedback
+    MOUSEUP    → Execute command (historize=True) - single undo entry
+    CANCEL     → Restore from captured state
 
 Usage:
-    queue = CommandQueue(scene)
+    queue = CommandQueue()
     
     # Normal undoable command
     queue.execute(AddLineCommand(sketch, start, end))
     
-    # Preview during drag (not undoable individually)
-    queue.execute(MovePointCommand(sketch, idx, pt, new_pos, historize=False))
+    # Superseding command (replaces previous)
+    queue.execute(AddLineCommand(sketch, start, new_end, supersede=True))
     
-    # Final commit (undoable - captures full delta)
-    queue.execute(MovePointCommand(sketch, idx, pt, final_pos, historize=True))
-    
-    queue.undo()  # Only undoes historized commands
+    # Non-historized command (for SelectTool drags)
+    queue.execute(MoveEntityCommand(sketch, idx, dx, dy, historize=False))
 """
 
 from abc import ABC, abstractmethod
-import copy
 import numpy as np
 
 
@@ -45,12 +60,14 @@ class Command(ABC):
     Args:
         historize: If True (default), command is added to undo stack.
                    If False, command executes but is not recorded in history.
-                   Use False for intermediate/preview states during drags.
+        supersede: If True, undo the previous command before executing.
+                   Used for "live preview" during drag creation operations.
     """
     
-    def __init__(self, historize=True):
+    def __init__(self, historize=True, supersede=False):
         self.description = "Command"
         self.historize = historize
+        self.supersede = supersede
     
     @abstractmethod
     def execute(self) -> bool:
@@ -82,9 +99,8 @@ class CommandQueue:
     Features:
     - Configurable history limit
     - Command merging for drag operations
-    - historize flag support: commands with historize=False execute
-      but are not added to the undo stack
-    - Clear separation from domain logic
+    - historize flag: commands with historize=False execute but aren't recorded
+    - supersede flag: commands with supersede=True replace the previous command
     """
     
     def __init__(self, max_history=50):
@@ -96,25 +112,38 @@ class CommandQueue:
         """
         Execute a command and optionally add to history.
         
+        If command.supersede is True:
+            - First undo the most recent command (if any)
+            - Then execute this command
+            - The new command replaces the old one in the stack
+        
         If command.historize is True:
-            - Command is added to undo stack (or merged with previous)
+            - Command is added to undo stack after execution
             - Redo stack is cleared
+        
         If command.historize is False:
             - Command executes but is NOT added to history
-            - Redo stack is NOT cleared (preserves ability to redo)
+            - Redo stack is NOT cleared
         
         Returns True if command executed successfully.
         """
+        # Supersede: undo the previous command first (replacement pattern)
+        if command.supersede and self.undo_stack:
+            prev = self.undo_stack.pop()
+            prev.undo()
+            # Note: don't add to redo_stack - this is replacement, not user undo
+        
         if command.execute():
             # Only add to history if historize=True
             if command.historize:
-                # Try to merge with previous command
-                if self.undo_stack and self.undo_stack[-1].merge(command):
-                    pass  # Merged into existing command
-                else:
-                    self.undo_stack.append(command)
-                    if len(self.undo_stack) > self.max_history:
-                        self.undo_stack.pop(0)
+                # Superseding commands don't merge - they already replaced
+                if not command.supersede and self.undo_stack:
+                    if self.undo_stack[-1].merge(command):
+                        return True  # Merged into existing command
+                
+                self.undo_stack.append(command)
+                if len(self.undo_stack) > self.max_history:
+                    self.undo_stack.pop(0)
                 
                 # Clear redo stack on new historized action
                 self.redo_stack.clear()
@@ -130,6 +159,21 @@ class CommandQueue:
         command = self.undo_stack.pop()
         command.undo()
         self.redo_stack.append(command)
+        return True
+    
+    def discard(self) -> bool:
+        """
+        Discard the last command. Like undo but CANNOT be redone.
+        
+        Use this for canceling preview operations where the user
+        explicitly abandoned the operation.
+        """
+        if not self.undo_stack:
+            return False
+        
+        command = self.undo_stack.pop()
+        command.undo()
+        # Intentionally NOT added to redo_stack - this is a discard, not undo
         return True
     
     def redo(self) -> bool:
@@ -161,8 +205,9 @@ class CommandQueue:
 class AddLineCommand(Command):
     """Add a line to the sketch."""
     
-    def __init__(self, sketch, start, end, is_ref=False, material_id="Default", historize=True):
-        super().__init__(historize)
+    def __init__(self, sketch, start, end, is_ref=False, material_id="Default", 
+                 historize=True, supersede=False):
+        super().__init__(historize, supersede)
         self.sketch = sketch
         self.start = tuple(start)
         self.end = tuple(end)
@@ -188,8 +233,9 @@ class AddLineCommand(Command):
 class AddCircleCommand(Command):
     """Add a circle to the sketch."""
     
-    def __init__(self, sketch, center, radius, material_id="Default", historize=True):
-        super().__init__(historize)
+    def __init__(self, sketch, center, radius, material_id="Default", 
+                 historize=True, supersede=False):
+        super().__init__(historize, supersede)
         self.sketch = sketch
         self.center = tuple(center)
         self.radius = radius
@@ -213,8 +259,8 @@ class AddCircleCommand(Command):
 class RemoveEntityCommand(Command):
     """Remove an entity from the sketch."""
     
-    def __init__(self, sketch, entity_index, historize=True):
-        super().__init__(historize)
+    def __init__(self, sketch, entity_index, historize=True, supersede=False):
+        super().__init__(historize, supersede)
         self.sketch = sketch
         self.entity_index = entity_index
         self.entity_data = None  # Stored on execute for undo
@@ -251,8 +297,9 @@ class RemoveEntityCommand(Command):
 class MoveEntityCommand(Command):
     """Move an entity by a delta."""
     
-    def __init__(self, sketch, entity_index, dx, dy, point_indices=None, historize=True):
-        super().__init__(historize)
+    def __init__(self, sketch, entity_index, dx, dy, point_indices=None, 
+                 historize=True, supersede=False):
+        super().__init__(historize, supersede)
         self.sketch = sketch
         self.entity_index = entity_index
         self.dx = dx
@@ -287,8 +334,9 @@ class MoveEntityCommand(Command):
 class MoveMultipleCommand(Command):
     """Move multiple entities by a delta."""
     
-    def __init__(self, sketch, entity_indices, dx, dy, historize=True):
-        super().__init__(historize)
+    def __init__(self, sketch, entity_indices, dx, dy, 
+                 historize=True, supersede=False):
+        super().__init__(historize, supersede)
         self.sketch = sketch
         self.entity_indices = list(entity_indices)
         self.dx = dx
@@ -318,7 +366,7 @@ class MoveMultipleCommand(Command):
 
 
 # =============================================================================
-# Point Editing Commands (NEW)
+# Point Editing Commands
 # =============================================================================
 
 class SetPointCommand(Command):
@@ -337,10 +385,12 @@ class SetPointCommand(Command):
         new_position: Target position (x, y)
         old_position: Optional original position for undo. If None, captured on execute.
         historize: Whether to add to undo stack
+        supersede: Whether to undo previous command first
     """
     
-    def __init__(self, sketch, entity_index, point_index, new_position, old_position=None, historize=True):
-        super().__init__(historize)
+    def __init__(self, sketch, entity_index, point_index, new_position, 
+                 old_position=None, historize=True, supersede=False):
+        super().__init__(historize, supersede)
         self.sketch = sketch
         self.entity_index = entity_index
         self.point_index = point_index
@@ -381,7 +431,7 @@ class SetPointCommand(Command):
 
 
 # =============================================================================
-# Circle Commands (NEW)
+# Circle Commands
 # =============================================================================
 
 class SetCircleRadiusCommand(Command):
@@ -399,10 +449,12 @@ class SetCircleRadiusCommand(Command):
         new_radius: Target radius
         old_radius: Optional original radius for undo. If None, captured on execute.
         historize: Whether to add to undo stack
+        supersede: Whether to undo previous command first
     """
     
-    def __init__(self, sketch, entity_index, new_radius, old_radius=None, historize=True):
-        super().__init__(historize)
+    def __init__(self, sketch, entity_index, new_radius, old_radius=None, 
+                 historize=True, supersede=False):
+        super().__init__(historize, supersede)
         self.sketch = sketch
         self.entity_index = entity_index
         self.new_radius = float(new_radius)
@@ -446,8 +498,8 @@ class SetCircleRadiusCommand(Command):
 class AddConstraintCommand(Command):
     """Add a constraint to the sketch."""
     
-    def __init__(self, sketch, constraint, historize=True):
-        super().__init__(historize)
+    def __init__(self, sketch, constraint, historize=True, supersede=False):
+        super().__init__(historize, supersede)
         self.sketch = sketch
         self.constraint = constraint
         self.description = f"Add {constraint.type}"
@@ -465,8 +517,8 @@ class AddConstraintCommand(Command):
 class RemoveConstraintCommand(Command):
     """Remove a constraint from the sketch."""
     
-    def __init__(self, sketch, constraint_index, historize=True):
-        super().__init__(historize)
+    def __init__(self, sketch, constraint_index, historize=True, supersede=False):
+        super().__init__(historize, supersede)
         self.sketch = sketch
         self.constraint_index = constraint_index
         self.constraint_data = None
@@ -491,8 +543,9 @@ class RemoveConstraintCommand(Command):
 class ToggleAnchorCommand(Command):
     """Toggle anchor state of a point."""
     
-    def __init__(self, sketch, entity_index, point_index, historize=True):
-        super().__init__(historize)
+    def __init__(self, sketch, entity_index, point_index, 
+                 historize=True, supersede=False):
+        super().__init__(historize, supersede)
         self.sketch = sketch
         self.entity_index = entity_index
         self.point_index = point_index
@@ -517,8 +570,9 @@ class CompositeCommand(Command):
     All sub-commands are executed/undone as a unit.
     """
     
-    def __init__(self, commands, description="Multiple Actions", historize=True):
-        super().__init__(historize)
+    def __init__(self, commands, description="Multiple Actions", 
+                 historize=True, supersede=False):
+        super().__init__(historize, supersede)
         self.commands = list(commands)
         self.description = description
     
@@ -534,12 +588,15 @@ class CompositeCommand(Command):
 
 
 class AddRectangleCommand(CompositeCommand):
-    """Add a rectangle (4 lines + constraints)."""
+    """
+    Add a rectangle (4 lines + corner constraints).
     
-    def __init__(self, sketch, x1, y1, x2, y2, material_id="Default", historize=True):
-        from model.constraints import Coincident, Angle
-        
-        # Create 4 lines
+    Uses supersede pattern for live preview during drag.
+    """
+    
+    def __init__(self, sketch, x1, y1, x2, y2, material_id="Default", 
+                 historize=True, supersede=False):
+        # Create 4 line commands (not historized individually - we're the unit)
         line_cmds = [
             AddLineCommand(sketch, (x1, y1), (x2, y1), material_id=material_id, historize=False),
             AddLineCommand(sketch, (x2, y1), (x2, y2), material_id=material_id, historize=False),
@@ -547,11 +604,17 @@ class AddRectangleCommand(CompositeCommand):
             AddLineCommand(sketch, (x1, y2), (x1, y1), material_id=material_id, historize=False),
         ]
         
-        super().__init__(line_cmds, "Add Rectangle", historize)
+        super().__init__(line_cmds, "Add Rectangle", historize, supersede)
         self.sketch = sketch
+        self.x1, self.y1, self.x2, self.y2 = x1, y1, x2, y2
         
-        # We'll add constraints after lines are created
+        # Constraint commands added after lines are created
         self._constraint_cmds = []
+    
+    @property
+    def created_indices(self):
+        """Return indices of created lines."""
+        return [cmd.created_index for cmd in self.commands if cmd.created_index is not None]
     
     def execute(self) -> bool:
         # First create the lines
@@ -564,10 +627,12 @@ class AddRectangleCommand(CompositeCommand):
                 from model.constraints import Coincident, Angle
                 
                 constraints = [
+                    # Corner coincidents
                     Coincident(base, 1, base+1, 0),
                     Coincident(base+1, 1, base+2, 0),
                     Coincident(base+2, 1, base+3, 0),
                     Coincident(base+3, 1, base, 0),
+                    # Angle constraints (horizontal/vertical)
                     Angle('HORIZONTAL', base),
                     Angle('VERTICAL', base+1),
                     Angle('HORIZONTAL', base+2),

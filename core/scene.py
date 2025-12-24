@@ -139,6 +139,23 @@ class Scene:
             self.rebuild()
         return result
     
+    def discard(self):
+        """
+        Discard the last CAD command. Like undo but CANNOT be redone.
+        
+        Use this for canceling preview operations where the user
+        explicitly abandoned the operation (e.g., pressing Escape
+        while drawing a line).
+        
+        Returns:
+            True if discard was successful
+        """
+        result = self.commands.discard()
+        if result:
+            self._geometry_dirty = True
+            self.rebuild()
+        return result
+
     def can_undo(self):
         """Check if CAD undo is available."""
         return self.commands.can_undo()
