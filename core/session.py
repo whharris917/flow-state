@@ -1,7 +1,7 @@
 """
-Session - Application Interaction State (Refactored)
+Session - Application Interaction State (Cleaned)
 
-The Session is now a thin coordinator that holds references to focused managers.
+The Session is a thin coordinator that holds references to focused managers.
 Each manager owns a specific concern:
 
 - CameraController: View transforms, zoom, pan
@@ -19,12 +19,11 @@ The Session itself owns only:
 File I/O state (filepaths, placing_geo_data) remains here for now
 but could be extracted to a FileManager in the future.
 
-BACKWARD COMPATIBILITY:
-This module provides property aliases so existing code continues to work.
-E.g., session.zoom delegates to session.camera.zoom
+NOTE: All backward compatibility aliases have been REMOVED as of Session 2.
+Access managers directly: session.camera, session.selection, 
+session.constraint_builder, session.status
 """
 
-import time
 from enum import Enum, auto
 import core.config as config
 
@@ -48,7 +47,13 @@ class Session:
     Application interaction state coordinator.
     
     Delegates to focused managers for specific concerns.
-    Provides backward-compatible property aliases.
+    Access managers directly - no aliases provided.
+    
+    Managers:
+        session.camera - CameraController (zoom, pan, transforms)
+        session.selection - SelectionManager (entity/point selection)
+        session.constraint_builder - ConstraintBuilder (constraint creation)
+        session.status - StatusBar (transient messages)
     """
     
     def __init__(self):
@@ -99,138 +104,9 @@ class Session:
         self.sim_backup_state = None
         self.editor_storage = {'walls': [], 'constraints': []}
         self.was_sim_running = False
-    
-    # =========================================================================
-    # Camera Property Aliases (Backward Compatibility)
-    # =========================================================================
-    
-    @property
-    def zoom(self):
-        return self.camera.zoom
-    
-    @zoom.setter
-    def zoom(self, value):
-        self.camera.zoom = value
-    
-    @property
-    def pan_x(self):
-        return self.camera.pan_x
-    
-    @pan_x.setter
-    def pan_x(self, value):
-        self.camera.pan_x = value
-    
-    @property
-    def pan_y(self):
-        return self.camera.pan_y
-    
-    @pan_y.setter
-    def pan_y(self, value):
-        self.camera.pan_y = value
-    
-    @property
-    def last_mouse_pos(self):
-        return self.camera.last_mouse_pos
-    
-    @last_mouse_pos.setter
-    def last_mouse_pos(self, value):
-        self.camera.last_mouse_pos = value
-    
-    @property
-    def sim_view(self):
-        return self.camera._stored_views[config.MODE_SIM]
-    
-    @sim_view.setter
-    def sim_view(self, value):
-        self.camera._stored_views[config.MODE_SIM] = value
-    
-    @property
-    def editor_view(self):
-        return self.camera._stored_views[config.MODE_EDITOR]
-    
-    @editor_view.setter
-    def editor_view(self, value):
-        self.camera._stored_views[config.MODE_EDITOR] = value
-    
-    # =========================================================================
-    # Selection Property Aliases (Backward Compatibility)
-    # =========================================================================
-    
-    @property
-    def selected_walls(self):
-        return self.selection.walls
-    
-    @selected_walls.setter
-    def selected_walls(self, value):
-        self.selection.walls = value
-    
-    @property
-    def selected_points(self):
-        return self.selection.points
-    
-    @selected_points.setter
-    def selected_points(self, value):
-        self.selection.points = value
-    
-    # =========================================================================
-    # Constraint Builder Property Aliases (Backward Compatibility)
-    # =========================================================================
-    
-    @property
-    def pending_constraint(self):
-        return self.constraint_builder.pending_constraint
-    
-    @pending_constraint.setter
-    def pending_constraint(self, value):
-        self.constraint_builder.pending_constraint = value
-    
-    @property
-    def pending_targets_walls(self):
-        return self.constraint_builder.pending_targets_walls
-    
-    @pending_targets_walls.setter
-    def pending_targets_walls(self, value):
-        self.constraint_builder.pending_targets_walls = value
-    
-    @property
-    def pending_targets_points(self):
-        return self.constraint_builder.pending_targets_points
-    
-    @pending_targets_points.setter
-    def pending_targets_points(self, value):
-        self.constraint_builder.pending_targets_points = value
-    
-    @property
-    def current_snap_target(self):
-        return self.constraint_builder.current_snap_target
-    
-    @current_snap_target.setter
-    def current_snap_target(self, value):
-        self.constraint_builder.current_snap_target = value
-    
-    # =========================================================================
-    # Status Property Aliases (Backward Compatibility)
-    # =========================================================================
-    
-    @property
-    def status_msg(self):
-        return self.status.status_msg
-    
-    @status_msg.setter
-    def status_msg(self, value):
-        self.status.status_msg = value
-    
-    @property
-    def status_time(self):
-        return self.status.status_time
-    
-    @status_time.setter
-    def status_time(self, value):
-        self.status.status_time = value
-    
-    def set_status(self, msg):
-        """Set a status message (delegated to StatusBar)."""
-        self.status.set(msg)
+        
+        # Input field reference (set by FlowStateApp)
+        self.input_world = None
     
     # =========================================================================
     # Tool Management

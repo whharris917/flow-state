@@ -6,7 +6,10 @@ Owns:
 - Set of selected point references (entity_idx, point_idx)
 - Selection manipulation methods
 
-This extracts selection concerns from the Session god object.
+API:
+- Use .walls for direct mutable access to entity selection set
+- Use .select_entity(), .deselect_entity(), .clear() for method-based access
+- Use .entities for a read-only copy (safe for iteration)
 """
 
 from typing import Set, Tuple, Optional, Iterable
@@ -30,18 +33,18 @@ class SelectionManager:
     
     @property
     def entities(self) -> Set[int]:
-        """Get the set of selected entity indices (read-only copy)."""
+        """Get a read-only copy of selected entity indices (safe for iteration)."""
         return self._entities.copy()
     
     @property
     def walls(self) -> Set[int]:
-        """Alias for entities (backward compatibility)."""
+        """Get direct mutable access to the entity selection set."""
         return self._entities
     
     @walls.setter
     def walls(self, value: Set[int]):
-        """Setter for walls (backward compatibility)."""
-        self._entities = value
+        """Replace the entity selection set."""
+        self._entities = set(value) if value else set()
     
     def select_entity(self, index: int):
         """Add an entity to the selection."""
@@ -72,13 +75,13 @@ class SelectionManager:
     
     @property
     def points(self) -> Set[Tuple[int, int]]:
-        """Get the set of selected points (read-only copy)."""
-        return self._points.copy()
+        """Get direct mutable access to the point selection set."""
+        return self._points
     
     @points.setter
     def points(self, value: Set[Tuple[int, int]]):
-        """Setter for points (backward compatibility)."""
-        self._points = value
+        """Replace the point selection set."""
+        self._points = set(value) if value else set()
     
     def select_point(self, entity_idx: int, point_idx: int):
         """Add a point to the selection."""

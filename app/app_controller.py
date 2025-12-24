@@ -71,24 +71,24 @@ class AppController:
         # Try CAD command undo first, fall back to physics snapshot
         if self.scene.can_undo():
             self.scene.undo()
-            self.session.set_status("Undo")
+            self.session.status.set("Undo")
         else:
             if self.sim.undo():
-                self.session.set_status("Undo (particles)")
+                self.session.status.set("Undo (particles)")
             else:
-                self.session.set_status("Nothing to undo")
+                self.session.status.set("Nothing to undo")
         self.sound_manager.play_sound('click')
 
     def action_redo(self):
         # Try CAD command redo first, fall back to physics snapshot
         if self.scene.can_redo():
             self.scene.redo()
-            self.session.set_status("Redo")
+            self.session.status.set("Redo")
         else:
             if self.sim.redo():
-                self.session.set_status("Redo (particles)")
+                self.session.status.set("Redo (particles)")
             else:
-                self.session.set_status("Nothing to redo")
+                self.session.status.set("Nothing to redo")
         self.sound_manager.play_sound('click')
 
     # =========================================================================
@@ -97,23 +97,23 @@ class AppController:
 
     def action_reset(self):
         self.scene.new()
-        self.session.set_status("Reset Simulation")
+        self.session.status.set("Reset Simulation")
         self.sound_manager.play_sound('click')
         
     def action_clear_particles(self):
         self.sim.clear()
         self.scene.rebuild()  # Rebuild static atoms
-        self.session.set_status("Particles Cleared")
+        self.session.status.set("Particles Cleared")
         self.sound_manager.play_sound('click')
 
     def action_resize_world(self, size_str):
         try:
             val = float(size_str)
             self.sim.resize_world(val)
-            self.session.set_status(f"World Resized: {val}")
+            self.session.status.set(f"World Resized: {val}")
             self.sound_manager.play_sound('click')
         except ValueError:
-            self.session.set_status("Invalid Size")
+            self.session.status.set("Invalid Size")
 
     # =========================================================================
     # Editor Actions
@@ -124,12 +124,12 @@ class AppController:
         if 'mode_ghost' in self.app.ui.buttons:
             self.app.ui.buttons['mode_ghost'].active = not self.session.show_wall_atoms 
         state = "Hidden" if not self.session.show_wall_atoms else "Visible"
-        self.session.set_status(f"Wall Atoms: {state}")
+        self.session.status.set(f"Wall Atoms: {state}")
         self.sound_manager.play_sound('click')
         
     def toggle_extend(self):
-        if self.session.selected_walls:
-            for idx in self.session.selected_walls:
+        if self.session.selection.walls:
+            for idx in self.session.selection.walls:
                 if idx < len(self.sketch.entities):
                     entity = self.sketch.entities[idx]
                     if isinstance(entity, Line):
@@ -137,7 +137,7 @@ class AppController:
                             entity.infinite = False
                         entity.infinite = not entity.infinite
             self.scene.rebuild()
-            self.session.set_status("Toggled Extend")
+            self.session.status.set("Toggled Extend")
             self.sound_manager.play_sound('click')
             
     def toggle_editor_play(self):
@@ -154,26 +154,26 @@ class AppController:
         self.sound_manager.play_sound('click')
 
     def atomize_selected(self):
-        if self.session.selected_walls:
+        if self.session.selection.walls:
             count = 0
-            for idx in self.session.selected_walls:
+            for idx in self.session.selection.walls:
                 if idx < len(self.sketch.entities):
                     self.sketch.update_entity(idx, physical=True)
                     count += 1
             self.scene.rebuild()
-            self.session.set_status(f"Atomized {count} entities")
+            self.session.status.set(f"Atomized {count} entities")
         else:
             self.scene.rebuild()
-            self.session.set_status("Atomized All Geometry")
+            self.session.status.set("Atomized All Geometry")
         self.sound_manager.play_sound('click')
 
     def action_delete_selection(self):
         """Delete selected entities using commands for proper undo/redo."""
         deleted_count = 0
         
-        if self.session.selected_walls:
+        if self.session.selection.walls:
             # Delete in reverse order to preserve indices
-            indices_to_delete = sorted(list(self.session.selected_walls), reverse=True)
+            indices_to_delete = sorted(list(self.session.selection.walls), reverse=True)
             
             if len(indices_to_delete) == 1:
                 # Single delete - simple command
@@ -191,17 +191,17 @@ class AppController:
                 self.scene.execute(composite)
                 deleted_count = len(indices_to_delete)
             
-            self.session.selected_walls.clear()
-            self.session.selected_points.clear()
+            self.session.selection.walls.clear()
+            self.session.selection.points.clear()
             self.sound_manager.play_sound('click')
-            self.session.set_status(f"Deleted {deleted_count} Items")
+            self.session.status.set(f"Deleted {deleted_count} Items")
             
         elif self.ctx_vars['wall'] != -1:
             # Context menu delete
             cmd = RemoveEntityCommand(self.sketch, self.ctx_vars['wall'])
             self.scene.execute(cmd)
             self.ctx_vars['wall'] = -1
-            self.session.set_status("Deleted Item")
+            self.session.status.set("Deleted Item")
             self.sound_manager.play_sound('click')
 
     def action_delete_constraint(self):
@@ -210,7 +210,7 @@ class AppController:
             if self.ctx_vars['const'] < len(self.sketch.constraints):
                 cmd = RemoveConstraintCommand(self.sketch, self.ctx_vars['const'])
                 self.scene.execute(cmd)
-                self.session.set_status("Deleted Constraint")
+                self.session.status.set("Deleted Constraint")
                 self.ctx_vars['const'] = -1
                 self.sound_manager.play_sound('click')
 
@@ -223,8 +223,8 @@ class AppController:
         self.sketch.add_material(mat)
         
         targets = []
-        if self.session.selected_walls:
-            targets = list(self.session.selected_walls)
+        if self.session.selection.walls:
+            targets = list(self.session.selection.walls)
         elif self.ctx_vars['wall'] != -1:
             targets = [self.ctx_vars['wall']]
             
@@ -233,29 +233,29 @@ class AppController:
                 self.sketch.update_entity(idx, material_id=mat.name)
         
         self.scene.rebuild()
-        self.session.set_status(f"Material Applied: {mat.name}")
+        self.session.status.set(f"Material Applied: {mat.name}")
         self.sound_manager.play_sound('click')
 
     def apply_rotation_from_dialog(self, dialog):
         # Legacy rotation via entity.anim is deprecated
         # Animation should be done via constraint drivers instead
-        self.session.set_status("Use constraint drivers for animation (right-click constraint > Animate)")
+        self.session.status.set("Use constraint drivers for animation (right-click constraint > Animate)")
         self.sound_manager.play_sound('error')
 
     def apply_animation_from_dialog(self, dialog):
         if self.ctx_vars['const'] != -1:
             self.sketch.set_driver(self.ctx_vars['const'], dialog.get_values())
-            self.session.set_status("Animation Set")
+            self.session.status.set("Animation Set")
             self.sound_manager.play_sound('click')
 
     def open_material_dialog(self):
-        if not self.session.selected_walls and self.ctx_vars['wall'] == -1: 
-            self.session.set_status("Select a wall first")
+        if not self.session.selection.walls and self.ctx_vars['wall'] == -1: 
+            self.session.status.set("Select a wall first")
             return
         mx, my = pygame.mouse.get_pos()
         target_idx = -1
-        if self.session.selected_walls:
-            target_idx = list(self.session.selected_walls)[0]
+        if self.session.selection.walls:
+            target_idx = list(self.session.selection.walls)[0]
         elif self.ctx_vars['wall'] != -1:
             target_idx = self.ctx_vars['wall']
         current_mat = "Default"
@@ -265,7 +265,7 @@ class AppController:
 
     def open_rotation_dialog(self):
         # Legacy rotation dialog - show message about using constraint drivers
-        self.session.set_status("Use constraint drivers for animation (right-click constraint > Animate)")
+        self.session.status.set("Use constraint drivers for animation (right-click constraint > Animate)")
         self.sound_manager.play_sound('error')
         
     def open_animation_dialog(self):
@@ -320,16 +320,16 @@ class AppController:
                 self.sound_manager.play_sound('click')
         elif action == "Atomize":
             if self.ctx_vars['wall'] != -1:
-                self.session.selected_walls.add(self.ctx_vars['wall'])
+                self.session.selection.walls.add(self.ctx_vars['wall'])
                 self.atomize_selected()
-                self.session.selected_walls.clear()
+                self.session.selection.walls.clear()
         self.context_menu = None
 
     def spawn_context_menu(self, pos):
         mx, my = pos
         sim_x, sim_y = utils.screen_to_sim(
             mx, my, 
-            self.session.zoom, self.session.pan_x, self.session.pan_y, 
+            self.session.camera.zoom, self.session.camera.pan_x, self.session.camera.pan_y, 
             self.sim.world_size, self.app.layout
         )
         
@@ -337,7 +337,7 @@ class AppController:
         if self.session.show_constraints:
             layout_data = self.renderer._calculate_constraint_layout(
                 self.sketch.constraints, self.sketch.entities, 
-                self.session.zoom, self.session.pan_x, self.session.pan_y, 
+                self.session.camera.zoom, self.session.camera.pan_x, self.session.camera.pan_y, 
                 self.sim.world_size, self.app.layout
             )
             for item in layout_data:
@@ -351,7 +351,7 @@ class AppController:
         # Check points
         point_map = utils.get_grouped_points(
             self.sketch.entities, 
-            self.session.zoom, self.session.pan_x, self.session.pan_y, 
+            self.session.camera.zoom, self.session.camera.pan_x, self.session.camera.pan_y, 
             self.sim.world_size, self.app.layout
         )
         hit_pt = None
@@ -366,16 +366,16 @@ class AppController:
             self.ctx_vars['pt'] = hit_pt[1]
             opts = self.get_context_options('point', hit_pt[0], hit_pt[1])
             self.context_menu = ContextMenu(mx, my, opts)
-            if self.session.pending_constraint:
+            if self.session.constraint_builder.pending_type:
                 self.handle_pending_constraint_click(pt_idx=hit_pt)
             return
 
         # Check walls/entities
-        rad_sim = 5.0 / (((self.app.layout['MID_W'] - 50) / self.sim.world_size) * self.session.zoom)
+        rad_sim = 5.0 / (((self.app.layout['MID_W'] - 50) / self.sim.world_size) * self.session.camera.zoom)
         hit_wall = self.sketch.find_entity_at(sim_x, sim_y, rad_sim)
         
         if hit_wall != -1:
-            if self.session.pending_constraint:
+            if self.session.constraint_builder.pending_type:
                 self.handle_pending_constraint_click(wall_idx=hit_wall)
             else:
                 self.ctx_vars['wall'] = hit_wall
@@ -384,7 +384,7 @@ class AppController:
         else:
             if self.session.mode == config.MODE_EDITOR: 
                 self.app.change_tool(config.TOOL_SELECT)
-                self.session.set_status("Switched to Select Tool")
+                self.session.status.set("Switched to Select Tool")
 
     # =========================================================================
     # Constraint Triggers
@@ -400,7 +400,7 @@ class AppController:
         # Handle multi-apply constraints (H/V)
         is_multi = False
         if ctype in CONSTRAINT_DEFS and CONSTRAINT_DEFS[ctype][0].get('multi'):
-            walls = list(self.session.selected_walls)
+            walls = list(self.session.selection.walls)
             if walls:
                 count = 0
                 for w_idx in walls:
@@ -408,38 +408,38 @@ class AppController:
                         count += 1
                 if count > 0:
                     self.scene.rebuild()
-                    self.session.set_status(f"Applied {ctype} to {count} items")
-                    self.session.selected_walls.clear()
-                    self.session.selected_points.clear()
+                    self.session.status.set(f"Applied {ctype} to {count} items")
+                    self.session.selection.walls.clear()
+                    self.session.selection.points.clear()
                     is_multi = True
                     self.sound_manager.play_sound('click')
         if is_multi:
             return
         
         # Try to apply with current selection
-        walls = list(self.session.selected_walls)
-        pts = list(self.session.selected_points)
+        walls = list(self.session.selection.walls)
+        pts = list(self.session.selection.points)
         if self._try_apply_constraint_smart(ctype, walls, pts):
             return
 
         # Enter pending constraint mode
-        self.session.pending_constraint = ctype
-        self.session.pending_targets_walls = list(self.session.selected_walls)
-        self.session.pending_targets_points = list(self.session.selected_points)
-        self.session.selected_walls.clear()
-        self.session.selected_points.clear()
+        self.session.constraint_builder.pending_type = ctype
+        self.session.constraint_builder.target_walls = list(self.session.selection.walls)
+        self.session.constraint_builder.target_points = list(self.session.selection.points)
+        self.session.selection.walls.clear()
+        self.session.selection.points.clear()
         msg = CONSTRAINT_DEFS[ctype][0]['msg'] if ctype in CONSTRAINT_DEFS else "Select targets..."
-        self.session.set_status(f"{ctype}: {msg}")
+        self.session.status.set(f"{ctype}: {msg}")
         self.sound_manager.play_sound('tool_select')
 
     def _try_apply_constraint_smart(self, ctype, walls, pts):
         """Try to apply a constraint with the given selection."""
         if self.sketch.attempt_apply_constraint(ctype, walls, pts):
             self.scene.rebuild()
-            self.session.set_status(f"Applied {ctype}")
-            self.session.selected_walls.clear()
-            self.session.selected_points.clear()
-            self.session.pending_constraint = None
+            self.session.status.set(f"Applied {ctype}")
+            self.session.selection.walls.clear()
+            self.session.selection.points.clear()
+            self.session.constraint_builder.pending_type = None
             for btn in self.app.input_handler.constraint_btn_map.keys():
                 btn.active = False
             self.sound_manager.play_sound('click')
@@ -454,10 +454,10 @@ class AppController:
                     sub_p = pts[:r['p']]
                     if self.sketch.attempt_apply_constraint(ctype, sub_w, sub_p):
                         self.scene.rebuild()
-                        self.session.set_status(f"Applied {ctype} (Auto-Trimmed)")
-                        self.session.selected_walls.clear()
-                        self.session.selected_points.clear()
-                        self.session.pending_constraint = None
+                        self.session.status.set(f"Applied {ctype} (Auto-Trimmed)")
+                        self.session.selection.walls.clear()
+                        self.session.selection.points.clear()
+                        self.session.constraint_builder.pending_type = None
                         for btn in self.app.input_handler.constraint_btn_map.keys():
                             btn.active = False
                         self.sound_manager.play_sound('click')
@@ -465,25 +465,25 @@ class AppController:
         return False
 
     def handle_pending_constraint_click(self, wall_idx=None, pt_idx=None):
-        if not self.session.pending_constraint:
+        if not self.session.constraint_builder.pending_type:
             return
-        if wall_idx is not None and wall_idx not in self.session.pending_targets_walls:
-            self.session.pending_targets_walls.append(wall_idx)
-        if pt_idx is not None and pt_idx not in self.session.pending_targets_points:
-            self.session.pending_targets_points.append(pt_idx)
+        if wall_idx is not None and wall_idx not in self.session.constraint_builder.target_walls:
+            self.session.constraint_builder.target_walls.append(wall_idx)
+        if pt_idx is not None and pt_idx not in self.session.constraint_builder.target_points:
+            self.session.constraint_builder.target_points.append(pt_idx)
         
         if self._try_apply_constraint_smart(
-            self.session.pending_constraint, 
-            self.session.pending_targets_walls, 
-            self.session.pending_targets_points
+            self.session.constraint_builder.pending_type, 
+            self.session.constraint_builder.target_walls, 
+            self.session.constraint_builder.target_points
         ):
             return
             
-        ctype = self.session.pending_constraint
+        ctype = self.session.constraint_builder.pending_type
         msg = CONSTRAINT_DEFS[ctype][0]['msg']
-        nw = len(self.session.pending_targets_walls)
-        np_count = len(self.session.pending_targets_points)
-        self.session.set_status(f"{ctype} ({nw}W, {np_count}P): {msg}")
+        nw = len(self.session.constraint_builder.target_walls)
+        np_count = len(self.session.constraint_builder.target_points)
+        self.session.status.set(f"{ctype} ({nw}W, {np_count}P): {msg}")
         self.sound_manager.play_sound('click')
     
     # =========================================================================

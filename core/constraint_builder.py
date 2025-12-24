@@ -7,7 +7,12 @@ Owns:
 - Current snap target
 - Logic for determining when enough targets are collected
 
-This extracts constraint construction concerns from the Session god object.
+API:
+- pending_type: Current constraint type being built (or None)
+- target_walls: List of entity indices accumulated
+- target_points: List of (entity_idx, point_idx) tuples accumulated
+- snap_target: Current snap target for visual feedback
+- start(), add_wall(), add_point(), reset(): State machine operations
 """
 
 from typing import Optional, List, Tuple
@@ -53,15 +58,30 @@ class ConstraintBuilder:
         """Get the type of constraint being constructed."""
         return self._pending_type
     
+    @pending_type.setter
+    def pending_type(self, value: Optional[str]):
+        """Set the pending constraint type."""
+        self._pending_type = value
+    
     @property
     def target_walls(self) -> List[int]:
         """Get list of accumulated wall/entity targets."""
-        return self._target_walls.copy()
+        return self._target_walls
+    
+    @target_walls.setter
+    def target_walls(self, value: List[int]):
+        """Set the target walls list."""
+        self._target_walls = list(value) if value else []
     
     @property
     def target_points(self) -> List[Tuple[int, int]]:
         """Get list of accumulated point targets."""
-        return self._target_points.copy()
+        return self._target_points
+    
+    @target_points.setter
+    def target_points(self, value: List[Tuple[int, int]]):
+        """Set the target points list."""
+        self._target_points = list(value) if value else []
     
     @property
     def snap_target(self) -> Optional[Tuple[int, int]]:
@@ -71,50 +91,6 @@ class ConstraintBuilder:
     @snap_target.setter
     def snap_target(self, value: Optional[Tuple[int, int]]):
         """Set current snap target."""
-        self._snap_target = value
-    
-    # =========================================================================
-    # Backward Compatibility Aliases
-    # =========================================================================
-    
-    @property
-    def pending_constraint(self) -> Optional[str]:
-        """Alias for pending_type (backward compatibility)."""
-        return self._pending_type
-    
-    @pending_constraint.setter
-    def pending_constraint(self, value: Optional[str]):
-        """Setter for pending_constraint (backward compatibility)."""
-        self._pending_type = value
-    
-    @property
-    def pending_targets_walls(self) -> List[int]:
-        """Alias for target_walls (backward compatibility)."""
-        return self._target_walls
-    
-    @pending_targets_walls.setter
-    def pending_targets_walls(self, value: List[int]):
-        """Setter for pending_targets_walls (backward compatibility)."""
-        self._target_walls = value
-    
-    @property
-    def pending_targets_points(self) -> List[Tuple[int, int]]:
-        """Alias for target_points (backward compatibility)."""
-        return self._target_points
-    
-    @pending_targets_points.setter
-    def pending_targets_points(self, value: List[Tuple[int, int]]):
-        """Setter for pending_targets_points (backward compatibility)."""
-        self._target_points = value
-    
-    @property
-    def current_snap_target(self) -> Optional[Tuple[int, int]]:
-        """Alias for snap_target (backward compatibility)."""
-        return self._snap_target
-    
-    @current_snap_target.setter
-    def current_snap_target(self, value: Optional[Tuple[int, int]]):
-        """Setter for current_snap_target (backward compatibility)."""
         self._snap_target = value
     
     # =========================================================================

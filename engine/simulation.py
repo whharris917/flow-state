@@ -16,6 +16,10 @@ It does NOT know about:
 
 Those belong to the Sketch (CAD domain). The Compiler bridges them.
 The Scene orchestrates all operations.
+
+NOTE: Brush operations (paint/erase particles) are now handled by 
+ParticleBrush in engine/particle_brush.py. The deprecated 
+add_particles_brush() and delete_particles_brush() methods have been removed.
 """
 
 import numpy as np
@@ -345,6 +349,71 @@ class Simulation:
         self.count = new_count
 
     # =========================================================================
+    # Low-Level Particle Primitives (Used by ParticleBrush and Compiler)
+    # =========================================================================
+
+    def _add_particle(self, x, y, vx=0.0, vy=0.0, is_static=0, sigma=None, epsilon=None):
+        """
+        Add a single particle to the simulation.
+        
+        This is a low-level primitive used by ParticleBrush and Compiler.
+        For brush operations, use ParticleBrush.paint() instead.
+        
+        Args:
+            x, y: Position
+            vx, vy: Velocity (default 0)
+            is_static: 0=dynamic, 1=static, 2=kinematic
+            sigma: Particle size (default: self.sigma)
+            epsilon: LJ energy parameter (default: self.epsilon)
+            
+        Returns:
+            Index of the new particle, or -1 if failed
+        """
+        if self.count >= self.capacity:
+            self._resize_arrays()
+        
+        if sigma is None:
+            sigma = self.sigma
+        if epsilon is None:
+            epsilon = self.epsilon
+        
+        idx = self.count
+        self.pos_x[idx] = x
+        self.pos_y[idx] = y
+        self.vel_x[idx] = vx
+        self.vel_y[idx] = vy
+        self.is_static[idx] = is_static
+        self.atom_sigma[idx] = sigma
+        self.atom_eps_sqrt[idx] = math.sqrt(epsilon)
+        self.count += 1
+        self.rebuild_next = True
+        
+        return idx
+
+    def _check_overlap(self, x, y, threshold):
+        """
+        Check if a position overlaps existing particles.
+        
+        This is a low-level primitive used by ParticleBrush.
+        
+        Args:
+            x, y: Position to check
+            threshold: Minimum distance to consider overlap
+            
+        Returns:
+            True if position overlaps, False otherwise
+        """
+        if self.count == 0:
+            return False
+        
+        threshold_sq = threshold * threshold
+        dx = self.pos_x[:self.count] - x
+        dy = self.pos_y[:self.count] - y
+        dist_sq = dx*dx + dy*dy
+        
+        return np.any(dist_sq < threshold_sq)
+
+    # =========================================================================
     # Physics Step (PURE PHYSICS)
     # =========================================================================
 
@@ -467,84 +536,6 @@ class Simulation:
                 keep_indices = np.where(is_inside)[0]
                 self.compact_arrays(keep_indices)
                 self.rebuild_next = True
-
-    # =========================================================================
-    # Particle Brush (Physics Domain - Creates Dynamic Particles)
-    # =========================================================================
-
-    def add_particles_brush(self, x, y, radius):
-        """Add dynamic particles in a circular brush pattern."""
-        sigma = self.sigma
-        spacing = 1.12246 * sigma  # Optimal LJ spacing
-        row_height = spacing * 0.866025  # sqrt(3)/2
-        r_sq = radius * radius
-        
-        n_rows = int(radius / row_height) + 1
-        n_cols = int(radius / spacing) + 1
-        
-        # Estimate capacity needed
-        estimated_add = int(3.14159 * radius * radius / (spacing * row_height)) + 10
-        if self.count + estimated_add >= self.capacity:
-            self._resize_arrays()
-
-        for row in range(-n_rows, n_rows + 1):
-            offset_x = 0.5 * spacing if (row % 2 != 0) else 0.0
-            y_curr = y + row * row_height
-            
-            for col in range(-n_cols, n_cols + 1):
-                x_curr = x + col * spacing + offset_x
-                dx = x_curr - x
-                dy = y_curr - y
-                
-                if dx*dx + dy*dy <= r_sq:
-                    if 0 < x_curr < self.world_size and 0 < y_curr < self.world_size:
-                        if not self._check_overlap(x_curr, y_curr, 0.8 * sigma):
-                            if self.count >= self.capacity:
-                                self._resize_arrays()
-                            
-                            idx = self.count
-                            self.pos_x[idx] = x_curr
-                            self.pos_y[idx] = y_curr
-                            self.vel_x[idx] = 0.0
-                            self.vel_y[idx] = 0.0
-                            self.is_static[idx] = 0
-                            self.atom_sigma[idx] = self.sigma
-                            self.atom_eps_sqrt[idx] = math.sqrt(self.epsilon)
-                            self.count += 1
-        
-        self.rebuild_next = True
-
-    def _check_overlap(self, x, y, threshold):
-        """Check if position overlaps existing particles."""
-        if self.count == 0:
-            return False
-        
-        threshold_sq = threshold * threshold
-        dx = self.pos_x[:self.count] - x
-        dy = self.pos_y[:self.count] - y
-        dist_sq = dx*dx + dy*dy
-        
-        return np.any(dist_sq < threshold_sq)
-
-    def delete_particles_brush(self, x, y, radius):
-        """Delete dynamic particles in a circular brush pattern."""
-        r2 = radius**2
-        keep_indices = []
-        
-        for i in range(self.count):
-            # Keep static/kinematic particles
-            if self.is_static[i] == 1 or self.is_static[i] == 2:
-                keep_indices.append(i)
-                continue
-            
-            dx = self.pos_x[i] - x
-            dy = self.pos_y[i] - y
-            if dx*dx + dy*dy > r2:
-                keep_indices.append(i)
-        
-        if len(keep_indices) < self.count:
-            self.compact_arrays(keep_indices)
-            self.rebuild_next = True
 
     # =========================================================================
     # Array Management

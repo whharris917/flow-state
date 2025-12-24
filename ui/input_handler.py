@@ -152,16 +152,16 @@ class InputHandler:
             if event.key == pygame.K_ESCAPE:
                 if self.session.placing_geo_data:
                     self.session.placing_geo_data = None
-                    self.session.set_status("Placement Cancelled")
+                    self.session.status.set("Placement Cancelled")
                     return True
                 if self.session.current_tool:
                     self.session.current_tool.cancel()
-                self.session.pending_constraint = None
-                self.session.selected_walls.clear()
-                self.session.selected_points.clear()
+                self.session.constraint_builder.pending_type = None
+                self.session.selection.walls.clear()
+                self.session.selection.points.clear()
                 for btn in self.constraint_btn_map.keys():
                     btn.active = False
-                self.session.set_status("Cancelled")
+                self.session.status.set("Cancelled")
                 return True
             if event.key == pygame.K_z and (pygame.key.get_mods() & pygame.KMOD_CTRL):
                 self.controller.actions.action_undo()
@@ -233,7 +233,7 @@ class InputHandler:
                     mx, my = event.pos
                     sx, sy = utils.screen_to_sim(
                         mx, my, 
-                        self.session.zoom, self.session.pan_x, self.session.pan_y, 
+                        self.session.camera.zoom, self.session.camera.pan_x, self.session.camera.pan_y, 
                         self.sim.world_size, self.layout
                     )
                     # Use scene.geo for geometry placement
@@ -245,10 +245,10 @@ class InputHandler:
                         )
                     self.session.placing_geo_data = None
                     self.controller.scene.rebuild()
-                    self.session.set_status("Geometry Placed")
+                    self.session.status.set("Geometry Placed")
                 elif event.button == 3:
                     self.session.placing_geo_data = None
-                    self.session.set_status("Placement Cancelled")
+                    self.session.status.set("Placement Cancelled")
             return
 
         # Panning
@@ -258,11 +258,11 @@ class InputHandler:
         elif event.type == pygame.MOUSEBUTTONUP and event.button == 2:
             self.session.state = InteractionState.IDLE
         elif event.type == pygame.MOUSEMOTION and self.session.state == InteractionState.PANNING:
-            self.session.pan_x += event.pos[0] - self.session.last_mouse_pos[0]
-            self.session.pan_y += event.pos[1] - self.session.last_mouse_pos[1]
+            self.session.camera.pan_x += event.pos[0] - self.session.last_mouse_pos[0]
+            self.session.camera.pan_y += event.pos[1] - self.session.last_mouse_pos[1]
             self.session.last_mouse_pos = event.pos
         elif event.type == pygame.MOUSEWHEEL:
-            self.session.zoom = max(0.1, min(self.session.zoom * (1.1 if event.y > 0 else 0.9), 50.0))
+            self.session.camera.zoom = max(0.1, min(self.session.camera.zoom * (1.1 if event.y > 0 else 0.9), 50.0))
         
         # Tool handling
         if self.session.current_tool:

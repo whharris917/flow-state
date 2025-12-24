@@ -73,7 +73,7 @@ class FlowStateApp:
         # =====================================================================
         
         self.session.input_world = InputField(0, 0, 0, 0)
-        self.session.zoom = 0.9
+        self.session.camera.zoom = 0.9
         
         self.session.editor_paused = False 
         self.session.show_constraints = True
@@ -148,7 +148,7 @@ class FlowStateApp:
             new_mid_h = self.layout['MID_H']
             correction = (old_mid_w / old_mid_h) / (new_mid_w / new_mid_h)
             if abs(correction - 1.0) > 0.001:
-                self.session.zoom *= correction
+                self.session.camera.zoom *= correction
         self.ui = UIManager(self.layout, self.session.input_world)
         self.input_handler = InputHandler(self)
         self.ui.menu.resize(w)
@@ -232,7 +232,7 @@ class FlowStateApp:
 
     def exit_editor_mode(self, backup_state=None):
         self.scene.new()
-        self.session.set_status("Reset/Discarded")
+        self.session.status.set("Reset/Discarded")
         self.sound_manager.play_sound('click')
     
     # =========================================================================
@@ -248,7 +248,7 @@ class FlowStateApp:
             if f: 
                 self.session.current_geom_filepath = f
                 # Use file_io which now works with scene
-                self.session.set_status(
+                self.session.status.set(
                     file_io.save_geometry_file(self.scene, self.session, f)
                 )
     
@@ -265,7 +265,7 @@ class FlowStateApp:
             self.scene.new()
             self.session.input_world.set_value(config.DEFAULT_WORLD_SIZE)
             self.session.current_sim_filepath = None
-            self.session.set_status("New Project Created")
+            self.session.status.set("New Project Created")
             
         elif selection == "Import Geometry":
             if self.root_tk:
@@ -276,7 +276,7 @@ class FlowStateApp:
                     data, _ = file_io.load_geometry_file(f)
                     if data: 
                         self.session.placing_geo_data = data
-                        self.session.set_status("Place Model")
+                        self.session.status.set("Place Model")
                         
         elif self.root_tk:
             if selection == "Save As..." or selection == "Save":
@@ -289,7 +289,7 @@ class FlowStateApp:
                         self.session.current_sim_filepath = f
                         
                 if self.session.current_sim_filepath:
-                    self.session.set_status(
+                    self.session.status.set(
                         file_io.save_file(self.scene, self.session, self.session.current_sim_filepath)
                     )
                     
@@ -299,12 +299,12 @@ class FlowStateApp:
                 if f:
                     self.session.current_sim_filepath = f
                     success, msg, view_state = file_io.load_file(self.scene, f)
-                    self.session.set_status(msg)
+                    self.session.status.set(msg)
                     if success: 
                         self.session.input_world.set_value(self.sim.world_size)
                         if view_state:
-                            self.session.zoom = view_state['zoom']
-                            self.session.pan_x = view_state['pan_x']
-                            self.session.pan_y = view_state['pan_y']
+                            self.session.camera.zoom = view_state['zoom']
+                            self.session.camera.pan_x = view_state['pan_x']
+                            self.session.camera.pan_y = view_state['pan_y']
                             
         pygame.event.pump()

@@ -20,19 +20,19 @@ Architecture:
 Tool Contract - Allowed Access via self.app:
 
     READ-ONLY STATE:
-    - session.zoom, pan_x, pan_y  — View transforms
-    - session.mode                — SIM vs EDITOR mode
-    - session.state               — Interaction state enum
-    - session.selected_walls/points — Current selection
-    - sim.world_size              — For coordinate transforms
-    - layout                      — Screen regions
-    - sketch.entities             — Geometry for hit testing/snapping
+    - session.camera.zoom, pan_x, pan_y  — View transforms
+    - session.mode                       — SIM vs EDITOR mode
+    - session.state                      — Interaction state enum
+    - session.selection.walls/points     — Current selection
+    - sim.world_size                     — For coordinate transforms
+    - layout                             — Screen regions
+    - sketch.entities                    — Geometry for hit testing/snapping
     
     WRITE STATE:
-    - session.state               — Set interaction state
-    - session.current_snap_target — Update snap indicator
-    - session.selected_walls/points — Modify selection
-    - session.set_status()        — Status bar messages
+    - session.state                              — Set interaction state
+    - session.constraint_builder.snap_target     — Update snap indicator
+    - session.selection.walls/points             — Modify selection
+    - session.status.set()                       — Status bar messages
     
     COMMANDS (geometry changes):
     - scene.execute(cmd)          — Execute command (rebuild/solve automatic)
@@ -40,8 +40,8 @@ Tool Contract - Allowed Access via self.app:
     
     PHYSICS (BrushTool only):
     - sim.snapshot()              — Physics undo
-    - sim.add_particles_brush()   — Create particles
-    - sim.delete_particles_brush() — Erase particles
+    - ParticleBrush.paint()       — Create particles
+    - ParticleBrush.erase()       — Erase particles
 """
 
 import pygame
@@ -84,7 +84,7 @@ class Tool:
 
     def deactivate(self):
         """Called when switching away from this tool."""
-        self.app.session.current_snap_target = None
+        self.app.session.constraint_builder.snap_target = None
 
     def handle_event(self, event, layout):
         """Handle a pygame event. Return True if event was consumed."""
@@ -178,9 +178,9 @@ class BrushTool:
         sim = self.app.sim
         wx, wy = utils.screen_to_sim(
             mx, my,
-            self.app.session.zoom,
-            self.app.session.pan_x,
-            self.app.session.pan_y,
+            self.app.session.camera.zoom,
+            self.app.session.camera.pan_x,
+            self.app.session.camera.pan_y,
             sim.world_size,
             layout
         )
@@ -235,7 +235,7 @@ class BrushTool:
             return
         
         # Convert brush radius to screen space
-        zoom = self.app.session.zoom
+        zoom = self.app.session.camera.zoom
         world_size = self.app.sim.world_size
         base_scale = (layout['MID_W'] - 50) / world_size
         final_scale = base_scale * zoom
@@ -275,7 +275,7 @@ class GeometryTool(Tool):
         """Convert screen coordinates to world coordinates."""
         return utils.screen_to_sim(
             mx, my, 
-            self.app.session.zoom, self.app.session.pan_x, self.app.session.pan_y, 
+            self.app.session.camera.zoom, self.app.session.camera.pan_x, self.app.session.camera.pan_y, 
             self.app.sim.world_size, layout
         )
 
@@ -284,7 +284,7 @@ class GeometryTool(Tool):
         return utils.get_snapped_pos(
             mx, my, 
             self.sketch.entities, 
-            self.app.session.zoom, self.app.session.pan_x, self.app.session.pan_y, 
+            self.app.session.camera.zoom, self.app.session.camera.pan_x, self.app.session.camera.pan_y, 
             self.app.sim.world_size, layout, anchor, exclude_idx
         )
 
@@ -295,14 +295,14 @@ class GeometryTool(Tool):
             self.dragging = False
             self.start_pos = None
             self.app.session.state = InteractionState.IDLE
-            self.app.session.set_status("Cancelled")
-        self.app.session.current_snap_target = None
+            self.app.session.status.set("Cancelled")
+        self.app.session.constraint_builder.snap_target = None
 
     def _update_hover_snap(self, mx, my, layout):
         """Update snap indicator when not dragging."""
         if not self.dragging:
             _, _, snap = self.get_snapped(mx, my, layout, anchor=None)
-            self.app.session.current_snap_target = snap
+            self.app.session.constraint_builder.snap_target = snap
 
 
 # =============================================================================
@@ -344,7 +344,7 @@ class LineTool(GeometryTool):
             if self.dragging:
                 anchor = self.start_pos
                 sx, sy, snap = self.get_snapped(mx, my, layout, anchor)
-                self.app.session.current_snap_target = snap
+                self.app.session.constraint_builder.snap_target = snap
                 
                 # Supersede with updated line
                 is_ref = (self.name == "Ref Line")
@@ -357,7 +357,7 @@ class LineTool(GeometryTool):
                 # Show length in status bar
                 if self.app.session.mode == config.MODE_EDITOR:
                     length = math.hypot(sx - self.start_pos[0], sy - self.start_pos[1])
-                    self.app.session.set_status(f"Length: {length:.2f}")
+                    self.app.session.status.set(f"Length: {length:.2f}")
                 return True
             else:
                 self._update_hover_snap(mx, my, layout)
@@ -397,7 +397,7 @@ class LineTool(GeometryTool):
         self.start_pos = None
         self.start_snap = None
         self.app.session.state = InteractionState.IDLE
-        self.app.session.current_snap_target = None
+        self.app.session.constraint_builder.snap_target = None
 
     def draw_overlay(self, screen, renderer, layout):
         # Show snap point when hovering (not dragging)
@@ -556,7 +556,7 @@ class CircleTool(GeometryTool):
         self.start_pos = None
         self.center_snap = None
         self.app.session.state = InteractionState.IDLE
-        self.app.session.current_snap_target = None
+        self.app.session.constraint_builder.snap_target = None
 
     def draw_overlay(self, screen, renderer, layout):
         if not self.dragging:
@@ -694,7 +694,7 @@ class SelectTool(Tool):
         
         self._reset_drag_state()
         self.app.session.state = InteractionState.IDLE
-        self.app.session.set_status("Cancelled")
+        self.app.session.status.set("Cancelled")
 
     def _handle_click(self, mouse_pos, layout):
         """Handle mouse down - determine what was clicked and start drag."""
@@ -723,28 +723,28 @@ class SelectTool(Tool):
         
         # 3. Check for entity body hit
         sim_x, sim_y = utils.screen_to_sim(
-            mx, my, session.zoom, session.pan_x, session.pan_y,
+            mx, my, session.camera.zoom, session.camera.pan_x, session.camera.pan_y,
             self.app.sim.world_size, layout
         )
-        hit_idx = self.sketch.find_entity_at(sim_x, sim_y, 0.5 / session.zoom)
+        hit_idx = self.sketch.find_entity_at(sim_x, sim_y, 0.5 / session.camera.zoom)
         
         if hit_idx >= 0:
             # Check if clicking on already-selected entity (group move)
-            if hit_idx in session.selected_walls and len(session.selected_walls) > 1:
+            if hit_idx in session.selection.walls and len(session.selection.walls) > 1:
                 self._start_group_move(mouse_pos, layout)
             else:
                 # Single entity selection/move
                 if not (pygame.key.get_mods() & pygame.KMOD_SHIFT):
-                    session.selected_walls.clear()
-                    session.selected_points.clear()
-                session.selected_walls.add(hit_idx)
+                    session.selection.walls.clear()
+                    session.selection.points.clear()
+                session.selection.walls.add(hit_idx)
                 self._start_entity_move(hit_idx, mouse_pos, layout)
             return True
         
         # 4. Clicked empty - deselect
         if not (pygame.key.get_mods() & pygame.KMOD_SHIFT):
-            session.selected_walls.clear()
-            session.selected_points.clear()
+            session.selection.walls.clear()
+            session.selection.points.clear()
         return True
 
     def _handle_drag(self, mouse_pos, layout):
@@ -752,12 +752,12 @@ class SelectTool(Tool):
         mx, my = mouse_pos
         curr_sim = utils.screen_to_sim(
             mx, my, 
-            self.app.session.zoom, self.app.session.pan_x, self.app.session.pan_y, 
+            self.app.session.camera.zoom, self.app.session.camera.pan_x, self.app.session.camera.pan_y, 
             self.app.sim.world_size, layout
         )
         prev_sim = utils.screen_to_sim(
             self.drag_start_mouse[0], self.drag_start_mouse[1], 
-            self.app.session.zoom, self.app.session.pan_x, self.app.session.pan_y, 
+            self.app.session.camera.zoom, self.app.session.camera.pan_x, self.app.session.camera.pan_y, 
             self.app.sim.world_size, layout
         )
         
@@ -830,7 +830,7 @@ class SelectTool(Tool):
     def _start_group_move(self, mouse_pos, layout):
         """Start moving multiple selected entities."""
         self.mode = 'MOVE_GROUP'
-        self.group_indices = list(self.app.session.selected_walls)
+        self.group_indices = list(self.app.session.selection.walls)
         self.drag_start_mouse = mouse_pos
         self.total_dx = 0.0
         self.total_dy = 0.0
@@ -852,10 +852,10 @@ class SelectTool(Tool):
             anchor = w.end if self.target_pt == 0 else w.start
             dest_x, dest_y, snap = utils.get_snapped_pos(
                 mx, my, entities, 
-                self.app.session.zoom, self.app.session.pan_x, self.app.session.pan_y, 
+                self.app.session.camera.zoom, self.app.session.camera.pan_x, self.app.session.camera.pan_y, 
                 self.app.sim.world_size, self.app.layout, anchor, self.target_idx
             )
-            self.app.session.current_snap_target = snap
+            self.app.session.constraint_builder.snap_target = snap
             
             # Use command with historize=False for preview
             cmd = SetPointCommand(
@@ -868,10 +868,10 @@ class SelectTool(Tool):
         elif isinstance(w, Circle):
             dest_x, dest_y, snap = utils.get_snapped_pos(
                 mx, my, entities, 
-                self.app.session.zoom, self.app.session.pan_x, self.app.session.pan_y, 
+                self.app.session.camera.zoom, self.app.session.camera.pan_x, self.app.session.camera.pan_y, 
                 self.app.sim.world_size, self.app.layout, None, self.target_idx
             )
-            self.app.session.current_snap_target = snap
+            self.app.session.constraint_builder.snap_target = snap
             
             # Use command with historize=False for preview
             cmd = SetPointCommand(
@@ -944,12 +944,12 @@ class SelectTool(Tool):
             self.scene.commands.redo_stack.clear()
         
         # Handle snap connection
-        if self.app.session.current_snap_target:
-            snap = self.app.session.current_snap_target
+        if self.app.session.constraint_builder.snap_target:
+            snap = self.app.session.constraint_builder.snap_target
             if not (self.target_idx == snap[0] and self.target_pt == snap[1]):
                 c = Coincident(self.target_idx, self.target_pt, snap[0], snap[1])
                 self.scene.execute(AddConstraintCommand(self.sketch, c))
-                self.app.session.set_status("Snapped & Connected")
+                self.app.session.status.set("Snapped & Connected")
 
     def _commit_resize(self):
         """Commit circle resize with historized command."""
@@ -1015,7 +1015,7 @@ class SelectTool(Tool):
                     pt = w.get_point(pt_idx)
                     sx, sy = utils.sim_to_screen(
                         pt[0], pt[1],
-                        session.zoom, session.pan_x, session.pan_y,
+                        session.camera.zoom, session.camera.pan_x, session.camera.pan_y,
                         self.app.sim.world_size, layout
                     )
                     key = (int(sx), int(sy))
@@ -1025,7 +1025,7 @@ class SelectTool(Tool):
             elif isinstance(w, Circle):
                 sx, sy = utils.sim_to_screen(
                     w.center[0], w.center[1],
-                    session.zoom, session.pan_x, session.pan_y,
+                    session.camera.zoom, session.camera.pan_x, session.camera.pan_y,
                     self.app.sim.world_size, layout
                 )
                 key = (int(sx), int(sy))
@@ -1054,14 +1054,14 @@ class SelectTool(Tool):
             if isinstance(w, Circle):
                 sx, sy = utils.sim_to_screen(
                     w.center[0], w.center[1],
-                    session.zoom, session.pan_x, session.pan_y,
+                    session.camera.zoom, session.camera.pan_x, session.camera.pan_y,
                     self.app.sim.world_size, layout
                 )
                 
                 # Calculate screen radius
-                p0 = utils.sim_to_screen(0, 0, session.zoom, session.pan_x, session.pan_y,
+                p0 = utils.sim_to_screen(0, 0, session.camera.zoom, session.camera.pan_x, session.camera.pan_y,
                                          self.app.sim.world_size, layout)
-                pr = utils.sim_to_screen(w.radius, 0, session.zoom, session.pan_x, session.pan_y,
+                pr = utils.sim_to_screen(w.radius, 0, session.camera.zoom, session.camera.pan_x, session.camera.pan_y,
                                          self.app.sim.world_size, layout)
                 screen_r = abs(pr[0] - p0[0])
                 

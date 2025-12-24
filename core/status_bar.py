@@ -6,7 +6,12 @@ Owns:
 - Display timestamp
 - Visibility logic
 
-This extracts status display concerns from the Session god object.
+API:
+- set(message): Set a new status message
+- message: Get current message text
+- visible_message: Get message only if still visible
+- is_visible: Check if message should be displayed
+- fade_alpha: Get alpha for fade effect (0.0-1.0)
 """
 
 import time
@@ -38,6 +43,11 @@ class StatusBar:
     def message(self) -> str:
         """Get the current message (even if expired)."""
         return self._message
+    
+    @property
+    def timestamp(self) -> float:
+        """Get the timestamp when message was set."""
+        return self._timestamp
     
     @property
     def visible_message(self) -> str:
@@ -72,30 +82,6 @@ class StatusBar:
         return 0.0
     
     # =========================================================================
-    # Backward Compatibility
-    # =========================================================================
-    
-    @property
-    def status_msg(self) -> str:
-        """Alias for message (backward compatibility)."""
-        return self._message
-    
-    @status_msg.setter
-    def status_msg(self, value: str):
-        """Setter for status_msg (backward compatibility)."""
-        self.set(value)
-    
-    @property
-    def status_time(self) -> float:
-        """Alias for timestamp (backward compatibility)."""
-        return self._timestamp
-    
-    @status_time.setter
-    def status_time(self, value: float):
-        """Setter for status_time (backward compatibility)."""
-        self._timestamp = value
-    
-    # =========================================================================
     # Operations
     # =========================================================================
     
@@ -108,10 +94,6 @@ class StatusBar:
         """
         self._message = message
         self._timestamp = time.time()
-    
-    def set_status(self, message: str):
-        """Alias for set() (backward compatibility)."""
-        self.set(message)
     
     def clear(self):
         """Clear the current message immediately."""
