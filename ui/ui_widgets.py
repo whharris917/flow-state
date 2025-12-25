@@ -31,9 +31,13 @@ class Widget:
     def draw(self, screen, font): pass
 
 class Button(Widget):
-    def __init__(self, x, y, w, h, text, active=False, toggle=True, color_active=config.COLOR_ACCENT, color_inactive=(60, 60, 65)):
+    def __init__(self, x, y, w, h, text="", active=False, toggle=True, 
+                 color_active=config.COLOR_ACCENT, color_inactive=(60, 60, 65),
+                 icon=None, tooltip=None):
         self.rect = pygame.Rect(x, y, w, h)
         self.text = text
+        self.icon = icon  # Icon drawing function from icons.py
+        self.tooltip = tooltip  # Tooltip text shown on hover
         self.active = active
         self.toggle = toggle
         self.clicked = False
@@ -49,6 +53,10 @@ class Button(Widget):
         self.anim_click = AnimVar(0.0, speed=20.0)
         self.ripples = [] # List of dicts {x, y, r, alpha}
         
+        # Tooltip state
+        self.hover_time = 0.0
+        self.show_tooltip = False
+        
         self.cached_surf = None
 
     def update(self, dt):
@@ -59,6 +67,15 @@ class Button(Widget):
             
         self.anim_hover.update(dt)
         self.anim_click.update(dt)
+        
+        # Tooltip timing
+        if self.hovered and self.tooltip:
+            self.hover_time += dt
+            if self.hover_time > 0.5:  # Show tooltip after 0.5 seconds
+                self.show_tooltip = True
+        else:
+            self.hover_time = 0.0
+            self.show_tooltip = False
         
         # Ripple physics
         for r in self.ripples[:]:
@@ -152,14 +169,58 @@ class Button(Widget):
                 pygame.draw.circle(surf, (255, 255, 255, int(r['a']*50)), (int(r['x']), int(r['y'])), int(r['r']))
             screen.blit(surf, draw_rect.topleft)
 
-        # 6. Text
-        txt_col = config.COLOR_TEXT
-        if self.disabled: txt_col = (100, 100, 100)
-        elif not self.active and not self.hovered: txt_col = config.COLOR_TEXT_DIM
+        # 6. Content (Icon or Text)
+        content_col = config.COLOR_TEXT
+        if self.disabled: content_col = (100, 100, 100)
+        elif not self.active and not self.hovered: content_col = config.COLOR_TEXT_DIM
         
-        ts = font.render(self.text, True, txt_col)
-        ts_rect = ts.get_rect(center=draw_rect.center)
-        screen.blit(ts, ts_rect)
+        if self.icon:
+            # Draw icon centered in button with padding
+            icon_rect = draw_rect.inflate(-6, -6)
+            self.icon(screen, icon_rect, content_col)
+        elif self.text:
+            # Draw text centered
+            ts = font.render(self.text, True, content_col)
+            ts_rect = ts.get_rect(center=draw_rect.center)
+            screen.blit(ts, ts_rect)
+        
+        # 7. Tooltip (drawn last, on top)
+        if self.show_tooltip and self.tooltip:
+            self._draw_tooltip(screen, font)
+    
+    def _draw_tooltip(self, screen, font):
+        """Draw tooltip near the button."""
+        tip_surf = font.render(self.tooltip, True, config.COLOR_TEXT)
+        tip_w = tip_surf.get_width() + 12
+        tip_h = tip_surf.get_height() + 8
+        
+        # Position tooltip above the button
+        tip_x = self.rect.centerx - tip_w // 2
+        tip_y = self.rect.y - tip_h - 5
+        
+        # Keep tooltip on screen
+        screen_w = screen.get_width()
+        if tip_x < 5: tip_x = 5
+        if tip_x + tip_w > screen_w - 5: tip_x = screen_w - tip_w - 5
+        if tip_y < 5: tip_y = self.rect.bottom + 5  # Show below if no room above
+        
+        tip_rect = pygame.Rect(tip_x, tip_y, tip_w, tip_h)
+        
+        # Shadow
+        shadow_rect = tip_rect.copy()
+        shadow_rect.x += 2
+        shadow_rect.y += 2
+        shadow_surf = pygame.Surface((shadow_rect.width, shadow_rect.height), pygame.SRCALPHA)
+        pygame.draw.rect(shadow_surf, (0, 0, 0, 100), shadow_surf.get_rect(), border_radius=4)
+        screen.blit(shadow_surf, shadow_rect.topleft)
+        
+        # Background
+        pygame.draw.rect(screen, (50, 52, 58), tip_rect, border_radius=4)
+        pygame.draw.rect(screen, config.COLOR_ACCENT, tip_rect, 1, border_radius=4)
+        
+        # Text
+        screen.blit(tip_surf, (tip_x + 6, tip_y + 4))
+
 
 class InputField(Widget):
     def __init__(self, x, y, w, h, initial_text="", text_color=config.COLOR_TEXT):

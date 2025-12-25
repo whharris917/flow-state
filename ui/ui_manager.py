@@ -1,8 +1,7 @@
 import core.config as config
 
 from ui.ui_widgets import SmartSlider, Button, InputField, MenuBar
-# Tools are created in FlowStateApp, but we import keys here to be consistent
-from ui.tools import SelectTool, BrushTool, LineTool, RectTool, CircleTool, PointTool
+from ui import icons
 
 class UIManager:
     """
@@ -76,43 +75,143 @@ class UIManager:
         rp_w = layout['RIGHT_W'] - 30
         rp_y = config.TOP_MENU_H + 20
         
+        # Mode toggle - keep as text button (changes text dynamically)
         self.buttons['mode_ghost'] = Button(rp_x, rp_y, rp_w, 35, "Mode: Physical", active=False, color_active=config.COLOR_ACCENT, color_inactive=config.COLOR_SUCCESS); rp_y += 45
-        self.buttons['atomize'] = Button(rp_x, rp_y, rp_w, 30, "Atomize Selected", active=False, toggle=False); rp_y += 40
+        
+        # Atomize - icon button
+        self.buttons['atomize'] = Button(rp_x, rp_y, rp_w, 30, 
+                                         icon=icons.get_icon('atomize'), 
+                                         tooltip="Atomize Selected",
+                                         active=False, toggle=False); rp_y += 40
 
+        # --- TOOL ICONS (2x4 grid) ---
+        btn_size = 38  # Square icon buttons
+        spacing = 6
+        
+        # Row 1: Brush, Select
+        self.tools['brush'] = Button(rp_x, rp_y, btn_size, btn_size, 
+                                     icon=icons.get_icon('brush'), 
+                                     tooltip="Brush (B)",
+                                     active=True, toggle=False)
+        self.tools['select'] = Button(rp_x + btn_size + spacing, rp_y, btn_size, btn_size,
+                                      icon=icons.get_icon('select'),
+                                      tooltip="Select (V)",
+                                      active=False, toggle=False)
+        rp_y += btn_size + spacing
+        
+        # Row 2: Line, Rectangle
+        self.tools['line'] = Button(rp_x, rp_y, btn_size, btn_size,
+                                    icon=icons.get_icon('line'),
+                                    tooltip="Line (L)",
+                                    active=False, toggle=False)
+        self.tools['rect'] = Button(rp_x + btn_size + spacing, rp_y, btn_size, btn_size,
+                                    icon=icons.get_icon('rect'),
+                                    tooltip="Rectangle (R)",
+                                    active=False, toggle=False)
+        rp_y += btn_size + spacing
+        
+        # Row 3: Circle, Point
+        self.tools['circle'] = Button(rp_x, rp_y, btn_size, btn_size,
+                                      icon=icons.get_icon('circle'),
+                                      tooltip="Circle (C)",
+                                      active=False, toggle=False)
+        self.tools['point'] = Button(rp_x + btn_size + spacing, rp_y, btn_size, btn_size,
+                                     icon=icons.get_icon('point'),
+                                     tooltip="Point (P)",
+                                     active=False, toggle=False)
+        rp_y += btn_size + spacing
+        
+        # Row 4: Ref Line (single button)
+        self.tools['ref'] = Button(rp_x, rp_y, btn_size, btn_size,
+                                   icon=icons.get_icon('ref_line'),
+                                   tooltip="Reference Line",
+                                   active=False, toggle=False)
+        rp_y += btn_size + 10
+        
+        # Brush size slider
+        self.sliders['brush_size'] = SmartSlider(rp_x, rp_y, rp_w, 1.0, 10.0, 2.0, "Brush Radius", hard_min=0.5); rp_y += 60
+        
+        # Animation/Constraint visibility controls (keep as text - they change text)
         btn_half = (rp_w - 10) // 2
-        self.tools['brush'] = Button(rp_x, rp_y, btn_half, 30, "Brush", active=True, toggle=False)
-        self.tools['select'] = Button(rp_x + btn_half + 10, rp_y, btn_half, 30, "Select", active=False, toggle=False); rp_y += 40
-        self.tools['line'] = Button(rp_x, rp_y, btn_half, 30, "Line", active=False, toggle=False)
-        self.tools['rect'] = Button(rp_x + btn_half + 10, rp_y, btn_half, 30, "Rectangle", active=False, toggle=False); rp_y += 40
-        self.tools['circle'] = Button(rp_x, rp_y, btn_half, 30, "Circle", active=False, toggle=False)
-        self.tools['point'] = Button(rp_x + btn_half + 10, rp_y, btn_half, 30, "Point", active=False, toggle=False); rp_y += 40
-        self.tools['ref'] = Button(rp_x, rp_y, btn_half, 30, "Ref Line", active=False, toggle=False); rp_y += 45
+        self.buttons['editor_play'] = Button(rp_x, rp_y, btn_half, 30, "Anim Pause", active=False, toggle=False)
+        self.buttons['show_const'] = Button(rp_x + btn_half + 10, rp_y, btn_half, 30, "Hide Cnstr", active=False, toggle=False); rp_y += 40
         
-        self.sliders['brush_size'] = SmartSlider(rp_x, rp_y, rp_w, 1.0, 10.0, 2.0, "Brush Radius", hard_min=0.5); rp_y+=60
-        
-        self.buttons['editor_play'] = Button(rp_x, rp_y, btn_half, 30, "Anim Pause", active=False, toggle=False); 
-        self.buttons['show_const'] = Button(rp_x + btn_half + 10, rp_y, btn_half, 30, "Hide Cnstr", active=False, toggle=False); rp_y+=40
-        
-        self.buttons['extend'] = Button(rp_x, rp_y, rp_w, 30, "Extend Infinite Line", toggle=False); rp_y += 45
+        # Extend button - icon
+        self.buttons['extend'] = Button(rp_x, rp_y, rp_w, 30,
+                                        icon=icons.get_icon('extend'),
+                                        tooltip="Extend Infinite Line",
+                                        toggle=False); rp_y += 40
 
-        self.buttons['const_coincident'] = Button(rp_x, rp_y, rp_w, 30, "Coincident (Pt-Pt/Ln/Circ)", toggle=False); rp_y+=35
-        self.buttons['const_collinear'] = Button(rp_x, rp_y, rp_w, 30, "Collinear (Pt-Ln)", toggle=False); rp_y+=35
-        self.buttons['const_midpoint'] = Button(rp_x, rp_y, rp_w, 30, "Midpoint (Pt-Ln)", toggle=False); rp_y+=35
+        # --- CONSTRAINT ICONS (grid layout) ---
+        # Row 1: Coincident, Collinear
+        self.buttons['const_coincident'] = Button(rp_x, rp_y, btn_size, btn_size,
+                                                  icon=icons.get_icon('coincident'),
+                                                  tooltip="Coincident",
+                                                  toggle=False)
+        self.buttons['const_collinear'] = Button(rp_x + btn_size + spacing, rp_y, btn_size, btn_size,
+                                                 icon=icons.get_icon('collinear'),
+                                                 tooltip="Collinear",
+                                                 toggle=False)
+        rp_y += btn_size + spacing
         
-        self.buttons['const_length'] = Button(rp_x, rp_y, btn_half, 30, "Fix Length", toggle=False)
-        self.buttons['const_equal'] = Button(rp_x + btn_half + 10, rp_y, btn_half, 30, "Equal Len", toggle=False); rp_y+=35
+        # Row 2: Midpoint, Length
+        self.buttons['const_midpoint'] = Button(rp_x, rp_y, btn_size, btn_size,
+                                                icon=icons.get_icon('midpoint'),
+                                                tooltip="Midpoint",
+                                                toggle=False)
+        self.buttons['const_length'] = Button(rp_x + btn_size + spacing, rp_y, btn_size, btn_size,
+                                              icon=icons.get_icon('length'),
+                                              tooltip="Fix Length",
+                                              toggle=False)
+        rp_y += btn_size + spacing
         
-        self.buttons['const_parallel'] = Button(rp_x, rp_y, btn_half, 30, "Parallel", toggle=False)
-        self.buttons['const_perp'] = Button(rp_x + btn_half + 10, rp_y, btn_half, 30, "Perpendic", toggle=False); rp_y+=35
+        # Row 3: Equal, Parallel
+        self.buttons['const_equal'] = Button(rp_x, rp_y, btn_size, btn_size,
+                                             icon=icons.get_icon('equal'),
+                                             tooltip="Equal Length",
+                                             toggle=False)
+        self.buttons['const_parallel'] = Button(rp_x + btn_size + spacing, rp_y, btn_size, btn_size,
+                                                icon=icons.get_icon('parallel'),
+                                                tooltip="Parallel",
+                                                toggle=False)
+        rp_y += btn_size + spacing
         
-        self.buttons['const_horiz'] = Button(rp_x, rp_y, btn_half, 30, "Horizontal", toggle=False)
-        self.buttons['const_vert'] = Button(rp_x + btn_half + 10, rp_y, btn_half, 30, "Vertical", toggle=False); rp_y+=35
+        # Row 4: Perpendicular, Angle
+        self.buttons['const_perp'] = Button(rp_x, rp_y, btn_size, btn_size,
+                                            icon=icons.get_icon('perpendicular'),
+                                            tooltip="Perpendicular",
+                                            toggle=False)
+        self.buttons['const_angle'] = Button(rp_x + btn_size + spacing, rp_y, btn_size, btn_size,
+                                             icon=icons.get_icon('angle'),
+                                             tooltip="Angle",
+                                             toggle=False)
+        rp_y += btn_size + spacing
         
-        self.buttons['const_angle'] = Button(rp_x, rp_y, btn_half, 30, "Angle", toggle=False); rp_y+=45
+        # Row 5: Horizontal, Vertical
+        self.buttons['const_horiz'] = Button(rp_x, rp_y, btn_size, btn_size,
+                                             icon=icons.get_icon('horizontal'),
+                                             tooltip="Horizontal",
+                                             toggle=False)
+        self.buttons['const_vert'] = Button(rp_x + btn_size + spacing, rp_y, btn_size, btn_size,
+                                            icon=icons.get_icon('vertical'),
+                                            tooltip="Vertical",
+                                            toggle=False)
+        rp_y += btn_size + 15
 
-        self.buttons['save_geo'] = Button(rp_x, rp_y, btn_half, 30, "Save", active=False, toggle=False, color_inactive=config.COLOR_SUCCESS)
-        self.buttons['discard_geo'] = Button(rp_x + btn_half + 10, rp_y, btn_half, 30, "Exit", active=False, toggle=False, color_inactive=config.COLOR_DANGER); rp_y+=40
+        # --- SAVE/EXIT BUTTONS (icons) ---
+        self.buttons['save_geo'] = Button(rp_x, rp_y, btn_size, btn_size,
+                                          icon=icons.get_icon('save'),
+                                          tooltip="Save",
+                                          active=False, toggle=False, 
+                                          color_inactive=config.COLOR_SUCCESS)
+        self.buttons['discard_geo'] = Button(rp_x + btn_size + spacing, rp_y, btn_size, btn_size,
+                                             icon=icons.get_icon('exit'),
+                                             tooltip="Exit Editor",
+                                             active=False, toggle=False, 
+                                             color_inactive=config.COLOR_DANGER)
+        rp_y += btn_size + 10
         
+        # Resize world (keep as text - has input field)
         self.buttons['resize'] = Button(rp_x, rp_y, rp_w - 70, 25, "Resize World", active=False, toggle=False)
 
     def update(self, dt):
