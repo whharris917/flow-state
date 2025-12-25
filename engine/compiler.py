@@ -5,11 +5,16 @@ Reads geometry and materials from Sketch, writes static particle arrays
 to Simulation. This is the ONLY component that knows about both domains.
 
 Data flow is ONE-WAY: Sketch → Simulation (never reverse)
+
+Handle System:
+- Points with is_handle=True are ProcessObject handles
+- These are SKIPPED during atomization (they don't become particles)
+- They exist only for constraint participation
 """
 
 import numpy as np
 import math
-from model.geometry import Line, Circle
+from model.geometry import Line, Circle, Point
 
 
 class Compiler:
@@ -17,6 +22,7 @@ class Compiler:
     The Bridge between the Sketch (CAD) and the Simulation (Physics).
     Reads geometry and materials, writes to static particle arrays.
     """
+    
     def __init__(self, sketch, simulation):
         """
         Initialize the Compiler with references to both domains.
@@ -34,6 +40,9 @@ class Compiler:
         
         This is the core compilation step: CAD geometry → Physics particles.
         
+        Handle Points (is_handle=True) are SKIPPED - they exist only for
+        constraint participation, not physics.
+        
         Args:
             sketch: Optional Sketch to compile. If None, uses self.sketch.
         """
@@ -47,6 +56,10 @@ class Compiler:
         
         # 2. Iterate Geometry
         for w in sketch.entities:
+            # Skip ProcessObject handles - they don't become atoms
+            if isinstance(w, Point) and getattr(w, 'is_handle', False):
+                continue
+            
             # Look up material properties
             mat = sketch.materials.get(w.material_id, sketch.materials["Default"])
             
@@ -58,11 +71,14 @@ class Compiler:
                 self._compile_line(w, mat)
             elif isinstance(w, Circle):
                 self._compile_circle(w, mat)
+            # Note: Regular Point entities could be atomized here if needed
+            # Currently they are not (same as before)
         
         self.sim.rebuild_next = True
 
     def _compile_line(self, w, mat):
         """Compile a Line entity into static atoms."""
+        # Skip reference lines
         if w.ref:
             return
         

@@ -7,19 +7,21 @@ The Scene is the central "document" in Flow State. It contains and OWNS:
 - Compiler: The one-way bridge from Sketch → Simulation
 - GeometryManager: Import/export operations for CAD data
 - CommandQueue: Undo/redo for CAD operations
+- ProcessObjects: Simulation boundary conditions (Sources, Sinks, etc.)
 
 The Scene also serves as the ORCHESTRATOR, managing the correct
 order of operations during each frame update.
 
 File formats:
 - .mdl (Model): Sketch only - reusable CAD components
-- .scn (Scene): Full state - Sketch + Simulation + View
+- .scn (Scene): Full state - Sketch + Simulation + View + ProcessObjects
 
 Architecture:
-- Scene OWNS: Sketch, Simulation, Compiler, GeometryManager, CommandQueue
+- Scene OWNS: Sketch, Simulation, Compiler, GeometryManager, CommandQueue, ProcessObjects
 - Sketch OWNS: entities, constraints, materials
 - Simulation OWNS: particle arrays (pure physics)
 - Compiler READS Sketch, WRITES to Simulation (one-way bridge)
+- ProcessObjects sit ALONGSIDE Sketch, exposing handles to it
 """
 
 import json
@@ -42,10 +44,12 @@ class Scene:
         - Compiler (bridge between them)
         - GeometryManager (CAD import/export)
         - CommandQueue (undo/redo for CAD)
+        - ProcessObjects (boundary conditions: Sources, Sinks, etc.)
     
     Orchestrates:
-        - Frame updates (drivers → constraints → compile → physics)
+        - Frame updates (drivers → constraints → compile → process objects → physics)
         - Geometry compilation (sketch → atoms)
+        - ProcessObject execution (particle spawning, etc.)
         - Undo/redo via commands
     """
     
@@ -71,6 +75,9 @@ class Scene:
         # Command Queue for CAD undo/redo
         self.commands = CommandQueue(max_history=50)
         
+        # ProcessObjects (Sources, Sinks, Heaters, Sensors)
+        self.process_objects = []
+        
         # Track geometry changes for rebuild optimization
         self._geometry_dirty = False
     
@@ -92,6 +99,68 @@ class Scene:
     def materials(self):
         """Alias for sketch.materials."""
         return self.sketch.materials
+    
+    # =========================================================================
+    # ProcessObject Management
+    # =========================================================================
+    
+    def add_process_object(self, obj):
+        """
+        Add a ProcessObject to the scene.
+        
+        This registers the object's handles with the Sketch so they can
+        participate in constraints.
+        
+        Args:
+            obj: ProcessObject instance (Source, Sink, etc.)
+        """
+        self.process_objects.append(obj)
+        obj._owner_scene = self
+        obj.register_handles(self.sketch)
+    
+    def remove_process_object(self, obj):
+        """
+        Remove a ProcessObject from the scene.
+        
+        This unregisters the object's handles from the Sketch.
+        
+        Args:
+            obj: ProcessObject instance to remove
+        """
+        if obj in self.process_objects:
+            obj.unregister_handles(self.sketch)
+            obj._owner_scene = None
+            self.process_objects.remove(obj)
+    
+    def get_process_object_for_handle(self, point):
+        """
+        Find the ProcessObject that owns a given handle Point.
+        
+        Args:
+            point: A Point entity that might be a handle
+            
+        Returns:
+            ProcessObject or None
+        """
+        if not getattr(point, 'is_handle', False):
+            return None
+        return getattr(point, '_owner_process_object', None)
+    
+    def find_process_object_at(self, x, y, tolerance=5.0):
+        """
+        Find a ProcessObject at the given world coordinates.
+        
+        Args:
+            x, y: World coordinates
+            tolerance: Hit tolerance in world units
+            
+        Returns:
+            ProcessObject or None
+        """
+        for obj in self.process_objects:
+            if hasattr(obj, 'hit_test') and obj.hit_test(x, y, tolerance):
+                return obj
+        return None
     
     # =========================================================================
     # Command Interface (CAD Undo/Redo)
@@ -176,7 +245,8 @@ class Scene:
         1. Constraint drivers are updated (animations)
         2. Constraints are solved (geometry moves)
         3. Static atoms are rebuilt if geometry changed
-        4. Physics step runs (if enabled)
+        4. ProcessObjects execute (particle spawning, etc.)
+        5. Physics step runs (if enabled)
         
         Args:
             dt: Delta time since last frame (seconds)
@@ -207,7 +277,13 @@ class Scene:
             self.rebuild()
             self._geometry_dirty = False
         
-        # 4. Run physics step (if enabled)
+        # 4. Execute ProcessObjects (BEFORE physics step)
+        if run_physics and not self.simulation.paused:
+            for obj in self.process_objects:
+                if obj.enabled:
+                    obj.execute(self.simulation, dt)
+        
+        # 5. Run physics step (if enabled)
         if run_physics and not self.simulation.paused:
             self.simulation.step(physics_steps)
         
@@ -311,48 +387,14 @@ class Scene:
         from model.constraints import create_constraint
         from model.properties import Material
         
-        entities_data = sketch_data.get('entities', [])
-        if not entities_data:
-            return
-        
-        # Calculate bounding box to find centroid
-        min_x, max_x = float('inf'), float('-inf')
-        min_y, max_y = float('inf'), float('-inf')
-        
-        for e in entities_data:
-            if e['type'] == 'line':
-                min_x = min(min_x, e['start'][0], e['end'][0])
-                max_x = max(max_x, e['start'][0], e['end'][0])
-                min_y = min(min_y, e['start'][1], e['end'][1])
-                max_y = max(max_y, e['start'][1], e['end'][1])
-            elif e['type'] == 'circle':
-                min_x = min(min_x, e['center'][0] - e['radius'])
-                max_x = max(max_x, e['center'][0] + e['radius'])
-                min_y = min(min_y, e['center'][1] - e['radius'])
-                max_y = max(max_y, e['center'][1] + e['radius'])
-            elif e['type'] == 'point':
-                min_x = min(min_x, e['x'])
-                max_x = max(max_x, e['x'])
-                min_y = min(min_y, e['y'])
-                max_y = max(max_y, e['y'])
-        
-        if min_x == float('inf'):
-            return
-        
-        center_x = (min_x + max_x) / 2
-        center_y = (min_y + max_y) / 2
-        dx = offset_x - center_x
-        dy = offset_y - center_y
-        
-        # Import materials first
         for mat_name, mat_data in sketch_data.get('materials', {}).items():
             if mat_name not in self.sketch.materials:
                 self.sketch.materials[mat_name] = Material.from_dict(mat_data)
         
         base_idx = len(self.sketch.entities)
+        dx, dy = offset_x, offset_y
         
-        # Import entities with offset
-        for e in entities_data:
+        for e in sketch_data.get('entities', []):
             if e['type'] == 'line':
                 start = (e['start'][0] + dx, e['start'][1] + dy)
                 end = (e['end'][0] + dx, e['end'][1] + dy)
@@ -376,7 +418,6 @@ class Scene:
                 point = Point(e['x'] + dx, e['y'] + dy, e.get('anchored', False), e.get('material_id', 'Default'))
                 self.sketch.entities.append(point)
         
-        # Import constraints with remapped indices
         for c_data in sketch_data.get('constraints', []):
             remapped = self._remap_constraint_indices(c_data, base_idx)
             c = create_constraint(remapped)
@@ -424,12 +465,12 @@ class Scene:
         return c_copy
     
     # =========================================================================
-    # Scene I/O (.scn) - Full State
+    # Scene I/O (.scn) - Full State Including ProcessObjects
     # =========================================================================
     
     def save_scene(self, path, view_state=None):
         """
-        Saves the full Scene (Sketch + Simulation + View) as a .scn file.
+        Saves the full Scene (Sketch + Simulation + ProcessObjects + View) as a .scn file.
         
         Args:
             path: File path (should end in .scn)
@@ -442,10 +483,11 @@ class Scene:
             return "Cancelled"
         
         data = {
-            'version': '1.0',
+            'version': '1.1',
             'type': 'SCENE',
             'sketch': self.sketch.to_dict(),
             'simulation': self.simulation.to_dict(),
+            'process_objects': [obj.to_dict() for obj in self.process_objects],
         }
         
         if view_state:
@@ -488,6 +530,14 @@ class Scene:
             if 'simulation' in data:
                 scene.simulation.restore(data['simulation'])
             
+            # Restore ProcessObjects
+            if 'process_objects' in data:
+                from model.process_objects import create_process_object
+                for obj_data in data['process_objects']:
+                    obj = create_process_object(obj_data)
+                    if obj:
+                        scene.add_process_object(obj)
+            
             view_state = data.get('view', None)
             
             return scene, view_state, f"Scene loaded: {os.path.basename(path)}"
@@ -503,6 +553,10 @@ class Scene:
     
     def clear(self):
         """Clears all content from the Scene."""
+        # Remove all ProcessObjects first (unregisters handles)
+        for obj in list(self.process_objects):
+            self.remove_process_object(obj)
+        
         self.sketch.clear()
         self.simulation.clear(snapshot=False)
         self.commands.clear()
@@ -510,6 +564,10 @@ class Scene:
     
     def new(self):
         """Resets the Scene to a fresh state."""
+        # Remove all ProcessObjects first
+        for obj in list(self.process_objects):
+            self.remove_process_object(obj)
+        
         self.sketch.clear()
         self.simulation.reset()
         self.commands.clear()

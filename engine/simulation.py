@@ -1,25 +1,16 @@
 """
-Simulation - The Physics Domain (PURE)
+Simulation - Pure Physics Domain
 
-This class is responsible for PARTICLE PHYSICS ONLY:
-- Particle arrays (position, velocity, force)
-- Physics parameters (gravity, dt, damping)
-- Neighbor lists and spatial optimization
-- Force calculation and integration
-
-It does NOT know about:
-- Lines, Circles, Points (geometry types)
-- Constraints (CAD relationships)
-- Materials (physical properties of geometry)
-- Compilation (that's the Compiler's job)
-- Orchestration (that's the Scene's job)
-
-Those belong to the Sketch (CAD domain). The Compiler bridges them.
+The Simulation owns the particle arrays and physics calculations.
+It has NO knowledge of CAD geometry - it only knows about atoms.
 The Scene orchestrates all operations.
 
 NOTE: Brush operations (paint/erase particles) are now handled by 
 ParticleBrush in engine/particle_brush.py. The deprecated 
 add_particles_brush() and delete_particles_brush() methods have been removed.
+
+ProcessObject Sources use has_particle_near() for rejection sampling
+during particle spawning.
 """
 
 import numpy as np
@@ -349,14 +340,14 @@ class Simulation:
         self.count = new_count
 
     # =========================================================================
-    # Low-Level Particle Primitives (Used by ParticleBrush and Compiler)
+    # Low-Level Particle Primitives (Used by ParticleBrush, Compiler, Sources)
     # =========================================================================
 
     def _add_particle(self, x, y, vx=0.0, vy=0.0, is_static=0, sigma=None, epsilon=None):
         """
         Add a single particle to the simulation.
         
-        This is a low-level primitive used by ParticleBrush and Compiler.
+        This is a low-level primitive used by ParticleBrush, Compiler, and Sources.
         For brush operations, use ParticleBrush.paint() instead.
         
         Args:
@@ -398,68 +389,49 @@ class Simulation:
         
         Args:
             x, y: Position to check
-            threshold: Minimum distance to consider overlap
+            threshold: Distance threshold for overlap
             
         Returns:
             True if position overlaps, False otherwise
         """
-        if self.count == 0:
-            return False
-        
         threshold_sq = threshold * threshold
-        dx = self.pos_x[:self.count] - x
-        dy = self.pos_y[:self.count] - y
-        dist_sq = dx*dx + dy*dy
+        for i in range(self.count):
+            dx = self.pos_x[i] - x
+            dy = self.pos_y[i] - y
+            if dx * dx + dy * dy < threshold_sq:
+                return True
+        return False
+
+    def has_particle_near(self, x, y, threshold):
+        """
+        Check if any particle exists within threshold distance of (x, y).
         
-        return np.any(dist_sq < threshold_sq)
+        This is the public interface for overlap detection, used by
+        ProcessObject Sources for rejection sampling during particle spawning.
+        
+        Args:
+            x, y: Position to check (world coordinates)
+            threshold: Distance threshold (particles closer than this = overlap)
+            
+        Returns:
+            True if any particle is within threshold distance
+        """
+        return self._check_overlap(x, y, threshold)
 
     # =========================================================================
-    # Physics Step (PURE PHYSICS)
+    # Physics Step
     # =========================================================================
 
-    def step(self, steps_to_run):
+    def step(self, steps_to_run=1):
         """
-        Run physics simulation steps.
+        Run physics integration steps.
         
-        This method is PURE PHYSICS:
-        - Updates particle positions and velocities
-        - Calculates forces
-        - Handles collisions and boundaries
-        
-        It does NOT:
-        - Update geometry (that's Sketch's job)
-        - Update constraints (that's Sketch's job)
-        - Compile geometry (that's Compiler's job)
-        - Animate anything (that's done via constraint drivers before step())
+        Args:
+            steps_to_run: Number of integration sub-steps to run
         """
-        if self.paused:
-            return
-        
-        # Update dynamic particle properties from UI sliders
-        is_dyn = self.is_static[:self.count] == 0
-        if np.any(is_dyn):
-            self.atom_sigma[:self.count][is_dyn] = self.sigma
-            self.atom_eps_sqrt[:self.count][is_dyn] = math.sqrt(self.epsilon)
-        
-        self._update_derived_params()
-
-        # Periodic spatial sort for cache efficiency
-        if self.total_steps % 100 == 0 and self.count > 0:
-            spatial_sort(
-                self.pos_x[:self.count], self.pos_y[:self.count],
-                self.vel_x[:self.count], self.vel_y[:self.count],
-                self.force_x[:self.count], self.force_y[:self.count],
-                self.is_static[:self.count], self.kinematic_props[:self.count],
-                self.atom_sigma[:self.count], self.atom_eps_sqrt[:self.count],
-                self.world_size, self.cell_size
-            )
-            self.rebuild_next = True
-        
-        # Check if neighbor list needs rebuilding
-        should_rebuild = False
-        if self.pair_count == 0 or self.rebuild_next:
-            should_rebuild = True
-        elif self.count > 0:
+        # Check for spatial displacement exceeding threshold
+        should_rebuild = self.rebuild_next
+        if not should_rebuild and self.count > 0:
             should_rebuild = check_displacement(
                 self.pos_x[:self.count], self.pos_y[:self.count],
                 self.last_x[:self.count], self.last_y[:self.count],

@@ -1,17 +1,29 @@
+"""
+Configuration - Global Constants and Theme
+
+All application-wide constants and visual theme definitions.
+"""
+
 import numpy as np
 
+# =============================================================================
 # Window Layout
+# =============================================================================
 WINDOW_WIDTH = 1400
 WINDOW_HEIGHT = 930 
 PANEL_LEFT_WIDTH = 350 
 PANEL_RIGHT_WIDTH = 350
-TOP_MENU_H = 40 # Slightly increased for comfort
+TOP_MENU_H = 40
 
-# Modes
+# =============================================================================
+# Application Modes
+# =============================================================================
 MODE_SIM = 0
 MODE_EDITOR = 1
 
-# Tools
+# =============================================================================
+# Tool IDs
+# =============================================================================
 TOOL_BRUSH = 0
 TOOL_LINE = 1
 TOOL_REF = 2
@@ -19,18 +31,21 @@ TOOL_POINT = 3
 TOOL_RECT = 4
 TOOL_CIRCLE = 5
 TOOL_SELECT = 6
+TOOL_SOURCE = 7  # ProcessObject: Particle emitter
 
-# World
+# =============================================================================
+# World & Physics Defaults
+# =============================================================================
 DEFAULT_WORLD_SIZE = 50.0
-
-# Physics Defaults
 DEFAULT_DT = 0.002
 DEFAULT_GRAVITY = 0.0
 DEFAULT_DAMPING = 1.0 
 DEFAULT_DRAW_M = 10
 DEFAULT_SKIN_DISTANCE = 0.5
 
-# --- VISUAL THEME (PROFESSIONAL DARK) ---
+# =============================================================================
+# Visual Theme (Professional Dark)
+# =============================================================================
 PARTICLE_RADIUS_SCALE = 0.4
 BACKGROUND_COLOR = (18, 20, 24)       # Deep Charcoal
 GRID_COLOR = (30, 34, 40)             # Soft Slate
@@ -53,6 +68,19 @@ COLOR_INPUT_ACTIVE = (60, 65, 75)
 COLOR_DYNAMIC = (70, 160, 220)        # Match Accent
 COLOR_STATIC = (206, 145, 120)        # Clay/Orange
 
+# ProcessObjects
+COLOR_SOURCE = (100, 200, 255)        # Light blue for Sources
+COLOR_SOURCE_DISABLED = (80, 80, 90)  # Gray for disabled Sources
+
+# Default Atom Properties
 ATOM_SIGMA = 1.0
 ATOM_EPSILON = 1.0
 ATOM_MASS = 1.0
+
+# =============================================================================
+# Runtime Flags (set by command line)
+# =============================================================================
+DEBUG = False
+SCREEN_WIDTH = WINDOW_WIDTH
+SCREEN_HEIGHT = WINDOW_HEIGHT
+FULLSCREEN = False

@@ -33,10 +33,14 @@ class InputHandler:
         # Tool button mappings
         self.tool_btn_map = {}
         tool_defs = {
-            'brush': config.TOOL_BRUSH, 'select': config.TOOL_SELECT,
-            'line': config.TOOL_LINE, 'rect': config.TOOL_RECT,
-            'circle': config.TOOL_CIRCLE, 'point': config.TOOL_POINT,
-            'ref': config.TOOL_REF
+            'brush': config.TOOL_BRUSH, 
+            'select': config.TOOL_SELECT,
+            'line': config.TOOL_LINE, 
+            'rect': config.TOOL_RECT,
+            'circle': config.TOOL_CIRCLE, 
+            'point': config.TOOL_POINT,
+            'ref': config.TOOL_REF,
+            'source': config.TOOL_SOURCE,  # ProcessObject: Particle emitter
         }
         for key, val in tool_defs.items():
             if key in self.ui.tools:
@@ -74,7 +78,7 @@ class InputHandler:
         bind_action('show_const', self.controller.actions.toggle_show_constraints)
         
         bind_action('discard_geo', lambda: self.controller.exit_editor_mode(None))
-        bind_action('save_geo', self.controller.save_geo_dialog)
+        bind_action('save_geo', self.controller.save_geometry)
         
         if 'resize' in self.ui.buttons and 'world' in self.ui.inputs:
             self.ui_action_map[self.ui.buttons['resize']] = lambda: self.controller.actions.action_resize_world(
@@ -172,10 +176,40 @@ class InputHandler:
             if event.key == pygame.K_DELETE:
                 self.controller.actions.action_delete_selection() 
                 return True
+            
+            # Tool hotkeys
+            if event.key == pygame.K_b:
+                self.controller.change_tool(config.TOOL_BRUSH)
+                return True
+            if event.key == pygame.K_v:
+                self.controller.change_tool(config.TOOL_SELECT)
+                return True
+            if event.key == pygame.K_l:
+                self.controller.change_tool(config.TOOL_LINE)
+                return True
+            if event.key == pygame.K_r:
+                self.controller.change_tool(config.TOOL_RECT)
+                return True
+            if event.key == pygame.K_c:
+                self.controller.change_tool(config.TOOL_CIRCLE)
+                return True
+            if event.key == pygame.K_p:
+                self.controller.change_tool(config.TOOL_POINT)
+                return True
+            if event.key == pygame.K_s and (pygame.key.get_mods() & pygame.KMOD_SHIFT):
+                # Shift+S for Source tool
+                self.controller.change_tool(config.TOOL_SOURCE)
+                return True
+                
         return False
 
     def _handle_menus(self, event):
-        if self.ui.menu.handle_event(event):
+        result = self.ui.menu.handle_event(event)
+        if result:
+            # If result is a string, it's a menu action
+            if isinstance(result, str):
+                self._dispatch_menu(result)
+                return True
             return True
         if event.type == pygame.MOUSEBUTTONDOWN and self.ui.menu.active_menu:
             if self.ui.menu.dropdown_rect and self.ui.menu.dropdown_rect.collidepoint(event.pos):
@@ -183,93 +217,91 @@ class InputHandler:
                 idx = rel_y // 30
                 opts = self.ui.menu.items[self.ui.menu.active_menu]
                 if 0 <= idx < len(opts):
-                    self.controller._execute_menu(opts[idx])
+                    self._dispatch_menu(opts[idx])
             self.ui.menu.active_menu = None
             return True
         return False
 
-    def _handle_dialogs(self, event):
-        captured = False
-        actions = self.controller.actions
-        
-        if actions.context_menu and actions.context_menu.handle_event(event):
-            action = actions.context_menu.action
-            if action:
-                actions.handle_context_menu_action(action)
-            captured = True
+    def _dispatch_menu(self, selection):
+        """Handle menu item selection."""
+        if selection == "New Simulation":
+            self.controller.new_scene()
+        elif selection == "New Model":
+            self.controller.new_scene()
+            self.controller.switch_mode(config.MODE_EDITOR)
+        elif selection == "Open...":
+            self.controller.load_scene()
+        elif selection == "Save":
+            if self.session.current_sim_filepath:
+                self.controller.save_scene(self.session.current_sim_filepath)
+            else:
+                self.controller.save_scene()
+        elif selection == "Save As...":
+            self.controller.save_scene()
+        elif selection == "Import Geometry":
+            self.controller.import_geometry()
 
-        # Property Dialog (Material)
-        if actions.prop_dialog and actions.prop_dialog.handle_event(event):
-            if actions.prop_dialog.apply: 
-                actions.apply_material_from_dialog(actions.prop_dialog)
-                actions.prop_dialog.apply = False
-            if actions.prop_dialog.done:
-                actions.prop_dialog = None
-            captured = True
-            
-        # Rotation Dialog
-        if actions.rot_dialog and actions.rot_dialog.handle_event(event):
-            if actions.rot_dialog.apply: 
-                actions.apply_rotation_from_dialog(actions.rot_dialog)
-                actions.rot_dialog.apply = False
-            if actions.rot_dialog.done:
-                actions.rot_dialog = None
-            captured = True
+    def _handle_dialogs(self, event):
+        """Handle active dialog events."""
+        if self.controller.actions.context_menu:
+            if self.controller.actions.context_menu.handle_event(event):
+                action = self.controller.actions.context_menu.action
+                self.controller.actions.context_menu = None
+                if action and action != "CLOSE":
+                    self.controller.actions.handle_context_menu_action(action)
+                return True
         
-        # Animation Dialog
-        if actions.anim_dialog and actions.anim_dialog.handle_event(event):
-            if actions.anim_dialog.apply:
-                actions.apply_animation_from_dialog(actions.anim_dialog)
-                actions.anim_dialog.apply = False
-            if actions.anim_dialog.done:
-                actions.anim_dialog = None
-            captured = True
-        return captured
+        if self.controller.actions.prop_dialog:
+            if self.controller.actions.prop_dialog.handle_event(event):
+                return True
+            if self.controller.actions.prop_dialog.done:
+                self.controller.actions.prop_dialog = None
+                return True
+        
+        if self.controller.actions.rot_dialog:
+            if self.controller.actions.rot_dialog.handle_event(event):
+                return True
+            if self.controller.actions.rot_dialog.done:
+                self.controller.actions.rot_dialog = None
+                return True
+        
+        if self.controller.actions.anim_dialog:
+            if self.controller.actions.anim_dialog.handle_event(event):
+                return True
+            if self.controller.actions.anim_dialog.done:
+                self.controller.actions.anim_dialog = None
+                return True
+        
+        return False
 
     def _handle_scene_mouse(self, event):
-        if self.session.placing_geo_data:
-            if event.type == pygame.MOUSEBUTTONDOWN:
-                if event.button == 1:
-                    mx, my = event.pos
-                    sx, sy = utils.screen_to_sim(
-                        mx, my, 
-                        self.session.camera.zoom, self.session.camera.pan_x, self.session.camera.pan_y, 
-                        self.sim.world_size, self.layout
-                    )
-                    # Use scene.geo for geometry placement
-                    geo = self.controller.scene.geo
-                    if geo and hasattr(geo, 'place_geometry'):
-                        geo.place_geometry(
-                            self.session.placing_geo_data, sx, sy, 
-                            current_time=self.session.geo_time
-                        )
-                    self.session.placing_geo_data = None
-                    self.controller.scene.rebuild()
-                    self.session.status.set("Geometry Placed")
-                elif event.button == 3:
-                    self.session.placing_geo_data = None
-                    self.session.status.set("Placement Cancelled")
-            return
-
-        # Panning
+        """Handle mouse events in the viewport."""
+        # Let the current tool handle it first
+        if self.session.current_tool:
+            if self.session.current_tool.handle_event(event, self.layout):
+                return
+        
+        # Panning with middle mouse button
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 2:
             self.session.state = InteractionState.PANNING
-            self.session.last_mouse_pos = event.pos
-        elif event.type == pygame.MOUSEBUTTONUP and event.button == 2:
-            self.session.state = InteractionState.IDLE
-        elif event.type == pygame.MOUSEMOTION and self.session.state == InteractionState.PANNING:
-            self.session.camera.pan_x += event.pos[0] - self.session.last_mouse_pos[0]
-            self.session.camera.pan_y += event.pos[1] - self.session.last_mouse_pos[1]
-            self.session.last_mouse_pos = event.pos
-        elif event.type == pygame.MOUSEWHEEL:
-            self.session.camera.zoom = max(0.1, min(self.session.camera.zoom * (1.1 if event.y > 0 else 0.9), 50.0))
+            return
         
-        # Tool handling
-        if self.session.current_tool:
-            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 3:
-                if self.session.state == InteractionState.DRAGGING_GEOMETRY:
-                    self.session.current_tool.cancel()
-                else: 
-                    self.controller.actions.spawn_context_menu(event.pos)
-            else:
-                self.session.current_tool.handle_event(event, self.layout)
+        if event.type == pygame.MOUSEBUTTONUP and event.button == 2:
+            if self.session.state == InteractionState.PANNING:
+                self.session.state = InteractionState.IDLE
+            return
+        
+        if event.type == pygame.MOUSEMOTION:
+            if self.session.state == InteractionState.PANNING:
+                self.session.camera.apply_pan(event.rel[0], event.rel[1])
+                return
+        
+        # Zooming with scroll wheel
+        if event.type == pygame.MOUSEWHEEL:
+            self.session.camera.apply_zoom(event.y)
+            return
+        
+        # Right-click for context menu
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 3:
+            self.controller.actions.spawn_context_menu(event.pos)
+            return

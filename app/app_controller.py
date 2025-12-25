@@ -334,8 +334,10 @@ class AppController:
                 self.sim.world_size, self.app.layout
             )
             for item in layout_data:
-                if item['rect'].collidepoint(mx, my):
-                    const_idx = item['index']
+                # Build rect from x, y (badge is roughly 40x20 pixels)
+                badge_rect = pygame.Rect(item['x'] - 20, item['y'] - 10, 40, 20)
+                if badge_rect.collidepoint(mx, my):
+                    const_idx = item['const_idx']
                     self.ctx_vars['const'] = const_idx
                     opts = self.get_context_options('constraint', const_idx)
                     self.context_menu = ContextMenu(mx, my, opts)

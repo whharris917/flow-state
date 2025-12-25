@@ -85,7 +85,6 @@ class IconCache:
         tinted = base.copy()
         
         # Apply color tint using BLEND_RGBA_MULT
-        # This multiplies each pixel's RGB by the color (normalized to 0-1)
         tint_surface = pygame.Surface(tinted.get_size(), pygame.SRCALPHA)
         tint_surface.fill((*color_key, 255))
         tinted.blit(tint_surface, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
@@ -244,14 +243,15 @@ def draw_icon_undo(surface, rect, color):
     cx, cy = rect.center
     size = min(rect.width, rect.height) // 2 - 3
     
-    # Curved arrow (approximated with arc and lines)
-    arc_rect = pygame.Rect(cx - size, cy - size // 2, size * 2, size)
+    # Curved arrow (arc)
+    arc_rect = pygame.Rect(cx - size, cy - size // 2, size * 2 - 4, size)
     pygame.draw.arc(surface, color, arc_rect, 0.5, math.pi, 2)
     
-    # Arrow head
-    ax, ay = cx - size, cy
-    pygame.draw.line(surface, color, (ax, ay), (ax + 5, ay - 5), 2)
-    pygame.draw.line(surface, color, (ax, ay), (ax + 5, ay + 5), 2)
+    # Arrowhead
+    arrow_x = cx - size + 2
+    arrow_y = cy
+    pygame.draw.line(surface, color, (arrow_x, arrow_y), (arrow_x + 5, arrow_y - 5), 2)
+    pygame.draw.line(surface, color, (arrow_x, arrow_y), (arrow_x + 5, arrow_y + 5), 2)
 
 
 def draw_icon_redo(surface, rect, color):
@@ -259,49 +259,56 @@ def draw_icon_redo(surface, rect, color):
     cx, cy = rect.center
     size = min(rect.width, rect.height) // 2 - 3
     
-    # Curved arrow (approximated with arc and lines)
-    arc_rect = pygame.Rect(cx - size, cy - size // 2, size * 2, size)
+    # Curved arrow (arc) - opposite direction
+    arc_rect = pygame.Rect(cx - size + 4, cy - size // 2, size * 2 - 4, size)
     pygame.draw.arc(surface, color, arc_rect, 0, math.pi - 0.5, 2)
     
-    # Arrow head
-    ax, ay = cx + size, cy
-    pygame.draw.line(surface, color, (ax, ay), (ax - 5, ay - 5), 2)
-    pygame.draw.line(surface, color, (ax, ay), (ax - 5, ay + 5), 2)
+    # Arrowhead
+    arrow_x = cx + size - 2
+    arrow_y = cy
+    pygame.draw.line(surface, color, (arrow_x, arrow_y), (arrow_x - 5, arrow_y - 5), 2)
+    pygame.draw.line(surface, color, (arrow_x, arrow_y), (arrow_x - 5, arrow_y + 5), 2)
 
 
 def draw_icon_delete(surface, rect, color):
-    """Delete/Clear - X mark."""
+    """Delete - X mark."""
     cx, cy = rect.center
     size = min(rect.width, rect.height) // 2 - 4
     
     pygame.draw.line(surface, color, (cx - size, cy - size), (cx + size, cy + size), 3)
-    pygame.draw.line(surface, color, (cx + size, cy - size), (cx - size, cy + size), 3)
+    pygame.draw.line(surface, color, (cx - size, cy + size), (cx + size, cy - size), 3)
 
 
 def draw_icon_ghost(surface, rect, color):
-    """Ghost/Physical toggle - ghost shape."""
+    """Ghost mode - ghost shape."""
     cx, cy = rect.center
-    size = min(rect.width, rect.height) // 2 - 3
+    size = min(rect.width, rect.height) // 2 - 2
     
     # Ghost body (rounded top, wavy bottom)
-    pygame.draw.arc(surface, color, (cx - size, cy - size, size * 2, size * 2), 0, math.pi, 2)
-    pygame.draw.line(surface, color, (cx - size, cy), (cx - size, cy + size // 2), 2)
-    pygame.draw.line(surface, color, (cx + size, cy), (cx + size, cy + size // 2), 2)
+    points = []
+    # Top half circle
+    for i in range(10):
+        angle = math.pi + (math.pi * i / 9)
+        x = cx + int(size * 0.8 * math.cos(angle))
+        y = cy - size // 3 + int(size * 0.8 * math.sin(angle))
+        points.append((x, y))
     
     # Wavy bottom
     wave_y = cy + size // 2
-    pygame.draw.line(surface, color, (cx - size, wave_y), (cx - size // 2, wave_y + 4), 2)
-    pygame.draw.line(surface, color, (cx - size // 2, wave_y + 4), (cx, wave_y), 2)
-    pygame.draw.line(surface, color, (cx, wave_y), (cx + size // 2, wave_y + 4), 2)
-    pygame.draw.line(surface, color, (cx + size // 2, wave_y + 4), (cx + size, wave_y), 2)
+    for i in range(5):
+        x = cx + size - (i * size // 2)
+        y_offset = 4 if i % 2 == 0 else -2
+        points.append((x, wave_y + y_offset))
+    
+    pygame.draw.polygon(surface, color, points, 2)
     
     # Eyes
-    pygame.draw.circle(surface, color, (cx - 4, cy - 2), 2)
-    pygame.draw.circle(surface, color, (cx + 4, cy - 2), 2)
+    pygame.draw.circle(surface, color, (cx - size // 3, cy - size // 4), 3)
+    pygame.draw.circle(surface, color, (cx + size // 3, cy - size // 4), 3)
 
 
 def draw_icon_save(surface, rect, color):
-    """Save - floppy disk icon."""
+    """Save - floppy disk."""
     cx, cy = rect.center
     size = min(rect.width, rect.height) // 2 - 3
     
@@ -329,6 +336,38 @@ def draw_icon_exit(surface, rect, color):
     pygame.draw.line(surface, color, (cx + size, cy), (cx + size - 5, cy + 4), 2)
 
 
+def draw_icon_source(surface, rect, color):
+    """Source (ProcessObject) - dashed circle with emanating particles."""
+    cx, cy = rect.center
+    size = min(rect.width, rect.height) // 2 - 3
+    
+    # Dashed circle
+    num_dashes = 8
+    dash_angle = math.pi / num_dashes
+    
+    for i in range(num_dashes):
+        start_angle = i * 2 * dash_angle
+        end_angle = start_angle + dash_angle
+        
+        x1 = cx + int(size * math.cos(start_angle))
+        y1 = cy + int(size * math.sin(start_angle))
+        x2 = cx + int(size * math.cos(end_angle))
+        y2 = cy + int(size * math.sin(end_angle))
+        
+        pygame.draw.line(surface, color, (x1, y1), (x2, y2), 2)
+    
+    # Center dot
+    pygame.draw.circle(surface, color, (cx, cy), 3)
+    
+    # Emanating particles (small dots)
+    for angle_deg in [45, 135, 225, 315]:
+        angle = math.radians(angle_deg)
+        for dist in [size * 0.4, size * 0.7]:
+            px = cx + int(dist * math.cos(angle))
+            py = cy + int(dist * math.sin(angle))
+            pygame.draw.circle(surface, color, (px, py), 2)
+
+
 # =============================================================================
 # Icon Registry - Maps names to drawing functions
 # =============================================================================
@@ -351,16 +390,19 @@ PNG_MAPPINGS = {
     'parallel': 'parallel',
     'perpendicular': 'perpendicular',
     'extend': 'extend',
-    'anchor': 'anchor',  # NEW
+    'anchor': 'anchor',
     
     # Actions
     'play': 'play',
     'pause': 'pause',
-    'circle_play': 'anim_play',  # NEW - for animation play
-    'circle_pause': 'anim_pause',  # NEW - for animation pause
+    'circle_play': 'anim_play',
+    'circle_pause': 'anim_pause',
     'atom': 'atomize',  # PNG is 'atom', internal name is 'atomize'
-    'hide': 'hide',  # NEW
-    'unhide': 'unhide',  # NEW
+    'hide': 'hide',
+    'unhide': 'unhide',
+    
+    # ProcessObjects (if PNG exists)
+    'source': 'source',
 }
 
 # Procedural fallbacks for icons without PNGs
@@ -376,6 +418,7 @@ PROCEDURAL_ICONS = {
     'ghost': draw_icon_ghost,
     'save': draw_icon_save,
     'exit': draw_icon_exit,
+    'source': draw_icon_source,  # ProcessObject: particle emitter
 }
 
 # Build the final icon registry
@@ -398,7 +441,8 @@ def _build_registry():
         if cache.has_icon(png_name):
             _ICONS[internal_name] = _make_png_icon_func(png_name)
         else:
-            print(f"[Icons] PNG not found for '{png_name}', using fallback if available")
+            if internal_name not in _ICONS:
+                print(f"[Icons] PNG not found for '{png_name}', using fallback if available")
     
     return _ICONS
 
@@ -465,8 +509,6 @@ def reload_icons():
 # Legacy Compatibility - Direct access to icon functions
 # =============================================================================
 
-# These allow direct imports like: from ui.icons import ICON_SELECT
-# They're resolved at first access
 class _IconProxy:
     """Lazy proxy for backward compatibility with ICON_* constants."""
     def __init__(self, name):
@@ -487,3 +529,4 @@ ICON_LINE = _IconProxy('line')
 ICON_RECT = _IconProxy('rect')
 ICON_CIRCLE = _IconProxy('circle')
 ICON_POINT = _IconProxy('point')
+ICON_SOURCE = _IconProxy('source')

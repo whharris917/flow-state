@@ -54,26 +54,36 @@ class UIManager:
             lp_w = layout['LEFT_W'] - 30
             lp_y = config.TOP_MENU_H + 20
             
-            self.buttons['play'] = Button(lp_x, lp_y, lp_w, 35, "Play/Pause", active=False, color_active=config.COLOR_SUCCESS, color_inactive=config.COLOR_DANGER); lp_y += 50
-            self.buttons['clear'] = Button(lp_x, lp_y, lp_w, 35, "Clear Particles", active=False, toggle=False); lp_y += 50
-            self.buttons['reset'] = Button(lp_x, lp_y, lp_w, 35, "Reset All", active=False, toggle=False); lp_y += 50
+            self.buttons['play'] = Button(lp_x, lp_y, lp_w, 35, "Play/Pause", active=False, color_active=config.COLOR_SUCCESS, color_inactive=config.COLOR_DANGER)
+            lp_y += 50
+            self.buttons['clear'] = Button(lp_x, lp_y, lp_w, 35, "Clear Particles", active=False, toggle=False)
+            lp_y += 50
+            self.buttons['reset'] = Button(lp_x, lp_y, lp_w, 35, "Reset All", active=False, toggle=False)
+            lp_y += 60
             
-            lp_y += 10
+            self.sliders['gravity'] = SmartSlider(lp_x, lp_y, lp_w, 0.0, 50.0, config.DEFAULT_GRAVITY, "Gravity", hard_min=0.0)
+            lp_y += 60
+            self.sliders['temp'] = SmartSlider(lp_x, lp_y, lp_w, 0.0, 5.0, 0.5, "Temperature", hard_min=0.0)
+            lp_y += 60
+            self.sliders['damping'] = SmartSlider(lp_x, lp_y, lp_w, 0.90, 1.0, config.DEFAULT_DAMPING, "Damping", hard_min=0.0, hard_max=1.0)
+            lp_y += 60
+            self.sliders['dt'] = SmartSlider(lp_x, lp_y, lp_w, 0.0001, 0.01, config.DEFAULT_DT, "Time Step (dt)", hard_min=0.00001)
+            lp_y += 60
             
-            self.sliders['gravity'] = SmartSlider(lp_x, lp_y, lp_w, 0.0, 50.0, config.DEFAULT_GRAVITY, "Gravity", hard_min=0.0); lp_y += 60
-            self.sliders['temp'] = SmartSlider(lp_x, lp_y, lp_w, 0.0, 5.0, 0.5, "Temperature", hard_min=0.0); lp_y += 60
-            self.sliders['damping'] = SmartSlider(lp_x, lp_y, lp_w, 0.90, 1.0, config.DEFAULT_DAMPING, "Damping", hard_min=0.0, hard_max=1.0); lp_y += 60
-            self.sliders['dt'] = SmartSlider(lp_x, lp_y, lp_w, 0.0001, 0.01, config.DEFAULT_DT, "Time Step (dt)", hard_min=0.00001); lp_y += 60
+            self.sliders['speed'] = SmartSlider(lp_x, lp_y, lp_w, 1.0, 100.0, float(config.DEFAULT_DRAW_M), "Speed (Steps/Frame)", hard_min=1.0)
+            lp_y += 60
             
-            self.sliders['speed'] = SmartSlider(lp_x, lp_y, lp_w, 1.0, 100.0, float(config.DEFAULT_DRAW_M), "Speed (Steps/Frame)", hard_min=1.0); lp_y += 60
-            
-            self.sliders['sigma'] = SmartSlider(lp_x, lp_y, lp_w, 0.5, 2.0, config.ATOM_SIGMA, "Sigma (Size)", hard_min=0.1); lp_y += 60
-            self.sliders['epsilon'] = SmartSlider(lp_x, lp_y, lp_w, 0.1, 5.0, config.ATOM_EPSILON, "Epsilon (Strength)", hard_min=0.0); lp_y += 60
-            self.sliders['skin'] = SmartSlider(lp_x, lp_y, lp_w, 0.1, 2.0, config.DEFAULT_SKIN_DISTANCE, "Skin Distance", hard_min=0.05); lp_y += 60
+            self.sliders['sigma'] = SmartSlider(lp_x, lp_y, lp_w, 0.5, 2.0, config.ATOM_SIGMA, "Sigma (Size)", hard_min=0.1)
+            lp_y += 60
+            self.sliders['epsilon'] = SmartSlider(lp_x, lp_y, lp_w, 0.1, 5.0, config.ATOM_EPSILON, "Epsilon (Strength)", hard_min=0.0)
+            lp_y += 60
+            self.sliders['skin'] = SmartSlider(lp_x, lp_y, lp_w, 0.1, 2.0, config.DEFAULT_SKIN_DISTANCE, "Skin Distance", hard_min=0.05)
+            lp_y += 60
             
             btn_half_left = (lp_w - 10) // 2
             self.buttons['thermostat'] = Button(lp_x, lp_y, btn_half_left, 30, "Thermostat", active=False)
-            self.buttons['boundaries'] = Button(lp_x + btn_half_left + 10, lp_y, btn_half_left, 30, "Bounds", active=False); lp_y += 45
+            self.buttons['boundaries'] = Button(lp_x + btn_half_left + 10, lp_y, btn_half_left, 30, "Bounds", active=False)
+            lp_y += 45
 
             self.buttons['undo'] = Button(lp_x, lp_y, btn_half_left, 30, "Undo", active=False, toggle=False)
             self.buttons['redo'] = Button(lp_x + btn_half_left + 10, lp_y, btn_half_left, 30, "Redo", active=False, toggle=False)
@@ -84,13 +94,15 @@ class UIManager:
         rp_y = config.TOP_MENU_H + 20
         
         # Mode toggle - keep as text button (changes text dynamically)
-        self.buttons['mode_ghost'] = Button(rp_x, rp_y, rp_w, 35, "Mode: Physical", active=False, color_active=config.COLOR_ACCENT, color_inactive=config.COLOR_SUCCESS); rp_y += 45
+        self.buttons['mode_ghost'] = Button(rp_x, rp_y, rp_w, 35, "Mode: Physical", active=False, color_active=config.COLOR_ACCENT, color_inactive=config.COLOR_SUCCESS)
+        rp_y += 45
         
         # Atomize - icon button (fixed 32x32 icon centered in wide button)
         self.buttons['atomize'] = Button(rp_x, rp_y, rp_w, 35, 
                                          icon=icons.get_icon_fixed_size('atomize', 32), 
                                          tooltip="Atomize Selected",
-                                         active=False, toggle=False); rp_y += 45
+                                         active=False, toggle=False)
+        rp_y += 45
 
         # --- TOOL ICONS (2-column grid) ---
         btn_size = 38  # Square icon buttons
@@ -129,15 +141,20 @@ class UIManager:
                                      active=False, toggle=False)
         rp_y += btn_size + spacing
         
-        # Row 4: Ref Line (single button)
+        # Row 4: Ref Line, Source (ProcessObject)
         self.tools['ref'] = Button(rp_x, rp_y, btn_size, btn_size,
                                    icon=icons.get_icon('ref_line'),
                                    tooltip="Reference Line",
                                    active=False, toggle=False)
+        self.tools['source'] = Button(rp_x + btn_size + spacing, rp_y, btn_size, btn_size,
+                                      icon=icons.get_icon('source'),
+                                      tooltip="Source (Particle Emitter)",
+                                      active=False, toggle=False)
         rp_y += btn_size + 10
         
         # Brush size slider
-        self.sliders['brush_size'] = SmartSlider(rp_x, rp_y, rp_w, 1.0, 10.0, 2.0, "Brush Radius", hard_min=0.5); rp_y += 60
+        self.sliders['brush_size'] = SmartSlider(rp_x, rp_y, rp_w, 1.0, 10.0, 2.0, "Brush Radius", hard_min=0.5)
+        rp_y += 60
         
         # Animation/Constraint visibility controls (icon buttons)
         self.buttons['editor_play'] = Button(rp_x, rp_y, btn_size, btn_size,
@@ -154,7 +171,8 @@ class UIManager:
         self.buttons['extend'] = Button(rp_x, rp_y, rp_w, 35,
                                         icon=icons.get_icon_fixed_size('extend', 32),
                                         tooltip="Extend Infinite Line",
-                                        toggle=False); rp_y += 45
+                                        toggle=False)
+        rp_y += 45
 
         # --- CONSTRAINT ICONS (grid layout) ---
         # Row 1: Coincident, Collinear
@@ -232,55 +250,33 @@ class UIManager:
         """
         Propagate time step to all widgets for smooth animations.
         """
-        for b in self.buttons.values():
-            if b: b.update(dt)
-        for t in self.tools.values():
-            if t: t.update(dt)
-        for s in self.sliders.values():
-            if s: s.update(dt)
-        for i in self.inputs.values():
-            if i: i.update(dt)
+        for slider in self.sliders.values():
+            slider.update(dt)
+        for btn in self.buttons.values():
+            btn.update(dt)
+        for tool in self.tools.values():
+            tool.update(dt)
+        self.menu.update(dt)
 
     def draw(self, screen, font, mode):
-        # Update text for Ghost/Physical toggle
-        if self.buttons.get('mode_ghost'):
-            if self.buttons['mode_ghost'].active:
-                self.buttons['mode_ghost'].text = "Mode: Ghost (Blueprint)"
-            else:
-                self.buttons['mode_ghost'].text = "Mode: Physical (Live)"
-            self.buttons['mode_ghost'].cached_surf = None
-
-        physics_elements = []
-        if self.mode == config.MODE_SIM:
-            physics_elements = [
-                self.buttons.get('play'), self.buttons.get('clear'), self.buttons.get('reset'),
-                self.buttons.get('undo'), self.buttons.get('redo'),
-                self.buttons.get('thermostat'), self.buttons.get('boundaries'),
-                self.sliders.get('gravity'), self.sliders.get('temp'), self.sliders.get('damping'),
-                self.sliders.get('dt'), self.sliders.get('speed'), 
-                self.sliders.get('sigma'), self.sliders.get('epsilon'), self.sliders.get('skin')
-            ]
+        """
+        Draw all visible UI elements.
+        """
+        # Draw sliders
+        for slider in self.sliders.values():
+            slider.draw(screen, font)
         
-        editor_elements = [
-            self.buttons.get('mode_ghost'), self.buttons.get('atomize'),
-            self.buttons.get('save_geo'), self.buttons.get('discard_geo'), 
-            self.buttons.get('editor_play'), self.buttons.get('show_const'),
-            *self.tools.values(), 
-            self.sliders.get('brush_size'),
-            self.buttons.get('const_coincident'), self.buttons.get('const_collinear'), self.buttons.get('const_midpoint'),
-            self.buttons.get('const_length'), self.buttons.get('const_equal'), self.buttons.get('const_parallel'),
-            self.buttons.get('const_perp'), self.buttons.get('const_horiz'), self.buttons.get('const_vert'),
-            self.buttons.get('const_angle'), self.buttons.get('extend'),
-            self.buttons.get('resize'), self.inputs.get('world')
-        ]
+        # Draw buttons
+        for btn in self.buttons.values():
+            btn.draw(screen, font)
         
-        # Filter None and Combine
-        active_list = [el for el in physics_elements + editor_elements if el is not None]
+        # Draw tool buttons
+        for tool in self.tools.values():
+            tool.draw(screen, font)
         
-        for el in active_list:
-            if el == self.inputs.get('world') and el:
-                screen.blit(font.render("Size:", True, config.COLOR_TEXT), 
-                             (el.rect.x - 40, el.rect.y + 4))
-            el.draw(screen, font)
-
+        # Draw inputs
+        for inp in self.inputs.values():
+            inp.draw(screen, font)
+        
+        # Draw menu bar
         self.menu.draw(screen, font)
