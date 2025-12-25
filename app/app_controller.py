@@ -16,6 +16,7 @@ import core.config as config
 import core.utils as utils
 
 from ui.ui_widgets import MaterialDialog, RotationDialog, AnimationDialog, ContextMenu
+from ui import icons
 from model.geometry import Line, Circle, Point
 from core.definitions import CONSTRAINT_DEFS
 from core.sound_manager import SoundManager
@@ -142,15 +143,24 @@ class AppController:
             
     def toggle_editor_play(self):
         self.session.editor_paused = not self.session.editor_paused
-        self.app.ui.buttons['editor_play'].text = "Play" if self.session.editor_paused else "Pause"
-        self.app.ui.buttons['editor_play'].cached_surf = None
+        btn = self.app.ui.buttons['editor_play']
+        if self.session.editor_paused:
+            btn.icon = icons.get_icon('anim_play')
+            btn.tooltip = "Play Animation"
+        else:
+            btn.icon = icons.get_icon('anim_pause')
+            btn.tooltip = "Pause Animation"
         self.sound_manager.play_sound('click')
         
     def toggle_show_constraints(self):
         self.session.show_constraints = not self.session.show_constraints
-        btn_text = "Show Cnstr" if not self.session.show_constraints else "Hide Cnstr"
-        self.app.ui.buttons['show_const'].text = btn_text
-        self.app.ui.buttons['show_const'].cached_surf = None
+        btn = self.app.ui.buttons['show_const']
+        if self.session.show_constraints:
+            btn.icon = icons.get_icon('hide')
+            btn.tooltip = "Hide Constraints"
+        else:
+            btn.icon = icons.get_icon('unhide')
+            btn.tooltip = "Show Constraints"
         self.sound_manager.play_sound('click')
 
     def atomize_selected(self):
@@ -169,43 +179,26 @@ class AppController:
 
     def action_delete_selection(self):
         """Delete selected entities using commands for proper undo/redo."""
-        deleted_count = 0
+        if not self.session.selection.walls:
+            self.session.status.set("Nothing selected")
+            return
+            
+        # Create composite command for multi-delete
+        indices = sorted(self.session.selection.walls, reverse=True)
+        cmds = [RemoveEntityCommand(self.sketch, idx) for idx in indices]
         
-        if self.session.selection.walls:
-            # Delete in reverse order to preserve indices
-            indices_to_delete = sorted(list(self.session.selection.walls), reverse=True)
-            
-            if len(indices_to_delete) == 1:
-                # Single delete - simple command
-                idx = indices_to_delete[0]
-                cmd = RemoveEntityCommand(self.sketch, idx)
-                self.scene.execute(cmd)
-                deleted_count = 1
-            else:
-                # Multiple deletes - use composite command
-                commands = []
-                for idx in indices_to_delete:
-                    commands.append(RemoveEntityCommand(self.sketch, idx))
-                
-                composite = CompositeCommand(commands, "Delete Selection")
-                self.scene.execute(composite)
-                deleted_count = len(indices_to_delete)
-            
-            self.session.selection.walls.clear()
-            self.session.selection.points.clear()
-            self.sound_manager.play_sound('click')
-            self.session.status.set(f"Deleted {deleted_count} Items")
-            
-        elif self.ctx_vars['wall'] != -1:
-            # Context menu delete
-            cmd = RemoveEntityCommand(self.sketch, self.ctx_vars['wall'])
-            self.scene.execute(cmd)
-            self.ctx_vars['wall'] = -1
-            self.session.status.set("Deleted Item")
-            self.sound_manager.play_sound('click')
+        if len(cmds) == 1:
+            self.scene.execute(cmds[0])
+        else:
+            self.scene.execute(CompositeCommand(cmds))
+        
+        self.session.selection.walls.clear()
+        self.session.selection.points.clear()
+        self.session.status.set(f"Deleted {len(indices)} entities")
+        self.sound_manager.play_sound('click')
 
     def action_delete_constraint(self):
-        """Delete constraint using command for proper undo/redo."""
+        """Delete a constraint by index stored in ctx_vars."""
         if self.ctx_vars['const'] != -1:
             if self.ctx_vars['const'] < len(self.sketch.constraints):
                 cmd = RemoveConstraintCommand(self.sketch, self.ctx_vars['const'])
@@ -348,7 +341,7 @@ class AppController:
                     self.context_menu = ContextMenu(mx, my, opts)
                     return
 
-        # Check points
+        # Check points using grouped point map
         point_map = utils.get_grouped_points(
             self.sketch.entities, 
             self.session.camera.zoom, self.session.camera.pan_x, self.session.camera.pan_y, 
@@ -370,7 +363,7 @@ class AppController:
                 self.handle_pending_constraint_click(pt_idx=hit_pt)
             return
 
-        # Check walls/entities
+        # Check walls/entities using sketch's find_entity_at
         rad_sim = 5.0 / (((self.app.layout['MID_W'] - 50) / self.sim.world_size) * self.session.camera.zoom)
         hit_wall = self.sketch.find_entity_at(sim_x, sim_y, rad_sim)
         
@@ -387,7 +380,7 @@ class AppController:
                 self.session.status.set("Switched to Select Tool")
 
     # =========================================================================
-    # Constraint Triggers
+    # Constraint Handling
     # =========================================================================
 
     def trigger_constraint(self, ctype):

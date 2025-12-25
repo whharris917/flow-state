@@ -1,7 +1,15 @@
+"""
+UIManager - UI Element Organization
+
+Separates the definition of UI widgets from application logic.
+Handles layout, element creation, update, and draw cycles.
+"""
+
 import core.config as config
 
 from ui.ui_widgets import SmartSlider, Button, InputField, MenuBar
 from ui import icons
+
 
 class UIManager:
     """
@@ -78,13 +86,13 @@ class UIManager:
         # Mode toggle - keep as text button (changes text dynamically)
         self.buttons['mode_ghost'] = Button(rp_x, rp_y, rp_w, 35, "Mode: Physical", active=False, color_active=config.COLOR_ACCENT, color_inactive=config.COLOR_SUCCESS); rp_y += 45
         
-        # Atomize - icon button
-        self.buttons['atomize'] = Button(rp_x, rp_y, rp_w, 30, 
-                                         icon=icons.get_icon('atomize'), 
+        # Atomize - icon button (fixed 32x32 icon centered in wide button)
+        self.buttons['atomize'] = Button(rp_x, rp_y, rp_w, 35, 
+                                         icon=icons.get_icon_fixed_size('atomize', 32), 
                                          tooltip="Atomize Selected",
-                                         active=False, toggle=False); rp_y += 40
+                                         active=False, toggle=False); rp_y += 45
 
-        # --- TOOL ICONS (2x4 grid) ---
+        # --- TOOL ICONS (2-column grid) ---
         btn_size = 38  # Square icon buttons
         spacing = 6
         
@@ -131,16 +139,22 @@ class UIManager:
         # Brush size slider
         self.sliders['brush_size'] = SmartSlider(rp_x, rp_y, rp_w, 1.0, 10.0, 2.0, "Brush Radius", hard_min=0.5); rp_y += 60
         
-        # Animation/Constraint visibility controls (keep as text - they change text)
-        btn_half = (rp_w - 10) // 2
-        self.buttons['editor_play'] = Button(rp_x, rp_y, btn_half, 30, "Anim Pause", active=False, toggle=False)
-        self.buttons['show_const'] = Button(rp_x + btn_half + 10, rp_y, btn_half, 30, "Hide Cnstr", active=False, toggle=False); rp_y += 40
+        # Animation/Constraint visibility controls (icon buttons)
+        self.buttons['editor_play'] = Button(rp_x, rp_y, btn_size, btn_size,
+                                             icon=icons.get_icon('anim_pause'),
+                                             tooltip="Pause Animation",
+                                             active=False, toggle=False)
+        self.buttons['show_const'] = Button(rp_x + btn_size + spacing, rp_y, btn_size, btn_size,
+                                            icon=icons.get_icon('hide'),
+                                            tooltip="Hide Constraints",
+                                            active=False, toggle=False)
+        rp_y += btn_size + spacing
         
-        # Extend button - icon
-        self.buttons['extend'] = Button(rp_x, rp_y, rp_w, 30,
-                                        icon=icons.get_icon('extend'),
+        # Extend button - icon (fixed 32x32 icon centered in wide button)
+        self.buttons['extend'] = Button(rp_x, rp_y, rp_w, 35,
+                                        icon=icons.get_icon_fixed_size('extend', 32),
                                         tooltip="Extend Infinite Line",
-                                        toggle=False); rp_y += 40
+                                        toggle=False); rp_y += 45
 
         # --- CONSTRAINT ICONS (grid layout) ---
         # Row 1: Coincident, Collinear
