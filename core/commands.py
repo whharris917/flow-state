@@ -498,14 +498,15 @@ class SetCircleRadiusCommand(Command):
 class AddConstraintCommand(Command):
     """Add a constraint to the sketch."""
     
-    def __init__(self, sketch, constraint, historize=True, supersede=False):
+    def __init__(self, sketch, constraint, historize=True, supersede=False, solve=True):
         super().__init__(historize, supersede)
         self.sketch = sketch
         self.constraint = constraint
+        self.solve = solve  # Whether to run solver after adding
         self.description = f"Add {constraint.type}"
     
     def execute(self) -> bool:
-        self.sketch.add_constraint_object(self.constraint)
+        self.sketch.add_constraint_object(self.constraint, solve=self.solve)
         return True
     
     def undo(self):
@@ -592,6 +593,9 @@ class AddRectangleCommand(CompositeCommand):
     Add a rectangle (4 lines + corner constraints).
     
     Uses supersede pattern for live preview during drag.
+    
+    Performance optimization: Constraints are added with solve=False,
+    then solver runs once at the end.
     """
     
     def __init__(self, sketch, x1, y1, x2, y2, material_id="Default", 
@@ -639,10 +643,14 @@ class AddRectangleCommand(CompositeCommand):
                     Angle('VERTICAL', base+3),
                 ]
                 
+                # Add constraints WITHOUT solving (solve=False)
                 for c in constraints:
-                    cmd = AddConstraintCommand(self.sketch, c, historize=False)
+                    cmd = AddConstraintCommand(self.sketch, c, historize=False, solve=False)
                     cmd.execute()
                     self._constraint_cmds.append(cmd)
+                
+                # Solve ONCE after all constraints are added
+                self.sketch.solve(iterations=500)
         
         return result
     

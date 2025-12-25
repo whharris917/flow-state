@@ -172,10 +172,15 @@ class Sketch:
             self.constraints.pop(index)
             self.solve()
 
-    def add_constraint_object(self, constraint):
+    def add_constraint_object(self, constraint, solve=True):
         """
         Adds a constraint object, handling conflicts with existing angle constraints.
         For angle-type constraints on the same entities, new replaces old.
+        
+        Args:
+            constraint: The constraint to add
+            solve: If True (default), run solver after adding. Set to False
+                   for batch operations, then call solve() manually once.
         """
         angle_types = ['PARALLEL', 'PERPENDICULAR', 'HORIZONTAL', 'VERTICAL']
         
@@ -192,7 +197,9 @@ class Sketch:
             self.constraints = keep
         
         self.constraints.append(constraint)
-        self.solve(iterations=500)
+        
+        if solve:
+            self.solve(iterations=500)
 
     def attempt_apply_constraint(self, ctype, entity_idxs, point_idxs):
         """
