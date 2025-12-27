@@ -23,32 +23,176 @@ class AnimVar:
     def set(self, target): 
         self.target = target
 
-# --- BASE WIDGETS ---
+# =============================================================================
+# PHASE I: HIERARCHICAL STRUCTURAL FOUNDATIONS
+# =============================================================================
 
-class Widget:
-    def update(self, dt): pass
-    def handle_event(self, event): return False
-    def draw(self, screen, font): pass
+class UIElement:
+    """
+    Abstract Base Class for all visual components.
+    Defines the contract for the 'Layer Cake' hierarchy.
+    """
+    def __init__(self, x=0, y=0, w=0, h=0):
+        self.rect = pygame.Rect(x, y, w, h)
+        self.visible = True
+        self.active = False
+        self.disabled = False
+        self.hovered = False
+        self.parent = None
+        self.tooltip = None
 
-class Button(Widget):
+        # Relative positioning (for Containers)
+        self.rel_x = 0
+        self.rel_y = 0
+        self.rel_layout_managed = False  # If True, container controls position
+
+    def update(self, dt):
+        """Update logic/animation."""
+        pass
+
+    def handle_event(self, event):
+        """
+        Process input event.
+        Returns True if the event was 'absorbed' (consumed), False otherwise.
+        """
+        return False
+
+    def draw(self, screen, font):
+        """Draw to screen."""
+        pass
+
+    def set_position(self, x, y):
+        """Update absolute position."""
+        self.rect.x = x
+        self.rect.y = y
+
+    def get_absolute_rect(self):
+        """
+        Calculate absolute screen rect based on parent hierarchy.
+        (Future-proofing for deep nesting in Phase II/III)
+        """
+        if self.parent:
+            p_rect = self.parent.get_absolute_rect()
+            return pygame.Rect(p_rect.x + self.rel_x, p_rect.y + self.rel_y, self.rect.w, self.rect.h)
+        return self.rect
+
+
+class UIContainer(UIElement):
+    """
+    Composite Node in the UI Tree.
+    Manages layout and delegates events to children.
+    """
+    def __init__(self, x, y, w, h, layout_type='free', padding=5, spacing=5, bg_color=None, border_color=None):
+        super().__init__(x, y, w, h)
+        self.children = []
+        self.layout_type = layout_type  # 'vertical', 'horizontal', 'free'
+        self.padding = padding
+        self.spacing = spacing
+        self.bg_color = bg_color
+        self.border_color = border_color
+
+    def add_child(self, child):
+        """Add a child element and recalculate layout."""
+        child.parent = self
+        self.children.append(child)
+        if self.layout_type != 'free':
+            child.rel_layout_managed = True
+            self.recalculate_layout()
+    
+    def clear_children(self):
+        self.children = []
+
+    def recalculate_layout(self):
+        """
+        Automatic Stacking: Increments cursor position based on padding/spacing.
+        Updates children's positions.
+        """
+        if self.layout_type == 'free':
+            return
+
+        cursor_x = self.padding
+        cursor_y = self.padding
+
+        for child in self.children:
+            if not child.visible:
+                continue
+
+            if self.layout_type == 'vertical':
+                # For Phase I mixed mode: We update the child's absolute rect directly
+                child.set_position(self.rect.x + self.padding, self.rect.y + cursor_y)
+                cursor_y += child.rect.height + self.spacing
+            
+            elif self.layout_type == 'horizontal':
+                child.set_position(self.rect.x + cursor_x, self.rect.y + self.padding)
+                cursor_x += child.rect.width + self.spacing
+
+    def update(self, dt):
+        """Propagate updates to children."""
+        for child in self.children:
+            if child.visible:
+                child.update(dt)
+
+    def handle_event(self, event):
+        """
+        The Chain of Responsibility:
+        1. Check if visible.
+        2. Delegate to children (Top-down or Z-order).
+        3. Check self.
+        """
+        if not self.visible:
+            return False
+
+        # Delegate to children in reverse order (top-most first)
+        for child in reversed(self.children):
+            if child.handle_event(event):
+                return True  # Child absorbed event
+
+        # Handle container-specific events (e.g. background click)
+        if event.type == pygame.MOUSEBUTTONDOWN:
+            if self.rect.collidepoint(event.pos):
+                return True  # Absorb click on panel background
+
+        return False
+
+    def draw(self, screen, font):
+        """Draw background then children."""
+        if not self.visible:
+            return
+
+        # Draw Background
+        if self.bg_color:
+            pygame.draw.rect(screen, self.bg_color, self.rect, border_radius=4)
+        if self.border_color:
+            pygame.draw.rect(screen, self.border_color, self.rect, 1, border_radius=4)
+
+        # Draw Children
+        for child in self.children:
+            if child.visible:
+                child.draw(screen, font)
+
+
+# =============================================================================
+# WIDGET IMPLEMENTATIONS (Now inheriting UIElement)
+# =============================================================================
+
+class Button(UIElement):
     def __init__(self, x, y, w, h, text="", active=False, toggle=True, 
                  color_active=config.COLOR_ACCENT, color_inactive=(60, 60, 65),
-                 icon=None, tooltip=None):
-        self.rect = pygame.Rect(x, y, w, h)
+                 icon=None, tooltip=None, callback=None):
+        super().__init__(x, y, w, h)
         self.text = text
         self.icon = icon  # Icon drawing function from icons.py
-        self.tooltip = tooltip  # Tooltip text shown on hover
+        self.tooltip = tooltip
         self.active = active
         self.toggle = toggle
         self.clicked = False
-        self.disabled = False
+        self.callback = callback # Function to call on click
         
         # Colors
         self.c_active = color_active
         self.c_inactive = color_inactive
         
         # Animation State
-        self.hovered = False
         self.anim_hover = AnimVar(0.0)
         self.anim_click = AnimVar(0.0, speed=20.0)
         self.ripples = [] # List of dicts {x, y, r, alpha}
@@ -56,8 +200,6 @@ class Button(Widget):
         # Tooltip state
         self.hover_time = 0.0
         self.show_tooltip = False
-        
-        self.cached_surf = None
 
     def update(self, dt):
         if self.disabled: 
@@ -84,7 +226,7 @@ class Button(Widget):
             if r['a'] <= 0: self.ripples.remove(r)
 
     def handle_event(self, event):
-        if self.disabled: return False
+        if self.disabled or not self.visible: return False
         
         action = False
         sounds = SoundManager.get()
@@ -94,38 +236,40 @@ class Button(Widget):
             self.hovered = self.rect.collidepoint(event.pos)
             if self.hovered and not was_hovered:
                 sounds.play_sound('hover')
-
+            
         elif event.type == pygame.MOUSEBUTTONDOWN:
             if self.rect.collidepoint(event.pos) and event.button == 1:
                 self.clicked = True
                 self.anim_click.value = 1.0 # Flash effect
                 self.ripples.append({'x': event.pos[0]-self.rect.x, 'y': event.pos[1]-self.rect.y, 'r': 5, 'a': 1.0})
                 
-                # SOUND LOGIC ADJUSTMENT:
-                # If it's a toggle button that is currently INACTIVE (about to turn ON/Resume),
-                # we suppress the click sound here so we only hear the Bloop on release.
-                # If it's ACTIVE (about to turn OFF/Pause), we play the click/clink here.
                 should_play_click = True
                 if self.toggle and not self.active:
                     should_play_click = False
                 
                 if should_play_click:
                     sounds.play_sound('click')
+                return True # Absorb the click
 
         elif event.type == pygame.MOUSEBUTTONUP:
             if self.clicked:
                 if self.rect.collidepoint(event.pos) and event.button == 1:
                     if self.toggle:
                         self.active = not self.active
-                        # If we just turned ON (Resume), play the Bloop (snap)
                         if self.active: 
                             sounds.play_sound('snap')
+                    # TRIGGER CALLBACK
+                    if self.callback:
+                        self.callback()
                     action = True
                 self.clicked = False
+                return True 
         
         return action
 
     def draw(self, screen, font):
+        if not self.visible: return
+
         # 1. Color Blending
         base = self.c_active if self.active else self.c_inactive
         if self.disabled: base = (40, 40, 40)
@@ -222,25 +366,22 @@ class Button(Widget):
         screen.blit(tip_surf, (tip_x + 6, tip_y + 4))
 
 
-class InputField(Widget):
+class InputField(UIElement):
     def __init__(self, x, y, w, h, initial_text="", text_color=config.COLOR_TEXT):
-        self.rect = pygame.Rect(x, y, w, h)
+        super().__init__(x, y, w, h)
         self.text = str(initial_text)
-        self.active = False
         self.text_color = text_color
         self.last_text = None
-        self.cached_surf = None
-        
         self.hovered = False
 
     def move(self, dx, dy):
+        """Manual move helper (Legacy support)."""
         self.rect.x += dx; self.rect.y += dy
 
-    def update(self, dt):
-        pass 
-
     def handle_event(self, event):
+        if not self.visible: return False
         changed = False
+        consumed = False
         
         if event.type == pygame.MOUSEMOTION:
             self.hovered = self.rect.collidepoint(event.pos)
@@ -249,8 +390,11 @@ class InputField(Widget):
             if self.rect.collidepoint(event.pos):
                 self.active = True; changed = True
                 SoundManager.get().play_sound('click')
+                consumed = True
             elif self.active:
                 self.active = False; changed = True
+                # Don't consume here to allow click-off to register elsewhere
+        
         elif event.type == pygame.KEYDOWN and self.active:
             if event.key == pygame.K_RETURN: 
                 self.active = False
@@ -262,7 +406,11 @@ class InputField(Widget):
                 if len(event.unicode) > 0 and (event.unicode.isprintable()):
                     self.text += event.unicode
             changed = True
-        return changed
+            consumed = True # Consume keyboard events if active
+            
+        if changed:
+            return True 
+        return consumed
 
     def get_value(self, default=0.0):
         try: return float(self.text)
@@ -275,6 +423,8 @@ class InputField(Widget):
             self.text = f"{val:.2f}" if isinstance(val, float) else str(val)
 
     def draw(self, screen, font):
+        if not self.visible: return
+        
         bg = config.COLOR_INPUT_ACTIVE if self.active else config.COLOR_INPUT_BG
         if self.hovered and not self.active:
             bg = (min(255, bg[0]+10), min(255, bg[1]+10), min(255, bg[2]+10))
@@ -291,51 +441,76 @@ class InputField(Widget):
         screen.blit(ts, (self.rect.x+5, self.rect.centery - ts.get_height()//2))
         screen.set_clip(None)
 
-class SmartSlider(Widget):
+class SmartSlider(UIElement):
     def __init__(self, x, y, w, min_val, max_val, initial_val, label, hard_min=None, hard_max=None):
-        self.x=x; self.y=y; self.w=w; self.val=initial_val; self.label=label
+        super().__init__(x, y, w, 60) # Approx height
+        self.val=initial_val; self.label=label
         self.min_val=min_val; self.max_val=max_val; self.hard_min=hard_min; self.hard_max=hard_max
         self.dragging = False
         
         # Sub-widgets
+        # Note: We manually position sub-widgets relative to x,y
         self.in_val = InputField(x+w-50, y, 50, 24, str(initial_val))
         self.rect_track = pygame.Rect(x+5, y+35, w-10, 6)
         
-        self.hovered = False
         self.anim_hover = AnimVar(0.0)
+
+    def set_position(self, x, y):
+        """Override to also move internal sub-widgets."""
+        super().set_position(x, y)
+        # Re-calculate sub-widget positions based on new x, y
+        if hasattr(self, 'in_val'):
+            self.in_val.set_position(x + self.rect.w - 50, y)
+        if hasattr(self, 'rect_track'):
+            self.rect_track.x = x + 5
+            self.rect_track.y = y + 35
 
     def update(self, dt):
         self.anim_hover.target = 1.0 if self.hovered or self.dragging else 0.0
         self.anim_hover.update(dt)
 
     def handle_event(self, event):
+        if not self.visible: return False
+        
         changed = False
+        
+        # Pass event to input field first
         if self.in_val.handle_event(event):
             self.val = self.in_val.get_value(self.val)
             changed = True
+            return True
         
         if event.type == pygame.MOUSEMOTION:
+            # Expand hit area for easier grabbing
             self.hovered = self.rect_track.inflate(0, 14).collidepoint(event.pos)
             if self.dragging:
                 rel = (event.pos[0] - self.rect_track.x) / self.rect_track.w
                 self.val = self.min_val + max(0, min(1, rel)) * (self.max_val - self.min_val)
                 changed = True
+                return True
         
         elif event.type == pygame.MOUSEBUTTONDOWN:
             if self.hovered:
                 self.dragging = True
                 changed = True
                 SoundManager.get().play_sound('click')
+                return True
+                
         elif event.type == pygame.MOUSEBUTTONUP:
-            self.dragging = False
+            if self.dragging:
+                self.dragging = False
+                return True
             
         if changed and not self.in_val.active: 
             self.in_val.set_value(self.val)
-        return changed
+            
+        return False
 
     def draw(self, screen, font):
+        if not self.visible: return
+        
         # Label
-        screen.blit(font.render(self.label, True, config.COLOR_TEXT_DIM), (self.x, self.y+2))
+        screen.blit(font.render(self.label, True, config.COLOR_TEXT_DIM), (self.rect.x, self.rect.y+2))
         self.in_val.draw(screen, font)
         
         # Track Background
@@ -362,29 +537,26 @@ class SmartSlider(Widget):
         h_rad = 6 + 2 * self.anim_hover.value
         pygame.draw.circle(screen, (240, 240, 240), (int(handle_x), self.rect_track.centery), int(h_rad))
 
-class MenuBar(Widget):
+class MenuBar(UIElement):
     def __init__(self, w, h=30):
-        self.rect = pygame.Rect(0, 0, w, h)
-        self.items = {"File": [], "Tools": [], "Help": []} # Items populated externally
+        super().__init__(0, 0, w, h)
+        self.items = {"File": [], "Tools": [], "Help": []} 
         self.active_menu = None 
         self.dropdown_rect = None
         self.hover_item_idx = -1 
-        
         self.item_rects = {}
-        curr_x = 15
-        for key in self.items:
-            pass
-            
+
     def resize(self, w):
         self.rect.width = w
 
     def handle_event(self, event):
-        # Re-calc rects on fly for hit testing
-        curr_x = 15
+        if not self.visible: return False
+        
+        curr_x = self.rect.x + 15
         self.item_rects = {}
         for key in self.items:
             width = 60 # approx
-            self.item_rects[key] = pygame.Rect(curr_x, 0, width, self.rect.height)
+            self.item_rects[key] = pygame.Rect(curr_x, self.rect.y, width, self.rect.height)
             curr_x += width + 5
 
         if event.type == pygame.MOUSEMOTION:
@@ -398,7 +570,9 @@ class MenuBar(Widget):
                                 self.hover_item_idx = idx
                             else: self.hover_item_idx = -1
                         else: self.hover_item_idx = -1
-                else: self.hover_item_idx = -1
+                    return False # Keep legacy behavior (don't absorb hover) to avoid closing
+                else: 
+                    self.hover_item_idx = -1
             else: self.hover_item_idx = -1
                 
         elif event.type == pygame.MOUSEBUTTONDOWN:
@@ -417,19 +591,27 @@ class MenuBar(Widget):
                 item = self.items[self.active_menu][self.hover_item_idx]
                 SoundManager.get().play_sound('snap')
                 self.active_menu = None
-                return item # Return action string
+                return item
+            
+            # Click outside closes menu
+            if self.active_menu and self.dropdown_rect:
+                 if not self.dropdown_rect.collidepoint(event.pos):
+                     self.active_menu = None
+                     return True
                 
         return False
 
     def draw(self, screen, font):
+        if not self.visible: return
+        
         pygame.draw.rect(screen, config.PANEL_BG_COLOR, self.rect)
         pygame.draw.line(screen, config.PANEL_BORDER_COLOR, (0, self.rect.bottom-1), (self.rect.width, self.rect.bottom-1))
         
-        curr_x = 15
+        curr_x = self.rect.x + 15
         for key in self.items:
             ts = font.render(key, True, config.COLOR_TEXT)
             width = ts.get_width() + 20
-            r = pygame.Rect(curr_x, 0, width, self.rect.height)
+            r = pygame.Rect(curr_x, self.rect.y, width, self.rect.height)
             self.item_rects[key] = r
             
             if self.active_menu == key:
@@ -470,27 +652,29 @@ class MenuBar(Widget):
                     otxt = font.render(opt, True, col)
                     screen.blit(otxt, (self.dropdown_rect.x + 15, self.dropdown_rect.y + 5 + i*30 + 5))
 
-class ContextMenu(Widget):
+class ContextMenu(UIElement):
     def __init__(self, x, y, options):
-        self.x = x
-        self.y = y
+        width = 160
+        height = len(options) * 30 + 10
+        super().__init__(x, y, width, height)
         self.options = options
-        self.width = 160
-        self.height = len(options) * 30 + 10
-        self.rect = pygame.Rect(x, y, self.width, self.height)
         self.selected_idx = -1
         self.action = None
 
     def handle_event(self, event):
+        if not self.visible: return False
+        
         if event.type == pygame.MOUSEMOTION:
             if self.rect.collidepoint(event.pos):
-                rel_y = event.pos[1] - (self.y + 5)
+                rel_y = event.pos[1] - (self.rect.y + 5)
                 if rel_y >= 0: self.selected_idx = rel_y // 30
                 else: self.selected_idx = -1
+                return False # Keep legacy behavior
             else: self.selected_idx = -1
+            
         elif event.type == pygame.MOUSEBUTTONDOWN:
             if self.rect.collidepoint(event.pos):
-                rel_y = event.pos[1] - (self.y + 5)
+                rel_y = event.pos[1] - (self.rect.y + 5)
                 idx = rel_y // 30
                 if 0 <= idx < len(self.options):
                     self.action = self.options[idx]
@@ -502,6 +686,8 @@ class ContextMenu(Widget):
         return False
 
     def draw(self, screen, font):
+        if not self.visible: return
+        
         shadow = self.rect.copy(); shadow.x += 4; shadow.y += 4
         s_surf = pygame.Surface((shadow.width, shadow.height), pygame.SRCALPHA)
         pygame.draw.rect(s_surf, (0, 0, 0, 100), s_surf.get_rect(), border_radius=4)
@@ -512,14 +698,18 @@ class ContextMenu(Widget):
         
         for i, opt in enumerate(self.options):
             bg_col = config.COLOR_ACCENT if i == self.selected_idx else config.PANEL_BG_COLOR
-            item_rect = pygame.Rect(self.x + 2, self.y + 5 + i*30, self.width - 4, 28)
+            item_rect = pygame.Rect(self.rect.x + 2, self.rect.y + 5 + i*30, self.rect.width - 4, 28)
             
             if i == self.selected_idx:
                 pygame.draw.rect(screen, bg_col, item_rect, border_radius=3)
             
             col = config.COLOR_TEXT if i != self.selected_idx else (255, 255, 255)
             txt = font.render(opt, True, col)
-            screen.blit(txt, (self.x + 10, self.y + 5 + i*30 + 5))
+            screen.blit(txt, (self.rect.x + 10, self.rect.y + 5 + i*30 + 5))
+
+# =============================================================================
+# DIALOGS (Future: Inherit UIContainer, Current: Standalone Controllers)
+# =============================================================================
 
 class MaterialDialog:
     def __init__(self, x, y, sketch, current_material_id):
@@ -527,6 +717,7 @@ class MaterialDialog:
         self.sketch = sketch
         self.done = False
         self.apply = False
+        self.visible = True
         
         mat = sketch.get_material(current_material_id)
         
@@ -542,6 +733,8 @@ class MaterialDialog:
         self.btn_ok = Button(x + 180, y + 230, 80, 30, "OK", toggle=False)
 
     def handle_event(self, event):
+        if not self.visible: return False
+        
         if self.in_id.handle_event(event):
             name = self.in_id.get_text()
             if name in self.sketch.materials:
@@ -567,6 +760,11 @@ class MaterialDialog:
             self.apply = True; return True
         if self.btn_ok.handle_event(event):
             self.apply = True; self.done = True; return True
+        
+        # Absorb clicks inside dialog
+        if event.type == pygame.MOUSEBUTTONDOWN and self.rect.collidepoint(event.pos):
+            return True
+            
         return False
         
     def update(self, dt):
@@ -587,6 +785,8 @@ class MaterialDialog:
         return m
 
     def draw(self, screen, font):
+        if not self.visible: return
+        
         shadow = self.rect.copy(); shadow.x += 5; shadow.y += 5
         s_surf = pygame.Surface((shadow.width, shadow.height), pygame.SRCALPHA)
         pygame.draw.rect(s_surf, (0, 0, 0, 100), s_surf.get_rect(), border_radius=6)
@@ -616,6 +816,7 @@ class RotationDialog:
         self.rect = pygame.Rect(x, y, 250, 210)
         self.done = False
         self.apply = False
+        self.visible = True
         
         speed = 0.0
         pivot = "center"
@@ -634,6 +835,8 @@ class RotationDialog:
         self.btn_ok = Button(x + 150, y + 160, 80, 30, "OK", toggle=False)
 
     def handle_event(self, event):
+        if not self.visible: return False
+        
         if self.in_speed.handle_event(event): return True
         if self.btn_pivot.handle_event(event):
             self.pivot_idx = (self.pivot_idx + 1) % len(self.pivots)
@@ -644,6 +847,9 @@ class RotationDialog:
             self.apply = True; return True
         if self.btn_ok.handle_event(event):
             self.apply = True; self.done = True; return True
+            
+        if event.type == pygame.MOUSEBUTTONDOWN and self.rect.collidepoint(event.pos):
+            return True
         return False
     
     def update(self, dt):
@@ -655,6 +861,8 @@ class RotationDialog:
         return { 'speed': self.in_speed.get_value(0.0), 'pivot': self.pivots[self.pivot_idx] }
 
     def draw(self, screen, font):
+        if not self.visible: return
+        
         shadow = self.rect.copy(); shadow.x += 5; shadow.y += 5
         s_surf = pygame.Surface((shadow.width, shadow.height), pygame.SRCALPHA)
         pygame.draw.rect(s_surf, (0, 0, 0, 100), s_surf.get_rect(), border_radius=6)
@@ -681,6 +889,7 @@ class AnimationDialog:
         self.driver = driver_data if driver_data else {'type': 'sin', 'amp': 15.0, 'freq': 0.5, 'phase': 0.0, 'rate': 10.0}
         self.done = False
         self.apply = False
+        self.visible = True
         self.current_tab = self.driver.get('type', 'sin')
         
         self.btn_stop = Button(x + 20, y + 230, 100, 30, "Stop/Clear", toggle=False, color_inactive=config.COLOR_DANGER)
@@ -696,6 +905,8 @@ class AnimationDialog:
         self.in_rate = InputField(x + 150, y + 90, 100, 25, str(self.driver.get('rate', 10.0)))
 
     def handle_event(self, event):
+        if not self.visible: return False
+        
         if self.btn_tab_sin.handle_event(event):
             self.current_tab = 'sin'
             self.btn_tab_sin.active = True; self.btn_tab_lin.active = False
@@ -727,6 +938,9 @@ class AnimationDialog:
                 self.driver = {'type': 'lin', 'rate': self.in_rate.get_value(0.0)}
             self.apply = True; self.done = True
             return True
+            
+        if event.type == pygame.MOUSEBUTTONDOWN and self.rect.collidepoint(event.pos):
+            return True
         return False
     
     def update(self, dt):
@@ -738,6 +952,8 @@ class AnimationDialog:
     def get_values(self): return self.driver
 
     def draw(self, screen, font):
+        if not self.visible: return
+        
         shadow = self.rect.copy(); shadow.x += 5; shadow.y += 5
         s_surf = pygame.Surface((shadow.width, shadow.height), pygame.SRCALPHA)
         pygame.draw.rect(s_surf, (0, 0, 0, 100), s_surf.get_rect(), border_radius=6)

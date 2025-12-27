@@ -1,10 +1,11 @@
 """
-InputHandler - Central Input Processing
+InputHandler - Explicit Chain of Responsibility
 
-Handles all keyboard and mouse input, delegating to:
-- Tools for scene interaction
-- UI widgets for panel interaction
-- Controller for menu actions
+Handles all keyboard and mouse input using a 5-layer protocol:
+1. System (Quit, Resize)
+2. Global (Hotkeys)
+3. Modals (Context Menu, Dialogs)
+4. HUD (Panel Tree - NOW INCLUDES SCENE)
 """
 
 import pygame
@@ -26,7 +27,7 @@ class InputHandler:
         
         # Direct references
         self.session = controller.session
-        self.sim = controller.sim  # For physics parameters (world_size, etc.)
+        self.sim = controller.sim  
         self.ui = controller.ui
         self.layout = controller.layout
         
@@ -40,7 +41,7 @@ class InputHandler:
             'circle': config.TOOL_CIRCLE, 
             'point': config.TOOL_POINT,
             'ref': config.TOOL_REF,
-            'source': config.TOOL_SOURCE,  # ProcessObject: Particle emitter
+            'source': config.TOOL_SOURCE, 
         }
         for key, val in tool_defs.items():
             if key in self.ui.tools:
@@ -59,7 +60,7 @@ class InputHandler:
             if key in self.ui.buttons:
                 self.constraint_btn_map[self.ui.buttons[key]] = val
 
-        # Action mappings - delegate to Controller (AppController)
+        # Action mappings
         self.ui_action_map = {}
         
         def bind_action(btn_key, action):
@@ -85,73 +86,54 @@ class InputHandler:
                 self.ui.inputs['world'].get_value(50.0)
             )
 
+        # BIND CALLBACKS TO UI WIDGETS
+        self._bind_callbacks()
+
+    def _bind_callbacks(self):
+        """Attach logic callbacks to buttons for automatic dispatch."""
+        # Bind Actions
+        for btn, action in self.ui_action_map.items():
+            btn.callback = action
+            
+        # Bind Tools
+        for btn, tid in self.tool_btn_map.items():
+            # Use default argument 't=tid' to capture loop variable
+            btn.callback = lambda t=tid: self.controller.change_tool(t)
+            
+        # Bind Constraints
+        for btn, ctype in self.constraint_btn_map.items():
+            btn.callback = lambda c=ctype: self.controller.actions.trigger_constraint(c)
+
     def handle_input(self):
+        """The Main 4-Layer Explicit Chain."""
+        # Update layout reference in case of resize
         self.layout = self.controller.layout
         
-        # Build UI list based on what is initialized
-        physics_elements = [
-            self.ui.buttons.get('play'), self.ui.buttons.get('clear'), 
-            self.ui.buttons.get('reset'), self.ui.buttons.get('undo'), 
-            self.ui.buttons.get('redo'), self.ui.buttons.get('thermostat'), 
-            self.ui.buttons.get('boundaries'),
-            *self.ui.sliders.values()
-        ]
-        
-        editor_elements = [
-            self.ui.buttons.get('mode_ghost'), self.ui.buttons.get('atomize'), 
-            self.ui.buttons.get('save_geo'), self.ui.buttons.get('discard_geo'), 
-            self.ui.buttons.get('editor_play'), self.ui.buttons.get('show_const'),
-            self.ui.buttons.get('resize'), self.ui.inputs.get('world'),
-            self.ui.buttons.get('extend'),
-            *self.ui.tools.values(), 
-            *self.constraint_btn_map.keys()
-        ]
-        
-        # Filter None values
-        ui_list = [el for el in physics_elements + editor_elements if el is not None]
-
         for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                self.controller.running = False
-            elif event.type == pygame.VIDEORESIZE:
-                self.controller.handle_resize(event.w, event.h)
+            # Layer 1: System
+            if self._attempt_handle_system(event): continue
             
-            if self._handle_keys(event):
-                continue
+            # Layer 2: Global Hotkeys
+            if self._attempt_handle_global(event): continue
             
-            tool_switched = False
-            for btn, tid in self.tool_btn_map.items():
-                if btn.handle_event(event): 
-                    self.controller.change_tool(tid)
-                    tool_switched = True
-            if tool_switched:
-                continue
+            # Layer 3: Modals (Context, Dialogs)
+            if self._attempt_handle_modals(event): continue
+            
+            # Layer 4: HUD (UI Tree - Now includes SceneViewport)
+            if self._attempt_handle_hud(event): continue
 
-            if self._handle_menus(event):
-                continue
-            if self._handle_dialogs(event):
-                continue
+    def _attempt_handle_system(self, event):
+        """Layer 1: System Events."""
+        if event.type == pygame.QUIT:
+            self.controller.running = False
+            return True
+        elif event.type == pygame.VIDEORESIZE:
+            self.controller.handle_resize(event.w, event.h)
+            return True
+        return False
 
-            ui_interacted = False
-            for el in ui_list:
-                if el.handle_event(event):
-                    ui_interacted = True
-                    if el in self.constraint_btn_map:
-                        self.controller.actions.trigger_constraint(self.constraint_btn_map[el])
-                    elif el in self.ui_action_map:
-                        self.ui_action_map[el]()
-            
-            mouse_on_ui = (
-                event.type == pygame.MOUSEBUTTONDOWN and 
-                (event.pos[0] > self.layout['RIGHT_X'] or 
-                 event.pos[0] < self.layout['LEFT_W'] or 
-                 event.pos[1] < config.TOP_MENU_H)
-            )
-            
-            if not mouse_on_ui and not ui_interacted:
-                self._handle_scene_mouse(event)
-
-    def _handle_keys(self, event):
+    def _attempt_handle_global(self, event):
+        """Layer 2: Global Hotkeys."""
         if event.type == pygame.KEYDOWN:
             if event.key == pygame.K_ESCAPE:
                 if self.session.placing_geo_data:
@@ -178,48 +160,75 @@ class InputHandler:
                 return True
             
             # Tool hotkeys
-            if event.key == pygame.K_b:
-                self.controller.change_tool(config.TOOL_BRUSH)
+            tools = {
+                pygame.K_b: config.TOOL_BRUSH,
+                pygame.K_v: config.TOOL_SELECT,
+                pygame.K_l: config.TOOL_LINE,
+                pygame.K_r: config.TOOL_RECT,
+                pygame.K_c: config.TOOL_CIRCLE,
+                pygame.K_p: config.TOOL_POINT
+            }
+            if event.key in tools:
+                self.controller.change_tool(tools[event.key])
                 return True
-            if event.key == pygame.K_v:
-                self.controller.change_tool(config.TOOL_SELECT)
-                return True
-            if event.key == pygame.K_l:
-                self.controller.change_tool(config.TOOL_LINE)
-                return True
-            if event.key == pygame.K_r:
-                self.controller.change_tool(config.TOOL_RECT)
-                return True
-            if event.key == pygame.K_c:
-                self.controller.change_tool(config.TOOL_CIRCLE)
-                return True
-            if event.key == pygame.K_p:
-                self.controller.change_tool(config.TOOL_POINT)
-                return True
+                
             if event.key == pygame.K_s and (pygame.key.get_mods() & pygame.KMOD_SHIFT):
-                # Shift+S for Source tool
                 self.controller.change_tool(config.TOOL_SOURCE)
+                return True
+        return False
+
+    def _attempt_handle_modals(self, event):
+        """Layer 3: Modals (Context Menu, Dialogs)."""
+        # Context Menu
+        if self.controller.actions.context_menu:
+            if self.controller.actions.context_menu.handle_event(event):
+                action = self.controller.actions.context_menu.action
+                self.controller.actions.context_menu = None
+                if action and action != "CLOSE":
+                    self.controller.actions.handle_context_menu_action(action)
+                return True
+        
+        # Property Dialog
+        if self.controller.actions.prop_dialog:
+            if self.controller.actions.prop_dialog.handle_event(event):
+                if self.controller.actions.prop_dialog.done:
+                    if self.controller.actions.prop_dialog.apply:
+                         self.controller.actions.apply_material_from_dialog(self.controller.actions.prop_dialog)
+                    self.controller.actions.prop_dialog = None
+                return True
+        
+        # Rotation Dialog
+        if self.controller.actions.rot_dialog:
+            if self.controller.actions.rot_dialog.handle_event(event):
+                if self.controller.actions.rot_dialog.done:
+                     self.controller.actions.rot_dialog = None
+                return True
+        
+        # Animation Dialog
+        if self.controller.actions.anim_dialog:
+            if self.controller.actions.anim_dialog.handle_event(event):
+                if self.controller.actions.anim_dialog.done:
+                    if self.controller.actions.anim_dialog.apply:
+                        self.controller.actions.apply_animation_from_dialog(self.controller.actions.anim_dialog)
+                    self.controller.actions.anim_dialog = None
                 return True
                 
         return False
 
-    def _handle_menus(self, event):
-        result = self.ui.menu.handle_event(event)
-        if result:
-            # If result is a string, it's a menu action
-            if isinstance(result, str):
-                self._dispatch_menu(result)
-                return True
+    def _attempt_handle_hud(self, event):
+        """Layer 4: HUD Panel Tree."""
+        # 1. Menu Bar Special Case (Extract Return Value)
+        menu_result = self.ui.menu.handle_event(event)
+        if menu_result:
+            if isinstance(menu_result, str):
+                self._dispatch_menu(menu_result)
             return True
-        if event.type == pygame.MOUSEBUTTONDOWN and self.ui.menu.active_menu:
-            if self.ui.menu.dropdown_rect and self.ui.menu.dropdown_rect.collidepoint(event.pos):
-                rel_y = event.pos[1] - self.ui.menu.dropdown_rect.y - 5
-                idx = rel_y // 30
-                opts = self.ui.menu.items[self.ui.menu.active_menu]
-                if 0 <= idx < len(opts):
-                    self._dispatch_menu(opts[idx])
-            self.ui.menu.active_menu = None
+            
+        # 2. Generic Tree Delegation
+        # This propagates to panels -> SceneViewport -> Scene
+        if self.ui.root.handle_event(event):
             return True
+            
         return False
 
     def _dispatch_menu(self, selection):
@@ -240,68 +249,3 @@ class InputHandler:
             self.controller.save_scene()
         elif selection == "Import Geometry":
             self.controller.import_geometry()
-
-    def _handle_dialogs(self, event):
-        """Handle active dialog events."""
-        if self.controller.actions.context_menu:
-            if self.controller.actions.context_menu.handle_event(event):
-                action = self.controller.actions.context_menu.action
-                self.controller.actions.context_menu = None
-                if action and action != "CLOSE":
-                    self.controller.actions.handle_context_menu_action(action)
-                return True
-        
-        if self.controller.actions.prop_dialog:
-            if self.controller.actions.prop_dialog.handle_event(event):
-                return True
-            if self.controller.actions.prop_dialog.done:
-                self.controller.actions.prop_dialog = None
-                return True
-        
-        if self.controller.actions.rot_dialog:
-            if self.controller.actions.rot_dialog.handle_event(event):
-                return True
-            if self.controller.actions.rot_dialog.done:
-                self.controller.actions.rot_dialog = None
-                return True
-        
-        if self.controller.actions.anim_dialog:
-            if self.controller.actions.anim_dialog.handle_event(event):
-                return True
-            if self.controller.actions.anim_dialog.done:
-                self.controller.actions.anim_dialog = None
-                return True
-        
-        return False
-
-    def _handle_scene_mouse(self, event):
-        """Handle mouse events in the viewport."""
-        # Let the current tool handle it first
-        if self.session.current_tool:
-            if self.session.current_tool.handle_event(event, self.layout):
-                return
-        
-        # Panning with middle mouse button
-        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 2:
-            self.session.state = InteractionState.PANNING
-            return
-        
-        if event.type == pygame.MOUSEBUTTONUP and event.button == 2:
-            if self.session.state == InteractionState.PANNING:
-                self.session.state = InteractionState.IDLE
-            return
-        
-        if event.type == pygame.MOUSEMOTION:
-            if self.session.state == InteractionState.PANNING:
-                self.session.camera.apply_pan(event.rel[0], event.rel[1])
-                return
-        
-        # Zooming with scroll wheel
-        if event.type == pygame.MOUSEWHEEL:
-            self.session.camera.apply_zoom(event.y)
-            return
-        
-        # Right-click for context menu
-        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 3:
-            self.controller.actions.spawn_context_menu(event.pos)
-            return

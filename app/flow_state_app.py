@@ -93,10 +93,13 @@ class FlowStateApp:
         w, h = self.screen.get_size()
         self.init_layout(w, h)
         
-        self.ui = UIManager(self.layout, self.session.input_world, mode=self.session.mode)
-        
         # Controller handles actions and dialogs
+        # Must be created BEFORE UI because UIManager needs it for SceneViewport
         self.actions = AppController(self)
+        
+        # Pass self (controller) to UIManager
+        self.ui = UIManager(self.layout, self.session.input_world, mode=self.session.mode, controller=self)
+        
         self.input_handler = InputHandler(self) 
         
         self.init_tools() 
@@ -166,7 +169,7 @@ class FlowStateApp:
             if abs(correction - 1.0) > 0.001:
                 self.session.camera.zoom *= correction
         
-        self.ui = UIManager(self.layout, self.session.input_world, mode=self.session.mode)
+        self.ui = UIManager(self.layout, self.session.input_world, mode=self.session.mode, controller=self)
         self.input_handler = InputHandler(self)
         self.ui.menu.resize(w)
 
@@ -268,7 +271,7 @@ class FlowStateApp:
         
         # Rebuild UI for new mode
         w, h = self.screen.get_size()
-        self.ui = UIManager(self.layout, self.session.input_world, mode=new_mode)
+        self.ui = UIManager(self.layout, self.session.input_world, mode=new_mode, controller=self)
         self.input_handler = InputHandler(self)
         
         # Switch to appropriate default tool

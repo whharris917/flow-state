@@ -2,7 +2,7 @@
 Renderer - Main Drawing Module
 
 Handles all rendering for the application including:
-- Viewport and grid
+- Viewport and grid (Clipped to SceneViewport)
 - Particles
 - Geometry (Lines, Circles, Points)
 - Constraints
@@ -32,14 +32,19 @@ class Renderer:
         
         self.screen.fill(config.BACKGROUND_COLOR)
         
-        self._draw_viewport(session, sim, layout)
+        # 1. Determine Viewport Rect from UI Tree (Single Source of Truth)
+        viewport_rect = None
+        if hasattr(app.ui, 'scene_viewport'):
+            viewport_rect = app.ui.scene_viewport.rect
+        
+        # 2. Draw Scene Content
+        self._draw_viewport(session, sim, layout, viewport_rect)
         
         if session.mode == config.MODE_SIM:
             self._draw_particles(session, sim, layout)
         else:
             self._draw_editor_guides(session, sim, layout)
         
-        # Draw ProcessObjects (Sources, etc.) - before geometry so handles render on top
         if hasattr(app, 'scene') and hasattr(app.scene, 'process_objects'):
             self._draw_process_objects(app.scene.process_objects, session, layout, sim.world_size)
             
@@ -57,12 +62,13 @@ class Renderer:
 
         self._draw_snap_indicator(session, sim, sketch, layout)
 
+        # 3. Unclip and Draw UI
         self.screen.set_clip(None)
-        self._draw_panels(layout)
         
         if session.mode == config.MODE_SIM:
             self._draw_stats(session, sim, layout)
         
+        # Draw UI Tree (Panels, Buttons, Menus)
         for el in ui_list:
             el.draw(self.screen, self.font)
             
@@ -96,18 +102,13 @@ class Renderer:
             session.camera.pan_y, world_size, layout
         )
         
-        # Get screen coordinates
         sx, sy = transform(center[0], center[1])
-        
-        # Calculate screen radius
         p0 = transform(0, 0)
         pr = transform(radius, 0)
         screen_radius = abs(pr[0] - p0[0])
         
-        # Use gray color if disabled
         draw_color = color if enabled else config.COLOR_SOURCE_DISABLED
         
-        # Draw dashed circle
         num_dashes = max(8, int(screen_radius / 6))
         dash_angle = math.pi / num_dashes
         
@@ -115,7 +116,6 @@ class Renderer:
             start_angle = i * 2 * dash_angle
             end_angle = start_angle + dash_angle
             
-            # Calculate arc points
             x1 = sx + screen_radius * math.cos(start_angle)
             y1 = sy + screen_radius * math.sin(start_angle)
             x2 = sx + screen_radius * math.cos(end_angle)
@@ -125,7 +125,6 @@ class Renderer:
 
     def draw_source_preview(self, center_screen, radius_screen, mouse_pos):
         """Draw preview during Source tool placement."""
-        # Draw dashed circle preview
         num_dashes = max(8, int(radius_screen / 6))
         dash_angle = math.pi / num_dashes
         color = config.COLOR_SOURCE
@@ -143,10 +142,7 @@ class Renderer:
             
             pygame.draw.line(self.screen, color, (int(x1), int(y1)), (int(x2), int(y2)), 2)
         
-        # Draw radius line
         pygame.draw.line(self.screen, color, center_screen, mouse_pos, 1)
-        
-        # Draw center point
         pygame.draw.circle(self.screen, color, center_screen, 4)
 
     # =========================================================================
@@ -172,15 +168,25 @@ class Renderer:
     # Viewport & Grid
     # =========================================================================
 
-    def _draw_viewport(self, session, sim, layout):
-        sim_rect = pygame.Rect(layout['MID_X'], config.TOP_MENU_H, layout['MID_W'], layout['MID_H'])
-        self.screen.set_clip(sim_rect)
+    def _draw_viewport(self, session, sim, layout, viewport_rect=None):
+        """Draw the simulation viewport background and border."""
+        if viewport_rect:
+            # Clip to the actual SceneViewport from UI Tree
+            self.screen.set_clip(viewport_rect)
+            
+            # Draw Viewport Background/Grid border if needed
+            g_col = config.GRID_COLOR if session.mode == config.MODE_SIM else (50, 60, 50)
+            pygame.draw.rect(self.screen, g_col, viewport_rect, 2)
+            
+        else:
+            # Fallback (Legacy)
+            sim_rect = pygame.Rect(layout['MID_X'], config.TOP_MENU_H, layout['MID_W'], layout['MID_H'])
+            self.screen.set_clip(sim_rect)
+            g_col = config.GRID_COLOR if session.mode == config.MODE_SIM else (50, 60, 50)
+            pygame.draw.rect(self.screen, g_col, sim_rect, 2)
         
-        tl = sim_to_screen(0, 0, session.camera.zoom, session.camera.pan_x, session.camera.pan_y, sim.world_size, layout)
-        br = sim_to_screen(sim.world_size, sim.world_size, session.camera.zoom, session.camera.pan_x, session.camera.pan_y, sim.world_size, layout)
-        
-        g_col = config.GRID_COLOR if session.mode == config.MODE_SIM else (50, 60, 50)
-        pygame.draw.rect(self.screen, g_col, (tl[0], tl[1], br[0]-tl[0], br[1]-tl[1]), 2)
+        # Note: Grid lines (if any) or content are drawn by subsequent methods,
+        # which are now clipped to this rect.
 
     # =========================================================================
     # Particles
@@ -197,6 +203,7 @@ class Renderer:
                 sim.world_size, layout
             )
             
+            # Basic culling based on viewport approximation
             if layout['MID_X'] < sx < layout['RIGHT_X'] and config.TOP_MENU_H < sy < config.WINDOW_HEIGHT:
                 is_stat = sim.is_static[i]
                 col = config.COLOR_STATIC if is_stat else config.COLOR_DYNAMIC
@@ -295,9 +302,7 @@ class Renderer:
         elif is_pending:
             draw_col = (100, 255, 100)
         
-        # Check if this is a handle point (for ProcessObjects)
         if getattr(pt, 'is_handle', False):
-            # Draw handle differently - hollow circle
             pygame.draw.circle(self.screen, config.COLOR_SOURCE, (int(sx), int(sy)), 6, 2)
         else:
             if pt.anchored:
@@ -396,20 +401,16 @@ class Renderer:
         x, y = item['x'], item['y']
         c = constraints[idx]
         
-        # Badge colors
         bg_col = (50, 50, 60)
         border_col = (80, 80, 100)
         text_col = (200, 200, 220)
         
-        # Check if selected
         is_selected = (idx in session.selection.constraints if hasattr(session.selection, 'constraints') else False)
         if is_selected:
             border_col = (255, 200, 50)
         
-        # Badge text
         badge_text = self._get_constraint_badge_text(c)
         
-        # Draw badge
         text_surf = self.font.render(badge_text, True, text_col)
         tw, th = text_surf.get_size()
         
@@ -418,7 +419,6 @@ class Renderer:
         pygame.draw.rect(self.screen, border_col, badge_rect, 1, border_radius=3)
         self.screen.blit(text_surf, (x - tw//2, y - th//2))
         
-        # Draw connector lines
         transform = lambda wx, wy: sim_to_screen(
             wx, wy, session.camera.zoom, session.camera.pan_x, session.camera.pan_y, 
             world_size, layout
@@ -553,16 +553,6 @@ class Renderer:
                     pr = sim_to_screen(sim_mx + wc[0] + wr, sim_my + wc[1], zoom, pan_x, pan_y, sim.world_size, layout)
                     sr = abs(pr[0] - sc[0])
                     pygame.draw.circle(self.screen, (100, 255, 100), sc, int(sr), 2)
-
-    # =========================================================================
-    # Panels
-    # =========================================================================
-
-    def _draw_panels(self, layout):
-        pygame.draw.rect(self.screen, config.PANEL_BG_COLOR, (0, config.TOP_MENU_H, layout['LEFT_W'], layout['H']))
-        pygame.draw.line(self.screen, config.PANEL_BORDER_COLOR, (layout['LEFT_W'], config.TOP_MENU_H), (layout['LEFT_W'], layout['H']))
-        pygame.draw.rect(self.screen, config.PANEL_BG_COLOR, (layout['RIGHT_X'], config.TOP_MENU_H, layout['RIGHT_W'], layout['H']))
-        pygame.draw.line(self.screen, config.PANEL_BORDER_COLOR, (layout['RIGHT_X'], config.TOP_MENU_H), (layout['RIGHT_X'], layout['H']))
 
     # =========================================================================
     # Stats & Status
