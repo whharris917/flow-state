@@ -1,15 +1,17 @@
 """
-UIManager - UI Element Organization (Phase IV: Visual Consistency + Bug Fixes)
+UIManager - UI Element Organization (Phase IV: Final Integration)
 
 Constructs the Hierarchical Container Tree.
-Responsible for drawing panel backgrounds and borders.
+Root -> [Menu Bar, Middle Region, Status Bar]
 """
 
 import pygame
 import core.config as config
-from ui.ui_widgets import UIContainer, UIElement, Button, SmartSlider, InputField, MenuBar
+from ui.ui_widgets import UIContainer, UIElement, Button, SmartSlider, InputField, MenuBar, StatusBar
 from ui import icons
 from core.session import InteractionState
+
+STATUS_BAR_H = 30
 
 class SceneViewport(UIElement):
     """
@@ -23,10 +25,6 @@ class SceneViewport(UIElement):
     def handle_event(self, event):
         if not self.visible: return False
         
-        # 1. Coordinate Check (The Gatekeeper)
-        # We only want to process tool clicks and zooms if the mouse is actually
-        # inside the viewport.
-        
         mouse_pos = None
         if event.type == pygame.MOUSEBUTTONDOWN:
             mouse_pos = event.pos
@@ -37,12 +35,12 @@ class SceneViewport(UIElement):
             if not self.rect.collidepoint(mouse_pos):
                 return False
 
-        # 2. Tool Delegation
+        # Tool Delegation
         if self.session.current_tool:
             if self.session.current_tool.handle_event(event, self.controller.layout):
                 return True 
 
-        # 3. Camera Panning (Middle Mouse)
+        # Camera Panning
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 2:
             self.session.state = InteractionState.PANNING
             return True
@@ -55,18 +53,16 @@ class SceneViewport(UIElement):
                 self.session.camera.apply_pan(event.rel[0], event.rel[1])
                 return True
         
-        # 4. Zooming (Scroll Wheel)
+        # Zooming
         elif event.type == pygame.MOUSEWHEEL:
             self.session.camera.apply_zoom(event.y)
             return True
         
-        # 5. Context Menu (Right Click)
+        # Context Menu
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 3:
             self.controller.actions.spawn_context_menu(event.pos)
             return True
 
-        # If we clicked in the viewport but nothing specific handled it,
-        # we return True to "absorb" the click so it doesn't fall through.
         if event.type == pygame.MOUSEBUTTONDOWN:
             return True
 
@@ -93,7 +89,9 @@ class UIManager:
         # Level 0: Root
         self.root = UIContainer(0, 0, layout['W'], layout['H'], layout_type='free')
         
-        # Level 1: Vertical Stack
+        # Level 1: Vertical Stack (Menu, Middle, Status)
+        
+        # 1. Top Menu
         self.menu = MenuBar(layout['W'], config.TOP_MENU_H)
         self.menu.items["File"] = [
             "New Simulation", "New Model", "---",
@@ -102,12 +100,19 @@ class UIManager:
         ]
         self.root.add_child(self.menu)
         
+        # 2. Middle Region (Workspace)
+        # Calculates available height between Top Menu and Bottom Status Bar
         mid_y = config.TOP_MENU_H
-        mid_h = layout['H'] - mid_y
+        mid_h = layout['H'] - mid_y - STATUS_BAR_H
         self.middle_region = UIContainer(0, mid_y, layout['W'], mid_h, layout_type='free')
         self.root.add_child(self.middle_region)
         
-        # Level 2: Horizontal Subdivision
+        # 3. Status Bar (Footer)
+        if self.controller:
+            self.status_bar = StatusBar(0, layout['H'] - STATUS_BAR_H, layout['W'], STATUS_BAR_H, self.controller.session)
+            self.root.add_child(self.status_bar)
+        
+        # --- LEVEL 2: MIDDLE REGION SUBDIVISION ---
         
         # A. Left Panel
         self.left_panel = UIContainer(

@@ -172,7 +172,7 @@ class UIContainer(UIElement):
 
 
 # =============================================================================
-# WIDGET IMPLEMENTATIONS (Now inheriting UIElement)
+# WIDGET IMPLEMENTATIONS
 # =============================================================================
 
 class Button(UIElement):
@@ -186,7 +186,7 @@ class Button(UIElement):
         self.active = active
         self.toggle = toggle
         self.clicked = False
-        self.callback = callback # Function to call on click
+        self.callback = callback
         
         # Colors
         self.c_active = color_active
@@ -258,7 +258,6 @@ class Button(UIElement):
                         self.active = not self.active
                         if self.active: 
                             sounds.play_sound('snap')
-                    # TRIGGER CALLBACK
                     if self.callback:
                         self.callback()
                     action = True
@@ -449,7 +448,6 @@ class SmartSlider(UIElement):
         self.dragging = False
         
         # Sub-widgets
-        # Note: We manually position sub-widgets relative to x,y
         self.in_val = InputField(x+w-50, y, 50, 24, str(initial_val))
         self.rect_track = pygame.Rect(x+5, y+35, w-10, 6)
         
@@ -458,7 +456,6 @@ class SmartSlider(UIElement):
     def set_position(self, x, y):
         """Override to also move internal sub-widgets."""
         super().set_position(x, y)
-        # Re-calculate sub-widget positions based on new x, y
         if hasattr(self, 'in_val'):
             self.in_val.set_position(x + self.rect.w - 50, y)
         if hasattr(self, 'rect_track'):
@@ -570,7 +567,7 @@ class MenuBar(UIElement):
                                 self.hover_item_idx = idx
                             else: self.hover_item_idx = -1
                         else: self.hover_item_idx = -1
-                    return False # Keep legacy behavior (don't absorb hover) to avoid closing
+                    return False 
                 else: 
                     self.hover_item_idx = -1
             else: self.hover_item_idx = -1
@@ -652,6 +649,27 @@ class MenuBar(UIElement):
                     otxt = font.render(opt, True, col)
                     screen.blit(otxt, (self.dropdown_rect.x + 15, self.dropdown_rect.y + 5 + i*30 + 5))
 
+class StatusBar(UIElement):
+    """
+    Footer bar that displays status messages.
+    Integrates the core.StatusBar logic into the UI Tree.
+    """
+    def __init__(self, x, y, w, h, session):
+        super().__init__(x, y, w, h)
+        self.session = session
+
+    def draw(self, screen, font):
+        # Draw background bar (Footer)
+        pygame.draw.rect(screen, config.PANEL_BG_COLOR, self.rect)
+        pygame.draw.line(screen, config.PANEL_BORDER_COLOR, (0, self.rect.top), (self.rect.width, self.rect.top))
+        
+        # Draw message if visible
+        if self.session.status.is_visible:
+            msg = self.session.status.message
+            col = (100, 255, 100) # Green text like old renderer
+            ts = font.render(msg, True, col)
+            screen.blit(ts, (self.rect.x + 15, self.rect.centery - ts.get_height()//2))
+
 class ContextMenu(UIElement):
     def __init__(self, x, y, options):
         width = 160
@@ -669,7 +687,7 @@ class ContextMenu(UIElement):
                 rel_y = event.pos[1] - (self.rect.y + 5)
                 if rel_y >= 0: self.selected_idx = rel_y // 30
                 else: self.selected_idx = -1
-                return False # Keep legacy behavior
+                return False 
             else: self.selected_idx = -1
             
         elif event.type == pygame.MOUSEBUTTONDOWN:
@@ -708,7 +726,7 @@ class ContextMenu(UIElement):
             screen.blit(txt, (self.rect.x + 10, self.rect.y + 5 + i*30 + 5))
 
 # =============================================================================
-# DIALOGS (Future: Inherit UIContainer, Current: Standalone Controllers)
+# DIALOGS (Floats)
 # =============================================================================
 
 class MaterialDialog:

@@ -7,7 +7,7 @@ Handles all rendering for the application including:
 - Geometry (Lines, Circles, Points)
 - Constraints
 - ProcessObjects (Sources, etc.)
-- UI overlays and status
+- UI overlays
 """
 
 import pygame
@@ -32,7 +32,7 @@ class Renderer:
         
         self.screen.fill(config.BACKGROUND_COLOR)
         
-        # 1. Determine Viewport Rect from UI Tree (Single Source of Truth)
+        # 1. Determine Viewport Rect from UI Tree
         viewport_rect = None
         if hasattr(app.ui, 'scene_viewport'):
             viewport_rect = app.ui.scene_viewport.rect
@@ -68,11 +68,9 @@ class Renderer:
         if session.mode == config.MODE_SIM:
             self._draw_stats(session, sim, layout)
         
-        # Draw UI Tree (Panels, Buttons, Menus)
+        # Draw UI Tree (Panels, Buttons, Menus, Status Bar)
         for el in ui_list:
             el.draw(self.screen, self.font)
-            
-        self._draw_status(session, layout)
 
     # =========================================================================
     # ProcessObject Rendering
@@ -566,16 +564,6 @@ class Renderer:
         self.screen.blit(self.big_font.render(f"Particles: {sim.count}", True, (255, 255, 255)), (metric_x, stats_y))
         self.screen.blit(self.font.render(f"Pairs: {sim.pair_count} | T: {curr_t:.3f}", True, (180, 180, 180)), (metric_x, stats_y + 30))
         self.screen.blit(self.font.render(f"SPS: {int(sim.sps)}", True, (100, 255, 100)), (metric_x, stats_y + 50))
-
-    def _draw_status(self, session, layout):
-        if session.status.is_visible:
-            status_surf = self.font.render(session.status.message, True, (100, 255, 100))
-            pygame.draw.rect(
-                self.screen, (30, 30, 30), 
-                (layout['MID_X'] + 15, config.TOP_MENU_H + 10, status_surf.get_width()+10, 25), 
-                border_radius=5
-            )
-            self.screen.blit(status_surf, (layout['MID_X'] + 20, config.TOP_MENU_H + 15))
 
     # =========================================================================
     # Tool Overlay Helpers
