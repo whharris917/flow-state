@@ -102,6 +102,22 @@ class UIContainer(UIElement):
     def clear_children(self):
         self.children = []
 
+    def set_position(self, x, y):
+        """
+        Override to propagate position changes to children.
+        This ensures that when a container is moved (e.g. by scrolling),
+        all nested elements move with it.
+        """
+        dx = x - self.rect.x
+        dy = y - self.rect.y
+        
+        # Update self
+        super().set_position(x, y)
+        
+        # Propagate delta to all children
+        for child in self.children:
+            child.set_position(child.rect.x + dx, child.rect.y + dy)
+
     def recalculate_layout(self):
         """
         Automatic Stacking: Increments cursor position based on padding/spacing.
@@ -169,6 +185,110 @@ class UIContainer(UIElement):
         for child in self.children:
             if child.visible:
                 child.draw(screen, font)
+
+
+class ScrollableContainer(UIContainer):
+    """
+    A UIContainer that allows vertical scrolling if content exceeds height.
+    """
+    def __init__(self, x, y, w, h, **kwargs):
+        super().__init__(x, y, w, h, **kwargs)
+        self.scroll_y = 0
+        self.content_height = 0
+        self.surface = None # For clipping/scrolling optimization if needed
+
+    def handle_event(self, event):
+        if not self.visible: return False
+
+        # 1. Handle Scrolling
+        if event.type == pygame.MOUSEWHEEL:
+            if self.rect.collidepoint(pygame.mouse.get_pos()):
+                # Scroll speed (pixels per click)
+                scroll_speed = 30
+                
+                # Only scroll if content is larger than container
+                max_scroll = max(0, self.content_height - self.rect.height + self.padding * 2)
+                
+                if max_scroll > 0:
+                    self.scroll_y += event.y * scroll_speed
+                    # Clamp scroll
+                    self.scroll_y = min(0, max(-max_scroll, self.scroll_y))
+                    self.recalculate_layout()
+                    return True # Consume the wheel event
+
+        # 2. Clip interactions to the container rect
+        # (Prevents clicking buttons that are scrolled out of view)
+        if event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP):
+             if not self.rect.collidepoint(event.pos):
+                 return False
+
+        return super().handle_event(event)
+
+    def recalculate_layout(self):
+        """
+        Standard layout calculation but applies self.scroll_y offset.
+        """
+        if self.layout_type == 'free': return
+
+        cursor_x = self.padding
+        cursor_y = self.padding + self.scroll_y # Apply scroll offset
+
+        # Reset content height calculation
+        total_h = self.padding 
+
+        for child in self.children:
+            if not child.visible: continue
+
+            # Position child
+            if self.layout_type == 'vertical':
+                child.set_position(self.rect.x + self.padding, self.rect.y + cursor_y)
+                cursor_y += child.rect.height + self.spacing
+                total_h += child.rect.height + self.spacing
+            
+            elif self.layout_type == 'horizontal':
+                child.set_position(self.rect.x + cursor_x, self.rect.y + self.padding + self.scroll_y)
+                cursor_x += child.rect.width + self.spacing
+                # Height tracking for horizontal is just the tallest item
+                total_h = max(total_h, child.rect.height + self.padding*2)
+        
+        self.content_height = total_h
+
+    def draw(self, screen, font):
+        if not self.visible: return
+
+        # 1. Draw Background
+        if self.bg_color:
+            pygame.draw.rect(screen, self.bg_color, self.rect, border_radius=4)
+        
+        # 2. Clip Content
+        # We set the clipping region to the container's rect so children
+        # don't draw outside the bounds when scrolling.
+        prev_clip = screen.get_clip()
+        clip_rect = self.rect.clip(prev_clip) if prev_clip else self.rect
+        screen.set_clip(clip_rect)
+
+        # 3. Draw Children
+        for child in self.children:
+            if child.visible:
+                # Optimization: Only draw if roughly in view
+                if child.rect.bottom > self.rect.top and child.rect.top < self.rect.bottom:
+                    child.draw(screen, font)
+
+        # 4. Restore Clip
+        screen.set_clip(prev_clip)
+        
+        # 5. Draw Border (on top of clipped content)
+        if self.border_color:
+            pygame.draw.rect(screen, self.border_color, self.rect, 1, border_radius=4)
+            
+        # 6. Simple Scrollbar Indicator
+        if self.content_height > self.rect.height:
+            bar_h = max(20, (self.rect.height / self.content_height) * self.rect.height)
+            scroll_pct = abs(self.scroll_y) / (self.content_height - self.rect.height)
+            bar_y = self.rect.y + scroll_pct * (self.rect.height - bar_h)
+            
+            scrollbar_rect = pygame.Rect(self.rect.right - 6, bar_y, 4, bar_h)
+            pygame.draw.rect(screen, (100, 100, 100), scrollbar_rect, border_radius=2)
 
 
 # =============================================================================
@@ -442,14 +562,19 @@ class InputField(UIElement):
 
 class SmartSlider(UIElement):
     def __init__(self, x, y, w, min_val, max_val, initial_val, label, hard_min=None, hard_max=None):
-        super().__init__(x, y, w, 60) # Approx height
+        h = config.scale(60) # Scaled height
+        super().__init__(x, y, w, h)
         self.val=initial_val; self.label=label
         self.min_val=min_val; self.max_val=max_val; self.hard_min=hard_min; self.hard_max=hard_max
         self.dragging = False
         
-        # Sub-widgets
-        self.in_val = InputField(x+w-50, y, 50, 24, str(initial_val))
-        self.rect_track = pygame.Rect(x+5, y+35, w-10, 6)
+        # Sub-widgets (Scaled)
+        input_w = config.scale(50)
+        input_h = config.scale(24)
+        track_y_offset = config.scale(35)
+        
+        self.in_val = InputField(x+w-input_w, y, input_w, input_h, str(initial_val))
+        self.rect_track = pygame.Rect(x+5, y+track_y_offset, w-10, config.scale(6))
         
         self.anim_hover = AnimVar(0.0)
 
@@ -457,10 +582,11 @@ class SmartSlider(UIElement):
         """Override to also move internal sub-widgets."""
         super().set_position(x, y)
         if hasattr(self, 'in_val'):
-            self.in_val.set_position(x + self.rect.w - 50, y)
+            input_w = self.in_val.rect.w
+            self.in_val.set_position(x + self.rect.w - input_w, y)
         if hasattr(self, 'rect_track'):
             self.rect_track.x = x + 5
-            self.rect_track.y = y + 35
+            self.rect_track.y = y + config.scale(35)
 
     def update(self, dt):
         self.anim_hover.target = 1.0 if self.hovered or self.dragging else 0.0

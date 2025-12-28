@@ -16,6 +16,7 @@ import core.config as config
 import core.file_io as file_io
 import time
 import sys
+import os  # Added for SDL_VIDEO_CENTERED
 import subprocess
 from tkinter import filedialog, Tk
 
@@ -45,16 +46,38 @@ class FlowStateApp:
         except:
             self.root_tk = None
 
-        self.screen = pygame.display.set_mode(
-            (config.WINDOW_WIDTH, config.WINDOW_HEIGHT), 
-            pygame.RESIZABLE
-        )
+        # Fix for window sizing issues across platforms:
+        # Instead of relying on the inconsistent pygame.MAXIMIZED flag or (0,0) fullscreen,
+        # we calculate a safe window size (90% of desktop) and center it.
+        # This ensures window decorations (title bar, buttons) are always visible.
+        os.environ['SDL_VIDEO_CENTERED'] = '1'
+        
+        display_info = pygame.display.Info()
+        # Fallback to config defaults if Info() fails to report meaningful dimensions (e.g. headless)
+        desktop_w = display_info.current_w if display_info.current_w > 0 else config.WINDOW_WIDTH
+        desktop_h = display_info.current_h if display_info.current_h > 0 else config.WINDOW_HEIGHT
+        
+        target_w = int(desktop_w * 0.9)
+        target_h = int(desktop_h * 0.9)
+        
+        # Initialize with a safe, centered window
+        self.screen = pygame.display.set_mode((target_w, target_h), pygame.RESIZABLE)
+
+        # Explicitly force maximization on Windows using native API
+        # This bypasses Pygame's inconsistent flag behavior
+        if sys.platform == 'win32':
+            try:
+                import ctypes
+                hwnd = pygame.display.get_wm_info()['window']
+                # user32.ShowWindow(hwnd, nCmdShow) where 3 is SW_MAXIMIZE
+                ctypes.windll.user32.ShowWindow(hwnd, 3)
+            except Exception as e:
+                print(f"Windows native maximization failed: {e}")
         
         title_suffix = "Simulation" if start_mode == config.MODE_SIM else "Model Builder"
         pygame.display.set_caption(f"Flow State - {title_suffix}")
         
-        self.font = pygame.font.SysFont("segoeui", 15)
-        self.big_font = pygame.font.SysFont("segoeui", 22)
+        self.init_fonts()
         
         self.renderer = Renderer(self.screen, self.font, self.big_font)
         self.clock = pygame.time.Clock()
@@ -90,6 +113,8 @@ class FlowStateApp:
         self.session.geo_time = 0.0
         self.last_time = time.time()
 
+        # The screen size might have changed instantly due to the MAXIMIZED flag,
+        # so we fetch the actual size here to initialize layout correctly.
         w, h = self.screen.get_size()
         self.init_layout(w, h)
         
@@ -107,6 +132,32 @@ class FlowStateApp:
             self.change_tool(config.TOOL_SELECT) 
         else:
             self.change_tool(config.TOOL_BRUSH) 
+
+    def init_fonts(self):
+        """Initialize fonts with scaled sizes."""
+        base_size = 15
+        big_size = 22
+        scaled_base = config.scale(base_size)
+        scaled_big = config.scale(big_size)
+        
+        self.font = pygame.font.SysFont("segoeui", scaled_base)
+        self.big_font = pygame.font.SysFont("segoeui", scaled_big)
+        
+        # Update renderer if it exists
+        if hasattr(self, 'renderer'):
+            self.renderer.font = self.font
+            self.renderer.big_font = self.big_font
+
+    def set_ui_scale(self, new_scale):
+        """Live update of UI scale."""
+        config.set_ui_scale(new_scale)
+        self.init_fonts()
+        
+        # Force full layout recalculation
+        w, h = self.screen.get_size()
+        self.handle_resize(w, h)
+        
+        self.session.status.set(f"UI Scale: {config.UI_SCALE:.2f}x")
 
     # =========================================================================
     # Property Accessors (Clean SoC - single source of truth)

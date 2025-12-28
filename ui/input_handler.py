@@ -135,6 +135,15 @@ class InputHandler:
     def _attempt_handle_global(self, event):
         """Layer 2: Global Hotkeys."""
         if event.type == pygame.KEYDOWN:
+            
+            # UI Scaling (Ctrl + / Ctrl -)
+            if event.key == pygame.K_EQUALS and (pygame.key.get_mods() & pygame.KMOD_CTRL):
+                self.controller.set_ui_scale(config.UI_SCALE + 0.1)
+                return True
+            if event.key == pygame.K_MINUS and (pygame.key.get_mods() & pygame.KMOD_CTRL):
+                self.controller.set_ui_scale(config.UI_SCALE - 0.1)
+                return True
+
             if event.key == pygame.K_ESCAPE:
                 if self.session.placing_geo_data:
                     self.session.placing_geo_data = None

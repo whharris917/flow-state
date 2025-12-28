@@ -7,11 +7,9 @@ Root -> [Menu Bar, Middle Region, Status Bar]
 
 import pygame
 import core.config as config
-from ui.ui_widgets import UIContainer, UIElement, Button, SmartSlider, InputField, MenuBar, StatusBar
+from ui.ui_widgets import UIContainer, UIElement, Button, SmartSlider, InputField, MenuBar, StatusBar, ScrollableContainer
 from ui import icons
 from core.session import InteractionState
-
-STATUS_BAR_H = 30
 
 class SceneViewport(UIElement):
     """
@@ -78,6 +76,9 @@ class UIManager:
         self.mode = mode
         self.controller = controller
         
+        # Scale Helper
+        s = config.scale
+        
         # --- FLAT REFERENCES ---
         self.sliders = {}
         self.buttons = {}
@@ -103,21 +104,22 @@ class UIManager:
         # 2. Middle Region (Workspace)
         # Calculates available height between Top Menu and Bottom Status Bar
         mid_y = config.TOP_MENU_H
-        mid_h = layout['H'] - mid_y - STATUS_BAR_H
+        status_bar_h = s(30)
+        mid_h = layout['H'] - mid_y - status_bar_h
         self.middle_region = UIContainer(0, mid_y, layout['W'], mid_h, layout_type='free')
         self.root.add_child(self.middle_region)
         
         # 3. Status Bar (Footer)
         if self.controller:
-            self.status_bar = StatusBar(0, layout['H'] - STATUS_BAR_H, layout['W'], STATUS_BAR_H, self.controller.session)
+            self.status_bar = StatusBar(0, layout['H'] - status_bar_h, layout['W'], status_bar_h, self.controller.session)
             self.root.add_child(self.status_bar)
         
         # --- LEVEL 2: MIDDLE REGION SUBDIVISION ---
         
         # A. Left Panel
-        self.left_panel = UIContainer(
+        self.left_panel = ScrollableContainer(
             layout['LEFT_X'], mid_y, layout['LEFT_W'], mid_h,
-            layout_type='vertical', padding=15, spacing=15,
+            layout_type='vertical', padding=s(15), spacing=s(15),
             bg_color=config.PANEL_BG_COLOR, border_color=config.PANEL_BORDER_COLOR
         )
         self.middle_region.add_child(self.left_panel)
@@ -131,9 +133,9 @@ class UIManager:
             self.middle_region.add_child(self.scene_viewport)
             
         # C. Right Panel
-        self.right_panel = UIContainer(
+        self.right_panel = ScrollableContainer(
             layout['RIGHT_X'], mid_y, layout['RIGHT_W'], mid_h,
-            layout_type='vertical', padding=15, spacing=15,
+            layout_type='vertical', padding=s(15), spacing=s(15),
             bg_color=config.PANEL_BG_COLOR, border_color=config.PANEL_BORDER_COLOR
         )
         self.middle_region.add_child(self.right_panel)
@@ -143,11 +145,12 @@ class UIManager:
 
     def _init_elements(self, app_input_world):
         """Populate the panels with widgets."""
+        s = config.scale
         
         # --- LEFT PANEL: Physics Controls ---
         if self.mode == config.MODE_SIM:
             def add_sim_btn(key, text, **kwargs):
-                btn = Button(0, 0, self.left_panel.rect.w - 30, 35, text, **kwargs)
+                btn = Button(0, 0, self.left_panel.rect.w - s(30), s(35), text, **kwargs)
                 self.left_panel.add_child(btn)
                 self.buttons[key] = btn
                 return btn
@@ -157,7 +160,7 @@ class UIManager:
             add_sim_btn('reset', "Reset All", active=False, toggle=False)
 
             def add_slider(key, label, min_v, max_v, init_v, **kwargs):
-                sld = SmartSlider(0, 0, self.left_panel.rect.w - 30, min_v, max_v, init_v, label, **kwargs)
+                sld = SmartSlider(0, 0, self.left_panel.rect.w - s(30), min_v, max_v, init_v, label, **kwargs)
                 self.left_panel.add_child(sld)
                 self.sliders[key] = sld
                 return sld
@@ -171,22 +174,22 @@ class UIManager:
             add_slider('epsilon', "Epsilon (Strength)", 0.1, 5.0, config.ATOM_EPSILON, hard_min=0.0)
             add_slider('skin', "Skin Distance", 0.1, 2.0, config.DEFAULT_SKIN_DISTANCE, hard_min=0.05)
 
-            row_container = UIContainer(0, 0, self.left_panel.rect.w - 30, 30, layout_type='horizontal', padding=0, spacing=10)
+            row_container = UIContainer(0, 0, self.left_panel.rect.w - s(30), s(30), layout_type='horizontal', padding=0, spacing=s(10))
             self.left_panel.add_child(row_container)
             
-            btn_w = (row_container.rect.w - 10) // 2
-            btn_therm = Button(0, 0, btn_w, 30, "Thermostat", active=False)
-            btn_bound = Button(0, 0, btn_w, 30, "Bounds", active=False)
+            btn_w = (row_container.rect.w - s(10)) // 2
+            btn_therm = Button(0, 0, btn_w, s(30), "Thermostat", active=False)
+            btn_bound = Button(0, 0, btn_w, s(30), "Bounds", active=False)
             row_container.add_child(btn_therm)
             row_container.add_child(btn_bound)
             self.buttons['thermostat'] = btn_therm
             self.buttons['boundaries'] = btn_bound
             
-            row_undo = UIContainer(0, 0, self.left_panel.rect.w - 30, 30, layout_type='horizontal', padding=0, spacing=10)
+            row_undo = UIContainer(0, 0, self.left_panel.rect.w - s(30), s(30), layout_type='horizontal', padding=0, spacing=s(10))
             self.left_panel.add_child(row_undo)
             
-            btn_undo = Button(0, 0, btn_w, 30, "Undo", active=False, toggle=False)
-            btn_redo = Button(0, 0, btn_w, 30, "Redo", active=False, toggle=False)
+            btn_undo = Button(0, 0, btn_w, s(30), "Undo", active=False, toggle=False)
+            btn_redo = Button(0, 0, btn_w, s(30), "Redo", active=False, toggle=False)
             row_undo.add_child(btn_undo)
             row_undo.add_child(btn_redo)
             self.buttons['undo'] = btn_undo
@@ -194,18 +197,18 @@ class UIManager:
 
         # --- RIGHT PANEL: Editor Tools ---
         rp = self.right_panel
-        rp_w = rp.rect.w - 30
+        rp_w = rp.rect.w - s(30)
 
-        btn_mode = Button(0, 0, rp_w, 35, "Mode: Physical", active=False, color_active=config.COLOR_ACCENT, color_inactive=config.COLOR_SUCCESS)
+        btn_mode = Button(0, 0, rp_w, s(35), "Mode: Physical", active=False, color_active=config.COLOR_ACCENT, color_inactive=config.COLOR_SUCCESS)
         rp.add_child(btn_mode)
         self.buttons['mode_ghost'] = btn_mode
         
-        btn_atom = Button(0, 0, rp_w, 35, icon=icons.get_icon_fixed_size('atomize', 32), tooltip="Atomize Selected", active=False, toggle=False)
+        btn_atom = Button(0, 0, rp_w, s(35), icon=icons.get_icon_fixed_size('atomize', s(32)), tooltip="Atomize Selected", active=False, toggle=False)
         rp.add_child(btn_atom)
         self.buttons['atomize'] = btn_atom
 
-        btn_size = 38
-        spacing = 6
+        btn_size = s(38)
+        spacing = s(6)
         
         def add_tool_row(t1_key, t1_icon, t1_tip, t2_key, t2_icon, t2_tip):
             row = UIContainer(0, 0, rp_w, btn_size, layout_type='horizontal', padding=0, spacing=spacing)
@@ -235,7 +238,7 @@ class UIManager:
         self.buttons['editor_play'] = btn_play
         self.buttons['show_const'] = btn_hide
         
-        btn_ext = Button(0, 0, rp_w, 35, icon=icons.get_icon_fixed_size('extend', 32), tooltip="Extend Infinite Line", toggle=False)
+        btn_ext = Button(0, 0, rp_w, s(35), icon=icons.get_icon_fixed_size('extend', s(32)), tooltip="Extend Infinite Line", toggle=False)
         rp.add_child(btn_ext)
         self.buttons['extend'] = btn_ext
         
@@ -267,12 +270,12 @@ class UIManager:
         if app_input_world:
             self.inputs['world'] = app_input_world
         else:
-            self.inputs['world'] = InputField(0, 0, 60, 25, str(config.DEFAULT_WORLD_SIZE))
+            self.inputs['world'] = InputField(0, 0, s(60), s(25), str(config.DEFAULT_WORLD_SIZE))
         
-        row_resize = UIContainer(0, 0, rp_w, 25, layout_type='horizontal', padding=0, spacing=10)
+        row_resize = UIContainer(0, 0, rp_w, s(25), layout_type='horizontal', padding=0, spacing=s(10))
         rp.add_child(row_resize)
         
-        btn_resize = Button(0, 0, rp_w - 70, 25, "Resize World", active=False, toggle=False)
+        btn_resize = Button(0, 0, rp_w - s(70), s(25), "Resize World", active=False, toggle=False)
         row_resize.add_child(btn_resize)
         self.buttons['resize'] = btn_resize
         row_resize.add_child(self.inputs['world'])
