@@ -650,10 +650,17 @@ class SelectTool(Tool):
     @property
     def sketch(self):
         return self.app.scene.sketch
-    
+
     @property
     def scene(self):
         return self.app.scene
+
+    def deactivate(self):
+        """Called when switching away from SelectTool."""
+        super().deactivate()
+        # Clear selection when leaving SelectTool
+        self.app.session.selection.clear()
+        self._reset_drag_state()
 
     def handle_event(self, event, layout):
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
@@ -767,14 +774,24 @@ class SelectTool(Tool):
         hit_idx = self.sketch.find_entity_at(sim_x, sim_y, 0.5 / session.camera.zoom)
         
         if hit_idx >= 0:
-            # Check if clicking on already-selected entity (group move)
-            if hit_idx in session.selection.walls and len(session.selection.walls) > 1:
+            shift_held = pygame.key.get_mods() & pygame.KMOD_SHIFT
+
+            if shift_held:
+                # Shift+Click: toggle membership in selection (takes priority)
+                session.selection.toggle_entity(hit_idx)
+                # Only start drag if entity is now selected
+                if session.selection.is_entity_selected(hit_idx):
+                    if len(session.selection.walls) > 1:
+                        self._start_group_move(mouse_pos, layout)
+                    else:
+                        self._start_entity_move(hit_idx, mouse_pos, layout)
+            elif hit_idx in session.selection.walls and len(session.selection.walls) > 1:
+                # Click on already-selected entity in group: start group move
                 self._start_group_move(mouse_pos, layout)
             else:
-                # Single entity selection/move
-                if not (pygame.key.get_mods() & pygame.KMOD_SHIFT):
-                    session.selection.walls.clear()
-                    session.selection.points.clear()
+                # Regular click: replace selection and move
+                session.selection.walls.clear()
+                session.selection.points.clear()
                 session.selection.walls.add(hit_idx)
                 self._start_entity_move(hit_idx, mouse_pos, layout)
             return True
@@ -1131,7 +1148,7 @@ class SelectTool(Tool):
         """
         cmd = builder.try_build_command(self.sketch)
         if cmd:
-            # Execute the command
+            # Execute the command and rebuild geometry
             self.scene.execute(cmd)
 
             # Clean up UI state
