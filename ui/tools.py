@@ -721,11 +721,9 @@ class SelectTool(Tool):
             hit_pt = self._hit_test_points(mx, my, point_map)
             if hit_pt:
                 wall_idx, pt_idx = hit_pt
-                # Pass point as tuple (entity_idx, point_idx) for point targets
-                self.app.actions.handle_pending_constraint_click(
-                    wall_idx=wall_idx,
-                    pt_idx=(wall_idx, pt_idx)
-                )
+                builder.add_wall(wall_idx)
+                builder.add_point(wall_idx, pt_idx)
+                self._try_finalize_constraint(builder, session)
                 return True
 
             # Check for entity body hit
@@ -736,14 +734,12 @@ class SelectTool(Tool):
             hit_idx = self.sketch.find_entity_at(sim_x, sim_y, 0.5 / session.camera.zoom)
 
             if hit_idx >= 0:
-                self.app.actions.handle_pending_constraint_click(wall_idx=hit_idx)
+                builder.add_wall(hit_idx)
+                self._try_finalize_constraint(builder, session)
                 return True
 
             # Clicked empty space - cancel pending constraint
-            builder.reset()
-            session.status.set("Constraint cancelled")
-            for btn in self.app.input_handler.constraint_btn_map.keys():
-                btn.active = False
+            self._cancel_pending_constraint(builder, session)
             return True
 
         # =====================================================================
@@ -1119,8 +1115,47 @@ class SelectTool(Tool):
                 dist_from_center = math.hypot(mx - sx, my - sy)
                 if abs(dist_from_center - screen_r) < 8:  # 8 pixel tolerance
                     return i
-        
+
         return None
+
+    # -------------------------------------------------------------------------
+    # Constraint Building Helpers
+    # -------------------------------------------------------------------------
+
+    def _try_finalize_constraint(self, builder, session):
+        """
+        Try to finalize the pending constraint.
+
+        Uses ConstraintBuilder.try_build_command() to create the command,
+        executes it via Scene, and cleans up UI state on success.
+        """
+        cmd = builder.try_build_command(self.sketch)
+        if cmd:
+            # Execute the command
+            self.scene.execute(cmd)
+
+            # Clean up UI state
+            ctype = builder.pending_type
+            self._clear_constraint_ui(builder, session)
+            session.status.set(f"Applied {ctype}")
+            self.app.sound_manager.play_sound('click')
+        else:
+            # Not ready yet - update status with progress
+            session.status.set(builder.get_status_message())
+            self.app.sound_manager.play_sound('click')
+
+    def _cancel_pending_constraint(self, builder, session):
+        """Cancel the pending constraint and clean up UI state."""
+        self._clear_constraint_ui(builder, session)
+        session.status.set("Constraint cancelled")
+
+    def _clear_constraint_ui(self, builder, session):
+        """Clear all constraint-related UI state."""
+        builder.reset()
+        session.selection.walls.clear()
+        session.selection.points.clear()
+        for btn in self.app.input_handler.constraint_btn_map.keys():
+            btn.active = False
 
     def draw_overlay(self, screen, renderer, layout):
         """Draw selection indicators and drag feedback."""

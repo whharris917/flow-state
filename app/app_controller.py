@@ -381,46 +381,45 @@ class AppController:
     # =========================================================================
 
     def trigger_constraint(self, ctype):
-        from core.commands import AddConstraintCommand
-        
+        """
+        Trigger constraint creation workflow.
+
+        Uses ConstraintBuilder for all constraint logic.
+        AppController only handles UI orchestration (button states, sounds, tool switch).
+        """
+        builder = self.session.constraint_builder
+
         # Update UI button states
         for btn, c_val in self.app.input_handler.constraint_btn_map.items():
             btn.active = (c_val == ctype)
-        
-        # Handle multi-apply constraints (H/V)
-        # These apply to each selected entity individually, wrapped in a CompositeCommand
-        is_multi = False
-        if ctype in CONSTRAINT_DEFS and CONSTRAINT_DEFS[ctype][0].get('multi'):
-            from core.commands import AddConstraintCommand, CompositeCommand
+
+        # Initialize builder with current selection
+        builder.start(
+            ctype,
+            initial_walls=list(self.session.selection.walls),
+            initial_points=list(self.session.selection.points)
+        )
+
+        # Handle multi-apply constraints (H/V) - apply to each selected entity
+        if builder.is_multi_apply():
             walls = list(self.session.selection.walls)
             if walls:
-                commands = []
-                for w_idx in walls:
-                    constraint = self.sketch.try_create_constraint(ctype, [w_idx], [])
-                    if constraint:
-                        commands.append(AddConstraintCommand(self.sketch, constraint, historize=False))
-                if commands:
-                    # Wrap in CompositeCommand for single undo operation
-                    composite = CompositeCommand(commands, f"Apply {ctype} to {len(commands)} items")
-                    self.scene.execute(composite)
-                    self.session.status.set(f"Applied {ctype} to {len(commands)} items")
-                    self.session.selection.walls.clear()
-                    self.session.selection.points.clear()
-                    is_multi = True
+                cmd = builder.build_multi_command(self.sketch, walls)
+                if cmd:
+                    self.scene.execute(cmd)
+                    self._clear_constraint_state(f"Applied {ctype} to {len(walls)} items")
                     self.sound_manager.play_sound('click')
-        if is_multi:
-            return
-        
-        # Try to apply with current selection
-        walls = list(self.session.selection.walls)
-        pts = list(self.session.selection.points)
-        if self._try_apply_constraint_smart(ctype, walls, pts):
+                    return
+
+        # Try to apply immediately with current selection
+        cmd = builder.try_build_command(self.sketch)
+        if cmd:
+            self.scene.execute(cmd)
+            self._clear_constraint_state(f"Applied {ctype}")
+            self.sound_manager.play_sound('click')
             return
 
-        # Enter pending constraint mode
-        self.session.constraint_builder.pending_type = ctype
-        self.session.constraint_builder.target_walls = list(self.session.selection.walls)
-        self.session.constraint_builder.target_points = list(self.session.selection.points)
+        # Not enough targets - enter pending mode
         self.session.selection.walls.clear()
         self.session.selection.points.clear()
 
@@ -431,68 +430,15 @@ class AppController:
         self.session.status.set(f"{ctype}: {msg}")
         self.sound_manager.play_sound('tool_select')
 
-    def _try_apply_constraint_smart(self, ctype, walls, pts):
-        """
-        Try to apply a constraint with the given selection.
+    def _clear_constraint_state(self, status_msg):
+        """Helper to clear constraint UI state after successful application."""
+        self.session.constraint_builder.reset()
+        self.session.selection.walls.clear()
+        self.session.selection.points.clear()
+        for btn in self.app.input_handler.constraint_btn_map.keys():
+            btn.active = False
+        self.session.status.set(status_msg)
 
-        Uses the command queue for proper undo/redo support.
-        """
-        from core.commands import AddConstraintCommand
-
-        def _apply_and_cleanup(constraint, status_msg):
-            """Helper to execute constraint command and clean up state."""
-            cmd = AddConstraintCommand(self.sketch, constraint)
-            self.scene.execute(cmd)
-            self.session.status.set(status_msg)
-            self.session.selection.walls.clear()
-            self.session.selection.points.clear()
-            self.session.constraint_builder.pending_type = None
-            for btn in self.app.input_handler.constraint_btn_map.keys():
-                btn.active = False
-            self.sound_manager.play_sound('click')
-
-        # Try with exact selection
-        constraint = self.sketch.try_create_constraint(ctype, walls, pts)
-        if constraint:
-            _apply_and_cleanup(constraint, f"Applied {ctype}")
-            return True
-
-        # Try auto-trimming selection
-        if ctype in CONSTRAINT_DEFS:
-            rules = CONSTRAINT_DEFS[ctype]
-            for r in rules:
-                if len(walls) >= r['w'] and len(pts) >= r['p']:
-                    sub_w = walls[:r['w']]
-                    sub_p = pts[:r['p']]
-                    constraint = self.sketch.try_create_constraint(ctype, sub_w, sub_p)
-                    if constraint:
-                        _apply_and_cleanup(constraint, f"Applied {ctype} (Auto-Trimmed)")
-                        return True
-
-        return False
-
-    def handle_pending_constraint_click(self, wall_idx=None, pt_idx=None):
-        if not self.session.constraint_builder.pending_type:
-            return
-        if wall_idx is not None and wall_idx not in self.session.constraint_builder.target_walls:
-            self.session.constraint_builder.target_walls.append(wall_idx)
-        if pt_idx is not None and pt_idx not in self.session.constraint_builder.target_points:
-            self.session.constraint_builder.target_points.append(pt_idx)
-        
-        if self._try_apply_constraint_smart(
-            self.session.constraint_builder.pending_type, 
-            self.session.constraint_builder.target_walls, 
-            self.session.constraint_builder.target_points
-        ):
-            return
-            
-        ctype = self.session.constraint_builder.pending_type
-        msg = CONSTRAINT_DEFS[ctype][0]['msg']
-        nw = len(self.session.constraint_builder.target_walls)
-        np_count = len(self.session.constraint_builder.target_points)
-        self.session.status.set(f"{ctype} ({nw}W, {np_count}P): {msg}")
-        self.sound_manager.play_sound('click')
-    
     # =========================================================================
     # Lifecycle Updates
     # =========================================================================

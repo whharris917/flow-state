@@ -203,3 +203,86 @@ class ConstraintBuilder:
     def is_point_targeted(self, entity_idx: int, point_idx: int) -> bool:
         """Check if a point is already a target."""
         return (entity_idx, point_idx) in self._target_points
+
+    # =========================================================================
+    # Command Factory Methods
+    # =========================================================================
+
+    def try_build_command(self, sketch):
+        """
+        Attempt to build an AddConstraintCommand from current state.
+
+        Tries exact match first, then auto-trims if over-selected.
+        Does NOT execute the command or reset state - caller handles that.
+
+        Args:
+            sketch: The Sketch instance to create constraint for
+
+        Returns:
+            AddConstraintCommand if successful, None if not ready/invalid
+        """
+        from core.commands import AddConstraintCommand
+
+        if not self._pending_type:
+            return None
+
+        # Try exact match
+        constraint = sketch.try_create_constraint(
+            self._pending_type,
+            self._target_walls,
+            self._target_points
+        )
+        if constraint:
+            return AddConstraintCommand(sketch, constraint)
+
+        # Try auto-trimming (user selected more than needed)
+        rules = CONSTRAINT_DEFS.get(self._pending_type, [])
+        for rule in rules:
+            if len(self._target_walls) >= rule['w'] and len(self._target_points) >= rule['p']:
+                constraint = sketch.try_create_constraint(
+                    self._pending_type,
+                    self._target_walls[:rule['w']],
+                    self._target_points[:rule['p']]
+                )
+                if constraint:
+                    return AddConstraintCommand(sketch, constraint)
+
+        return None
+
+    def build_multi_command(self, sketch, entity_indices):
+        """
+        Build a CompositeCommand for multi-apply constraints (H/V).
+
+        Used for constraints that apply individually to each selected entity.
+
+        Args:
+            sketch: The Sketch instance
+            entity_indices: List of entity indices to apply constraint to
+
+        Returns:
+            CompositeCommand wrapping individual AddConstraintCommands, or None
+        """
+        from core.commands import AddConstraintCommand, CompositeCommand
+
+        if not self._pending_type:
+            return None
+
+        commands = []
+        for idx in entity_indices:
+            constraint = sketch.try_create_constraint(self._pending_type, [idx], [])
+            if constraint:
+                commands.append(AddConstraintCommand(sketch, constraint, historize=False))
+
+        if commands:
+            return CompositeCommand(
+                commands,
+                f"Apply {self._pending_type} to {len(commands)} items"
+            )
+        return None
+
+    def is_multi_apply(self) -> bool:
+        """Check if current pending type is a multi-apply constraint (H/V)."""
+        if not self._pending_type:
+            return False
+        rules = CONSTRAINT_DEFS.get(self._pending_type, [])
+        return bool(rules and rules[0].get('multi'))
