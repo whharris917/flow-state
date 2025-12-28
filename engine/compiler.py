@@ -59,14 +59,18 @@ class Compiler:
             # Skip ProcessObject handles - they don't become atoms
             if isinstance(w, Point) and getattr(w, 'is_handle', False):
                 continue
-            
+
+            # Skip entities that are not marked as physical
+            if not getattr(w, 'physical', False):
+                continue
+
             # Look up material properties
             mat = sketch.materials.get(w.material_id, sketch.materials["Default"])
-            
-            # Check Physical Flag from Material (Ghost vs Solid)
+
+            # Check Physical Flag from Material (Ghost material overrides entity)
             if not mat.physical:
                 continue
-            
+
             if isinstance(w, Line):
                 self._compile_line(w, mat)
             elif isinstance(w, Circle):

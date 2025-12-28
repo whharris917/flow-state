@@ -18,10 +18,11 @@ import numpy as np
 
 class Entity:
     """Base class for all geometric entities."""
-    
+
     def __init__(self, material_id="Default"):
         self.material_id = material_id
         self.anim = None  # Animation data (for drivers)
+        self.physical = False  # If True, entity is atomized by compiler
 
     def get_point(self, index):
         """Get the position of a point by index."""
@@ -81,12 +82,14 @@ class Point(Entity):
 
     def to_dict(self):
         d = {
-            'type': 'point', 
-            'x': float(self.pos[0]), 
-            'y': float(self.pos[1]), 
-            'anchored': self.anchored, 
+            'type': 'point',
+            'x': float(self.pos[0]),
+            'y': float(self.pos[1]),
+            'anchored': self.anchored,
             'material_id': self.material_id
         }
+        if self.physical:
+            d['physical'] = self.physical
         # Note: is_handle is NOT serialized here
         # ProcessObjects are serialized separately and recreate their handles
         return d
@@ -94,11 +97,12 @@ class Point(Entity):
     @staticmethod
     def from_dict(data):
         p = Point(
-            data['x'], 
-            data['y'], 
-            data.get('anchored', False), 
+            data['x'],
+            data['y'],
+            data.get('anchored', False),
             data.get('material_id', "Default")
         )
+        p.physical = data.get('physical', False)
         return p
 
 
@@ -157,6 +161,8 @@ class Line(Entity):
             'anchored': self.anchored,
             'material_id': self.material_id
         }
+        if self.physical:
+            d['physical'] = self.physical
         if self.infinite:
             d['infinite'] = self.infinite
         if self.anim:
@@ -168,6 +174,7 @@ class Line(Entity):
         mat_id = data.get('material_id', "Default")
         l = Line(data['start'], data['end'], data.get('ref', False), mat_id)
         l.anchored = data.get('anchored', [False, False])
+        l.physical = data.get('physical', False)
         l.infinite = data.get('infinite', False)
         l.anim = data.get('anim', None)
         return l
@@ -206,12 +213,14 @@ class Circle(Entity):
 
     def to_dict(self):
         d = {
-            'type': 'circle', 
-            'center': self.center.tolist(), 
+            'type': 'circle',
+            'center': self.center.tolist(),
             'radius': self.radius,
             'anchored': self.anchored,
             'material_id': self.material_id
         }
+        if self.physical:
+            d['physical'] = self.physical
         if self.anim:
             d['anim'] = self.anim
         return d
@@ -220,5 +229,6 @@ class Circle(Entity):
     def from_dict(data):
         c = Circle(data['center'], data['radius'], data.get('material_id', "Default"))
         c.anchored = data.get('anchored', [False])
+        c.physical = data.get('physical', False)
         c.anim = data.get('anim', None)
         return c

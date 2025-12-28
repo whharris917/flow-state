@@ -168,16 +168,27 @@ class AppController:
 
     def atomize_selected(self):
         if self.session.selection.walls:
-            count = 0
+            atomized = 0
+            de_atomized = 0
             for idx in self.session.selection.walls:
                 if idx < len(self.sketch.entities):
-                    self.sketch.update_entity(idx, physical=True)
-                    count += 1
+                    entity = self.sketch.entities[idx]
+                    # Toggle the physical flag
+                    new_state = not getattr(entity, 'physical', False)
+                    self.sketch.update_entity(idx, physical=new_state)
+                    if new_state:
+                        atomized += 1
+                    else:
+                        de_atomized += 1
             self.scene.rebuild()
-            self.session.status.set(f"Atomized {count} entities")
+            if atomized > 0 and de_atomized > 0:
+                self.session.status.set(f"Atomized {atomized}, de-atomized {de_atomized}")
+            elif atomized > 0:
+                self.session.status.set(f"Atomized {atomized} entities")
+            else:
+                self.session.status.set(f"De-atomized {de_atomized} entities")
         else:
-            self.scene.rebuild()
-            self.session.status.set("Atomized All Geometry")
+            self.session.status.set("Select entities to toggle atomization")
         self.sound_manager.play_sound('click')
 
     def action_delete_selection(self):

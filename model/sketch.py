@@ -91,20 +91,24 @@ class Sketch:
         """
         if 0 <= index < len(self.entities):
             e = self.entities[index]
-            
+
             # Position updates
             if 'start' in kwargs and hasattr(e, 'start'): e.start[:] = kwargs['start']
             if 'end' in kwargs and hasattr(e, 'end'): e.end[:] = kwargs['end']
             if 'center' in kwargs and hasattr(e, 'center'): e.center[:] = kwargs['center']
             if 'radius' in kwargs and hasattr(e, 'radius'): e.radius = kwargs['radius']
-            
+
             # Material Assignment
-            if 'material_id' in kwargs: 
+            if 'material_id' in kwargs:
                 e.material_id = kwargs['material_id']
-            
+
+            # Physical flag (atomization)
+            if 'physical' in kwargs:
+                e.physical = kwargs['physical']
+
             # Anchors
             if 'anchored' in kwargs: e.anchored = kwargs['anchored']
-            
+
             # Trigger Solve
             self.solve()
 
