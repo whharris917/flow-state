@@ -705,13 +705,51 @@ class SelectTool(Tool):
         mx, my = mouse_pos
         if not (layout['MID_X'] < mx < layout['RIGHT_X']):
             return False
-        
+
         session = self.app.session
         entities = self.sketch.entities
-        
+        builder = session.constraint_builder
+
         # Build point map for hit testing
         point_map = self._build_point_map(entities, layout)
-        
+
+        # =====================================================================
+        # Pending Constraint Mode - intercept clicks for constraint building
+        # =====================================================================
+        if builder.is_pending:
+            # Check for point hit first (for COINCIDENT, MIDPOINT, etc.)
+            hit_pt = self._hit_test_points(mx, my, point_map)
+            if hit_pt:
+                wall_idx, pt_idx = hit_pt
+                # Pass point as tuple (entity_idx, point_idx) for point targets
+                self.app.actions.handle_pending_constraint_click(
+                    wall_idx=wall_idx,
+                    pt_idx=(wall_idx, pt_idx)
+                )
+                return True
+
+            # Check for entity body hit
+            sim_x, sim_y = utils.screen_to_sim(
+                mx, my, session.camera.zoom, session.camera.pan_x, session.camera.pan_y,
+                self.app.sim.world_size, layout
+            )
+            hit_idx = self.sketch.find_entity_at(sim_x, sim_y, 0.5 / session.camera.zoom)
+
+            if hit_idx >= 0:
+                self.app.actions.handle_pending_constraint_click(wall_idx=hit_idx)
+                return True
+
+            # Clicked empty space - cancel pending constraint
+            builder.reset()
+            session.status.set("Constraint cancelled")
+            for btn in self.app.input_handler.constraint_btn_map.keys():
+                btn.active = False
+            return True
+
+        # =====================================================================
+        # Normal Selection Mode
+        # =====================================================================
+
         # 1. Check for point hit (highest priority)
         hit_pt = self._hit_test_points(mx, my, point_map)
         if hit_pt:

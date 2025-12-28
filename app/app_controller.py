@@ -361,8 +361,6 @@ class AppController:
             self.ctx_vars['pt'] = hit_pt[1]
             opts = self.get_context_options('point', hit_pt[0], hit_pt[1])
             self.context_menu = ContextMenu(mx, my, opts)
-            if self.session.constraint_builder.pending_type:
-                self.handle_pending_constraint_click(pt_idx=hit_pt)
             return
 
         # Check walls/entities using sketch's find_entity_at
@@ -370,12 +368,9 @@ class AppController:
         hit_wall = self.sketch.find_entity_at(sim_x, sim_y, rad_sim)
         
         if hit_wall != -1:
-            if self.session.constraint_builder.pending_type:
-                self.handle_pending_constraint_click(wall_idx=hit_wall)
-            else:
-                self.ctx_vars['wall'] = hit_wall
-                opts = self.get_context_options('wall', hit_wall)
-                self.context_menu = ContextMenu(mx, my, opts)
+            self.ctx_vars['wall'] = hit_wall
+            opts = self.get_context_options('wall', hit_wall)
+            self.context_menu = ContextMenu(mx, my, opts)
         else:
             if self.session.mode == config.MODE_EDITOR: 
                 self.app.change_tool(config.TOOL_SELECT)
@@ -393,17 +388,22 @@ class AppController:
             btn.active = (c_val == ctype)
         
         # Handle multi-apply constraints (H/V)
+        # These apply to each selected entity individually, wrapped in a CompositeCommand
         is_multi = False
         if ctype in CONSTRAINT_DEFS and CONSTRAINT_DEFS[ctype][0].get('multi'):
+            from core.commands import AddConstraintCommand, CompositeCommand
             walls = list(self.session.selection.walls)
             if walls:
-                count = 0
+                commands = []
                 for w_idx in walls:
-                    if self.sketch.attempt_apply_constraint(ctype, [w_idx], []):
-                        count += 1
-                if count > 0:
-                    self.scene.rebuild()
-                    self.session.status.set(f"Applied {ctype} to {count} items")
+                    constraint = self.sketch.try_create_constraint(ctype, [w_idx], [])
+                    if constraint:
+                        commands.append(AddConstraintCommand(self.sketch, constraint, historize=False))
+                if commands:
+                    # Wrap in CompositeCommand for single undo operation
+                    composite = CompositeCommand(commands, f"Apply {ctype} to {len(commands)} items")
+                    self.scene.execute(composite)
+                    self.session.status.set(f"Applied {ctype} to {len(commands)} items")
                     self.session.selection.walls.clear()
                     self.session.selection.points.clear()
                     is_multi = True
@@ -423,23 +423,40 @@ class AppController:
         self.session.constraint_builder.target_points = list(self.session.selection.points)
         self.session.selection.walls.clear()
         self.session.selection.points.clear()
+
+        # Auto-switch to SelectTool so user can immediately pick targets
+        self.app.change_tool(config.TOOL_SELECT)
+
         msg = CONSTRAINT_DEFS[ctype][0]['msg'] if ctype in CONSTRAINT_DEFS else "Select targets..."
         self.session.status.set(f"{ctype}: {msg}")
         self.sound_manager.play_sound('tool_select')
 
     def _try_apply_constraint_smart(self, ctype, walls, pts):
-        """Try to apply a constraint with the given selection."""
-        if self.sketch.attempt_apply_constraint(ctype, walls, pts):
-            self.scene.rebuild()
-            self.session.status.set(f"Applied {ctype}")
+        """
+        Try to apply a constraint with the given selection.
+
+        Uses the command queue for proper undo/redo support.
+        """
+        from core.commands import AddConstraintCommand
+
+        def _apply_and_cleanup(constraint, status_msg):
+            """Helper to execute constraint command and clean up state."""
+            cmd = AddConstraintCommand(self.sketch, constraint)
+            self.scene.execute(cmd)
+            self.session.status.set(status_msg)
             self.session.selection.walls.clear()
             self.session.selection.points.clear()
             self.session.constraint_builder.pending_type = None
             for btn in self.app.input_handler.constraint_btn_map.keys():
                 btn.active = False
             self.sound_manager.play_sound('click')
+
+        # Try with exact selection
+        constraint = self.sketch.try_create_constraint(ctype, walls, pts)
+        if constraint:
+            _apply_and_cleanup(constraint, f"Applied {ctype}")
             return True
-        
+
         # Try auto-trimming selection
         if ctype in CONSTRAINT_DEFS:
             rules = CONSTRAINT_DEFS[ctype]
@@ -447,16 +464,11 @@ class AppController:
                 if len(walls) >= r['w'] and len(pts) >= r['p']:
                     sub_w = walls[:r['w']]
                     sub_p = pts[:r['p']]
-                    if self.sketch.attempt_apply_constraint(ctype, sub_w, sub_p):
-                        self.scene.rebuild()
-                        self.session.status.set(f"Applied {ctype} (Auto-Trimmed)")
-                        self.session.selection.walls.clear()
-                        self.session.selection.points.clear()
-                        self.session.constraint_builder.pending_type = None
-                        for btn in self.app.input_handler.constraint_btn_map.keys():
-                            btn.active = False
-                        self.sound_manager.play_sound('click')
+                    constraint = self.sketch.try_create_constraint(ctype, sub_w, sub_p)
+                    if constraint:
+                        _apply_and_cleanup(constraint, f"Applied {ctype} (Auto-Trimmed)")
                         return True
+
         return False
 
     def handle_pending_constraint_click(self, wall_idx=None, pt_idx=None):

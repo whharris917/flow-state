@@ -201,39 +201,62 @@ class Sketch:
         if solve:
             self.solve(iterations=500)
 
-    def attempt_apply_constraint(self, ctype, entity_idxs, point_idxs):
+    def try_create_constraint(self, ctype, entity_idxs, point_idxs):
         """
-        Attempts to create and apply a constraint based on selection.
-        
+        Attempts to create a constraint object WITHOUT adding it to the sketch.
+
+        This is used by the command system to create constraints that can be
+        properly tracked for undo/redo.
+
         Args:
             ctype: Constraint type string (e.g., 'LENGTH', 'PARALLEL')
             entity_idxs: List of entity indices
             point_idxs: List of (entity_idx, point_idx) tuples
-        
+
         Returns:
-            True if constraint was successfully applied, False otherwise
+            The constraint object if valid, None otherwise
         """
         from core.definitions import CONSTRAINT_DEFS
-        
+
         rules = CONSTRAINT_DEFS.get(ctype, [])
-        
+
         for rule in rules:
             if len(entity_idxs) == rule['w'] and len(point_idxs) == rule['p']:
                 valid = True
-                
+
                 # Type check if required
                 if rule.get('t'):
                     for idx in entity_idxs:
                         if idx < len(self.entities) and not isinstance(self.entities[idx], rule['t']):
                             valid = False
                             break
-                
+
                 if valid:
                     # Factory function expects (sketch, walls, pts)
-                    c_obj = rule['f'](self, entity_idxs, point_idxs)
-                    self.add_constraint_object(c_obj)
-                    return True
-        
+                    return rule['f'](self, entity_idxs, point_idxs)
+
+        return None
+
+    def attempt_apply_constraint(self, ctype, entity_idxs, point_idxs):
+        """
+        Attempts to create and apply a constraint based on selection.
+
+        WARNING: This method bypasses the command queue and should only be used
+        for non-undoable operations. For undoable constraint creation, use
+        try_create_constraint() with AddConstraintCommand.
+
+        Args:
+            ctype: Constraint type string (e.g., 'LENGTH', 'PARALLEL')
+            entity_idxs: List of entity indices
+            point_idxs: List of (entity_idx, point_idx) tuples
+
+        Returns:
+            True if constraint was successfully applied, False otherwise
+        """
+        constraint = self.try_create_constraint(ctype, entity_idxs, point_idxs)
+        if constraint:
+            self.add_constraint_object(constraint)
+            return True
         return False
 
     def set_driver(self, constraint_index, driver_data):
