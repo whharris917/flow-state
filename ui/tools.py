@@ -791,24 +791,39 @@ class SelectTool(Tool):
         hit_pt = self._hit_test_points(mx, my, point_map)
         if hit_pt:
             wall_idx, pt_idx = hit_pt
+            shift_held = pygame.key.get_mods() & pygame.KMOD_SHIFT
+
+            if shift_held:
+                # Shift+Click: toggle point selection
+                session.selection.toggle_point(wall_idx, pt_idx)
+            else:
+                # Regular click: clear other selections, select this point
+                session.selection.walls.clear()
+                session.selection.points.clear()
+                session.selection.select_point(wall_idx, pt_idx)
+
             self._start_edit_drag(wall_idx, pt_idx, mouse_pos, layout)
             return True
-        
+
         # 2. Check for circle resize handle
         resize_hit = self._hit_test_circle_resize(mx, my, entities, layout)
         if resize_hit is not None:
             self._start_resize_drag(resize_hit, mouse_pos)
             return True
-        
+
         # 3. Check for entity body hit
         sim_x, sim_y = utils.screen_to_sim(
             mx, my, session.camera.zoom, session.camera.pan_x, session.camera.pan_y,
             self.app.sim.world_size, layout
         )
         hit_idx = self.sketch.find_entity_at(sim_x, sim_y, 0.5 / session.camera.zoom)
-        
+
         if hit_idx >= 0:
             shift_held = pygame.key.get_mods() & pygame.KMOD_SHIFT
+
+            # Clear point selection when selecting entities
+            if not shift_held:
+                session.selection.points.clear()
 
             if shift_held:
                 # Shift+Click: toggle membership in selection (takes priority)

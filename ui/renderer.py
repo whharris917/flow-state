@@ -404,11 +404,28 @@ class Renderer:
 
     def _draw_constraints(self, session, sketch, layout, world_size=50.0):
         layout_data = self._calculate_constraint_layout(
-            sketch.constraints, sketch.entities, 
-            session.camera.zoom, session.camera.pan_x, session.camera.pan_y, 
+            sketch.constraints, sketch.entities,
+            session.camera.zoom, session.camera.pan_x, session.camera.pan_y,
             world_size, layout
         )
-        
+
+        transform = lambda wx, wy: sim_to_screen(
+            wx, wy, session.camera.zoom, session.camera.pan_x, session.camera.pan_y,
+            world_size, layout
+        )
+
+        # First pass: draw all connectors (behind badges)
+        for item in layout_data:
+            idx = item['const_idx']
+            x, y = item['x'], item['y']
+            c = sketch.constraints[idx]
+            if c.type in ['EQUAL', 'PARALLEL', 'PERPENDICULAR', 'ANGLE']:
+                c1 = self._get_entity_center_screen(c.indices[0], sketch.entities, transform)
+                c2 = self._get_entity_center_screen(c.indices[1], sketch.entities, transform)
+                self._draw_connector((x, y), c1)
+                self._draw_connector((x, y), c2)
+
+        # Second pass: draw all badges (on top of connectors)
         for item in layout_data:
             self._draw_constraint_badge(item, session, sketch.entities, sketch.constraints, layout, world_size)
 
@@ -448,11 +465,15 @@ class Renderer:
     def _get_constraint_raw_pos(self, c, entities, transform):
         t = c.type
         idx = c.indices
-        
+
         if t == 'COINCIDENT':
-            return self._get_point_screen(idx[0][0], idx[0][1], entities, transform)
+            # Offset badge so it doesn't overlap with the point
+            px, py = self._get_point_screen(idx[0][0], idx[0][1], entities, transform)
+            return (px + 15, py - 15)
         elif t in ['COLLINEAR', 'MIDPOINT']:
-            return self._get_point_screen(idx[0][0], idx[0][1], entities, transform)
+            # Offset badge so it doesn't overlap with the point
+            px, py = self._get_point_screen(idx[0][0], idx[0][1], entities, transform)
+            return (px + 15, py - 15)
         elif t == 'LENGTH':
             return self._get_entity_center_screen(idx[0], entities, transform)
         elif t in ['EQUAL', 'PARALLEL', 'PERPENDICULAR', 'ANGLE']:
@@ -470,63 +491,53 @@ class Renderer:
         return (0, 0)
 
     def _draw_constraint_badge(self, item, session, entities, constraints, layout, world_size):
+        """Draw a single constraint badge (connectors drawn separately in first pass)."""
         idx = item['const_idx']
         x, y = item['x'], item['y']
         c = constraints[idx]
-        
+
         bg_col = (50, 50, 60)
         border_col = (80, 80, 100)
         text_col = (200, 200, 220)
-        
+
         is_selected = (idx in session.selection.constraints if hasattr(session.selection, 'constraints') else False)
         if is_selected:
             border_col = (255, 200, 50)
-        
+
         badge_text = self._get_constraint_badge_text(c)
-        
+
         text_surf = self.font.render(badge_text, True, text_col)
         tw, th = text_surf.get_size()
-        
+
         badge_rect = pygame.Rect(x - tw//2 - 4, y - th//2 - 2, tw + 8, th + 4)
         pygame.draw.rect(self.screen, bg_col, badge_rect, border_radius=3)
         pygame.draw.rect(self.screen, border_col, badge_rect, 1, border_radius=3)
         self.screen.blit(text_surf, (x - tw//2, y - th//2))
-        
-        transform = lambda wx, wy: sim_to_screen(
-            wx, wy, session.camera.zoom, session.camera.pan_x, session.camera.pan_y, 
-            world_size, layout
-        )
-        
-        if c.type in ['EQUAL', 'PARALLEL', 'PERPENDICULAR', 'ANGLE']:
-            c1 = self._get_entity_center_screen(c.indices[0], entities, transform)
-            c2 = self._get_entity_center_screen(c.indices[1], entities, transform)
-            self._draw_connector((x, y), c1)
-            self._draw_connector((x, y), c2)
 
     def _get_constraint_badge_text(self, c):
         t = c.type
         if t == 'COINCIDENT':
-            return '◎'
+            return 'Co'
         elif t == 'COLLINEAR':
-            return '⫴'
+            return '//'
         elif t == 'MIDPOINT':
-            return '⊥M'
+            return 'Mid'
         elif t == 'LENGTH':
             val = getattr(c, 'value', 0)
             return f'L:{val:.1f}'
         elif t == 'EQUAL':
             return '='
         elif t == 'PARALLEL':
-            return '∥'
+            return '||'
         elif t == 'PERPENDICULAR':
-            return '⊥'
+            return '_|_'
         elif t == 'HORIZONTAL':
             return 'H'
         elif t == 'VERTICAL':
             return 'V'
         elif t == 'ANGLE':
             val = getattr(c, 'value', 0)
-            return f'∠{val:.0f}°'
+            return f'<{val:.0f}'
         return '?'
 
     def _get_entity_center_screen(self, entity_idx, entities, transform):
@@ -573,9 +584,9 @@ class Renderer:
                 w_idx, pt_idx = items[k]
                 radius = base_r + (k * step_r)
                 
-                color = (200, 200, 200) 
+                color = (200, 200, 200)
                 if (w_idx, pt_idx) in session.selection.points:
-                    color = (0, 255, 255)
+                    color = (255, 200, 50)  # Yellow like selected lines
                 elif session.constraint_builder.pending_type and (w_idx, pt_idx) in session.constraint_builder.target_points:
                     color = (100, 255, 100)
                 

@@ -324,32 +324,15 @@ class AppController:
     def spawn_context_menu(self, pos):
         mx, my = pos
         sim_x, sim_y = utils.screen_to_sim(
-            mx, my, 
-            self.session.camera.zoom, self.session.camera.pan_x, self.session.camera.pan_y, 
+            mx, my,
+            self.session.camera.zoom, self.session.camera.pan_x, self.session.camera.pan_y,
             self.sim.world_size, self.app.layout
         )
-        
-        # Check constraints first
-        if self.session.show_constraints:
-            layout_data = self.renderer._calculate_constraint_layout(
-                self.sketch.constraints, self.sketch.entities, 
-                self.session.camera.zoom, self.session.camera.pan_x, self.session.camera.pan_y, 
-                self.sim.world_size, self.app.layout
-            )
-            for item in layout_data:
-                # Build rect from x, y (badge is roughly 40x20 pixels)
-                badge_rect = pygame.Rect(item['x'] - 20, item['y'] - 10, 40, 20)
-                if badge_rect.collidepoint(mx, my):
-                    const_idx = item['const_idx']
-                    self.ctx_vars['const'] = const_idx
-                    opts = self.get_context_options('constraint', const_idx)
-                    self.context_menu = ContextMenu(mx, my, opts)
-                    return
 
-        # Check points using grouped point map
+        # Check points FIRST (highest priority for right-click)
         point_map = utils.get_grouped_points(
-            self.sketch.entities, 
-            self.session.camera.zoom, self.session.camera.pan_x, self.session.camera.pan_y, 
+            self.sketch.entities,
+            self.session.camera.zoom, self.session.camera.pan_x, self.session.camera.pan_y,
             self.sim.world_size, self.app.layout
         )
         hit_pt = None
@@ -365,6 +348,23 @@ class AppController:
             opts = self.get_context_options('point', hit_pt[0], hit_pt[1])
             self.context_menu = ContextMenu(mx, my, opts)
             return
+
+        # Check constraints second
+        if self.session.show_constraints:
+            layout_data = self.renderer._calculate_constraint_layout(
+                self.sketch.constraints, self.sketch.entities,
+                self.session.camera.zoom, self.session.camera.pan_x, self.session.camera.pan_y,
+                self.sim.world_size, self.app.layout
+            )
+            for item in layout_data:
+                # Build rect from x, y (badge is roughly 40x20 pixels)
+                badge_rect = pygame.Rect(item['x'] - 20, item['y'] - 10, 40, 20)
+                if badge_rect.collidepoint(mx, my):
+                    const_idx = item['const_idx']
+                    self.ctx_vars['const'] = const_idx
+                    opts = self.get_context_options('constraint', const_idx)
+                    self.context_menu = ContextMenu(mx, my, opts)
+                    return
 
         # Check walls/entities using sketch's find_entity_at
         rad_sim = 5.0 / (((self.app.layout['MID_W'] - 50) / self.sim.world_size) * self.session.camera.zoom)
