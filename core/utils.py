@@ -1,6 +1,5 @@
 import math
 import numpy as np
-import pygame
 import core.config as config
 
 from model.geometry import Line, Circle, Point
@@ -97,13 +96,32 @@ def get_grouped_points(walls, zoom, pan_x, pan_y, world_size, layout):
                 point_map[(sx, sy)] = [(i, end_idx)]
     return point_map
 
-def get_snapped_pos(mx, my, walls, zoom, pan_x, pan_y, world_size, layout, anchor_pos=None, exclude_wall_idx=-1):
+def get_snapped_pos(mx, my, walls, zoom, pan_x, pan_y, world_size, layout,
+                    anchor_pos=None, exclude_wall_idx=-1,
+                    snap_to_points=False, constrain_to_axis=False):
+    """
+    Get world position from screen coordinates with optional snapping.
+
+    Args:
+        mx, my: Screen coordinates
+        walls: List of geometry entities to snap to
+        zoom, pan_x, pan_y: Camera transform parameters
+        world_size: Simulation world size
+        layout: Screen layout dictionary
+        anchor_pos: Reference point for axis constraint (optional)
+        exclude_wall_idx: Entity index to exclude from snapping
+        snap_to_points: If True, snap to nearby vertices (UI passes Ctrl state)
+        constrain_to_axis: If True, constrain to H/V axis from anchor (UI passes Shift state)
+
+    Returns:
+        (final_x, final_y, snapped_target) where snapped_target is (entity_idx, point_idx) or None
+    """
     sim_x, sim_y = screen_to_sim(mx, my, zoom, pan_x, pan_y, world_size, layout)
     final_x, final_y = sim_x, sim_y
     is_snapped_to_vertex = False
     snapped_target = None
-    
-    if pygame.key.get_mods() & pygame.KMOD_CTRL:
+
+    if snap_to_points:
         snap_threshold_px = 15
         best_dist = float('inf')
         for i, w in enumerate(walls):
@@ -122,13 +140,13 @@ def get_snapped_pos(mx, my, walls, zoom, pan_x, pan_y, world_size, layout, ancho
                     snapped_target = (i, pt_idx)
                     is_snapped_to_vertex = True
 
-    if (pygame.key.get_mods() & pygame.KMOD_SHIFT) and anchor_pos is not None and not is_snapped_to_vertex:
+    if constrain_to_axis and anchor_pos is not None and not is_snapped_to_vertex:
         dx = final_x - anchor_pos[0]
         dy = final_y - anchor_pos[1]
-        if abs(dx) > abs(dy): 
-            final_y = anchor_pos[1] 
-        else: 
-            final_x = anchor_pos[0] 
+        if abs(dx) > abs(dy):
+            final_y = anchor_pos[1]
+        else:
+            final_x = anchor_pos[0]
 
     return final_x, final_y, snapped_target
 

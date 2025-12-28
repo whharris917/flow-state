@@ -193,6 +193,9 @@ class SourceTool:
     
     def _get_snapped(self, mx, my, layout):
         """Get snapped world position and snap target."""
+        mods = pygame.key.get_mods()
+        snap_to_points = bool(mods & pygame.KMOD_CTRL)
+        constrain_to_axis = bool(mods & pygame.KMOD_SHIFT)
         return utils.get_snapped_pos(
             mx, my,
             self.app.scene.sketch.entities,
@@ -200,7 +203,9 @@ class SourceTool:
             self.app.session.camera.pan_x,
             self.app.session.camera.pan_y,
             self.app.sim.world_size,
-            layout
+            layout,
+            snap_to_points=snap_to_points,
+            constrain_to_axis=constrain_to_axis
         )
     
     def _update_hover_snap(self, mx, my, layout):

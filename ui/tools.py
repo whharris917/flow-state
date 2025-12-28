@@ -281,11 +281,15 @@ class GeometryTool(Tool):
 
     def get_snapped(self, mx, my, layout, anchor=None, exclude_idx=-1):
         """Get snapped world position and snap target info."""
+        mods = pygame.key.get_mods()
+        snap_to_points = bool(mods & pygame.KMOD_CTRL)
+        constrain_to_axis = bool(mods & pygame.KMOD_SHIFT)
         return utils.get_snapped_pos(
-            mx, my, 
-            self.sketch.entities, 
-            self.app.session.camera.zoom, self.app.session.camera.pan_x, self.app.session.camera.pan_y, 
-            self.app.sim.world_size, layout, anchor, exclude_idx
+            mx, my,
+            self.sketch.entities,
+            self.app.session.camera.zoom, self.app.session.camera.pan_x, self.app.session.camera.pan_y,
+            self.app.sim.world_size, layout, anchor, exclude_idx,
+            snap_to_points=snap_to_points, constrain_to_axis=constrain_to_axis
         )
 
     def cancel(self):
@@ -850,10 +854,14 @@ class SelectTool(Tool):
         
         if isinstance(w, Line):
             anchor = w.end if self.target_pt == 0 else w.start
+            mods = pygame.key.get_mods()
+            snap_to_points = bool(mods & pygame.KMOD_CTRL)
+            constrain_to_axis = bool(mods & pygame.KMOD_SHIFT)
             dest_x, dest_y, snap = utils.get_snapped_pos(
-                mx, my, entities, 
-                self.app.session.camera.zoom, self.app.session.camera.pan_x, self.app.session.camera.pan_y, 
-                self.app.sim.world_size, self.app.layout, anchor, self.target_idx
+                mx, my, entities,
+                self.app.session.camera.zoom, self.app.session.camera.pan_x, self.app.session.camera.pan_y,
+                self.app.sim.world_size, self.app.layout, anchor, self.target_idx,
+                snap_to_points=snap_to_points, constrain_to_axis=constrain_to_axis
             )
             self.app.session.constraint_builder.snap_target = snap
             
@@ -866,10 +874,14 @@ class SelectTool(Tool):
             self.scene.execute(cmd)
         
         elif isinstance(w, Circle):
+            mods = pygame.key.get_mods()
+            snap_to_points = bool(mods & pygame.KMOD_CTRL)
+            constrain_to_axis = bool(mods & pygame.KMOD_SHIFT)
             dest_x, dest_y, snap = utils.get_snapped_pos(
-                mx, my, entities, 
-                self.app.session.camera.zoom, self.app.session.camera.pan_x, self.app.session.camera.pan_y, 
-                self.app.sim.world_size, self.app.layout, None, self.target_idx
+                mx, my, entities,
+                self.app.session.camera.zoom, self.app.session.camera.pan_x, self.app.session.camera.pan_y,
+                self.app.sim.world_size, self.app.layout, None, self.target_idx,
+                snap_to_points=snap_to_points, constrain_to_axis=constrain_to_axis
             )
             self.app.session.constraint_builder.snap_target = snap
             
