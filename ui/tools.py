@@ -362,7 +362,9 @@ class LineTool(GeometryTool):
             mx, my = event.pos
             if self.dragging:
                 anchor = self.start_pos
-                sx, sy, snap = self.get_snapped(mx, my, layout, anchor)
+                # Exclude the line being created from snapping (it's the last entity)
+                current_line_idx = len(self.sketch.entities) - 1
+                sx, sy, snap = self.get_snapped(mx, my, layout, anchor, exclude_idx=current_line_idx)
                 self.app.session.constraint_builder.snap_target = snap
 
                 # Supersede with updated line
@@ -400,7 +402,10 @@ class LineTool(GeometryTool):
     def _finalize_line(self, mx, my, layout):
         """Finalize line creation with snap constraints."""
         anchor = self.start_pos
-        sx, sy, snap = self.get_snapped(mx, my, layout, anchor)
+
+        # Exclude the line being created from snapping (it's the last entity)
+        current_line_idx = len(self.sketch.entities) - 1
+        sx, sy, snap = self.get_snapped(mx, my, layout, anchor, exclude_idx=current_line_idx)
 
         # Final supersede - this one stays in the undo stack
         is_ref = (self.name == "Ref Line")
