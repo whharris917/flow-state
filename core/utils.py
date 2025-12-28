@@ -69,18 +69,22 @@ def is_group_anchored(walls, group_indices):
 
 def get_grouped_points(walls, zoom, pan_x, pan_y, world_size, layout):
     point_map = {}
-    
+
     for i, w in enumerate(walls):
         points_to_process = []
         if isinstance(w, Line):
-            if np.array_equal(w.start, w.end): points_to_process.append((w.start, 0))
-            else: 
+            # Skip endpoint rendering for infinite ref lines
+            if w.ref and w.infinite:
+                continue
+            if np.array_equal(w.start, w.end):
+                points_to_process.append((w.start, 0))
+            else:
                 points_to_process.append((w.start, 0))
                 points_to_process.append((w.end, 1))
         elif isinstance(w, Circle):
             points_to_process.append((w.center, 0))
         elif isinstance(w, Point):
-             points_to_process.append((w.pos, 0))
+            points_to_process.append((w.pos, 0))
         
         for pt, end_idx in points_to_process:
             sx, sy = sim_to_screen(pt[0], pt[1], zoom, pan_x, pan_y, world_size, layout)

@@ -47,6 +47,7 @@ Tool Contract - Allowed Access via self.app:
 import pygame
 import numpy as np
 import math
+import time
 
 import core.config as config
 import core.utils as utils
@@ -316,32 +317,46 @@ class GeometryTool(Tool):
 class LineTool(GeometryTool):
     """
     Line drawing tool using supersede pattern.
-    
-    - Click: Create degenerate line (start == end)
-    - Drag: Supersede with updated endpoint
-    - Release: Final supersede stays in undo stack
-    - Cancel: Undo removes preview
+
+    Supports two interaction modes:
+    - Drag mode: Click, hold, drag to endpoint, release
+    - Click-click mode: Quick click sets start, move mouse, click again for end
+
+    If user releases within 0.1s of clicking, enters click-click mode.
     """
+    QUICK_CLICK_THRESHOLD = 0.1  # seconds
+
     def __init__(self, app):
         super().__init__(app, "Line")
         self.start_snap = None
+        self.click_time = 0
+        self.click_click_mode = False
 
     def handle_event(self, event, layout):
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             mx, my = event.pos
-            if layout['LEFT_X'] < mx < layout['RIGHT_X']:
-                sx, sy, snap = self.get_snapped(mx, my, layout)
-                self.start_pos = (sx, sy)
-                self.start_snap = snap
-                
-                # Create initial degenerate line (zero length)
-                is_ref = (self.name == "Ref Line")
-                cmd = AddLineCommand(self.sketch, (sx, sy), (sx, sy), is_ref=is_ref)
-                self.scene.execute(cmd)
-                
-                self.dragging = True
-                self.app.session.state = InteractionState.DRAGGING_GEOMETRY
-                return True
+            if not (layout['LEFT_X'] < mx < layout['RIGHT_X']):
+                return False
+
+            # If in click-click mode, this click finalizes the line
+            if self.click_click_mode and self.dragging:
+                return self._finalize_line(mx, my, layout)
+
+            # Start a new line
+            sx, sy, snap = self.get_snapped(mx, my, layout)
+            self.start_pos = (sx, sy)
+            self.start_snap = snap
+            self.click_time = time.time()
+            self.click_click_mode = False
+
+            # Create initial degenerate line (zero length)
+            is_ref = (self.name == "Ref Line")
+            cmd = AddLineCommand(self.sketch, (sx, sy), (sx, sy), is_ref=is_ref)
+            self.scene.execute(cmd)
+
+            self.dragging = True
+            self.app.session.state = InteractionState.DRAGGING_GEOMETRY
+            return True
 
         elif event.type == pygame.MOUSEMOTION:
             mx, my = event.pos
@@ -349,7 +364,7 @@ class LineTool(GeometryTool):
                 anchor = self.start_pos
                 sx, sy, snap = self.get_snapped(mx, my, layout, anchor)
                 self.app.session.constraint_builder.snap_target = snap
-                
+
                 # Supersede with updated line
                 is_ref = (self.name == "Ref Line")
                 cmd = AddLineCommand(
@@ -357,7 +372,7 @@ class LineTool(GeometryTool):
                     is_ref=is_ref, supersede=True
                 )
                 self.scene.execute(cmd)
-                
+
                 # Show length in status bar
                 if self.app.session.mode == config.MODE_EDITOR:
                     length = math.hypot(sx - self.start_pos[0], sy - self.start_pos[1])
@@ -368,40 +383,59 @@ class LineTool(GeometryTool):
                 return False
 
         elif event.type == pygame.MOUSEBUTTONUP and event.button == 1 and self.dragging:
+            # Check if this was a quick click (< threshold)
+            elapsed = time.time() - self.click_time
+            if elapsed < self.QUICK_CLICK_THRESHOLD and not self.click_click_mode:
+                # Enter click-click mode - don't finalize yet
+                self.click_click_mode = True
+                self.app.session.status.set("Click to set endpoint")
+                return True
+
+            # Normal drag release - finalize the line
             mx, my = event.pos
-            anchor = self.start_pos
-            sx, sy, snap = self.get_snapped(mx, my, layout, anchor)
-            
-            # Final supersede - this one stays in the undo stack
-            is_ref = (self.name == "Ref Line")
-            cmd = AddLineCommand(
-                self.sketch, self.start_pos, (sx, sy),
-                is_ref=is_ref, supersede=True
-            )
-            self.scene.execute(cmd)
-            wall_idx = cmd.created_index
-            
-            # Add snap constraints if Ctrl held
-            if pygame.key.get_mods() & pygame.KMOD_CTRL:
-                if self.start_snap:
-                    c = Coincident(wall_idx, 0, self.start_snap[0], self.start_snap[1])
-                    self.scene.execute(AddConstraintCommand(self.sketch, c))
-                if snap:
-                    c = Coincident(wall_idx, 1, snap[0], snap[1])
-                    self.scene.execute(AddConstraintCommand(self.sketch, c))
-            
-            self._finish_drag()
-            return True
-            
+            return self._finalize_line(mx, my, layout)
+
         return False
+
+    def _finalize_line(self, mx, my, layout):
+        """Finalize line creation with snap constraints."""
+        anchor = self.start_pos
+        sx, sy, snap = self.get_snapped(mx, my, layout, anchor)
+
+        # Final supersede - this one stays in the undo stack
+        is_ref = (self.name == "Ref Line")
+        cmd = AddLineCommand(
+            self.sketch, self.start_pos, (sx, sy),
+            is_ref=is_ref, supersede=True
+        )
+        self.scene.execute(cmd)
+        wall_idx = cmd.created_index
+
+        # Add snap constraints if Ctrl held
+        if pygame.key.get_mods() & pygame.KMOD_CTRL:
+            if self.start_snap:
+                c = Coincident(wall_idx, 0, self.start_snap[0], self.start_snap[1])
+                self.scene.execute(AddConstraintCommand(self.sketch, c))
+            if snap:
+                c = Coincident(wall_idx, 1, snap[0], snap[1])
+                self.scene.execute(AddConstraintCommand(self.sketch, c))
+
+        self._finish_drag()
+        return True
 
     def _finish_drag(self):
         """Clean up drag state."""
         self.dragging = False
         self.start_pos = None
         self.start_snap = None
+        self.click_click_mode = False
         self.app.session.state = InteractionState.IDLE
         self.app.session.constraint_builder.snap_target = None
+
+    def cancel(self):
+        """Cancel current operation - also resets click-click mode."""
+        self.click_click_mode = False
+        super().cancel()
 
     def draw_overlay(self, screen, renderer, layout):
         # Show snap point when hovering (not dragging)

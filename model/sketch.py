@@ -32,23 +32,27 @@ class Sketch:
         """
         best_dist = float('inf')
         best_idx = -1
-        
+
         for i, w in enumerate(self.entities):
             dist = float('inf')
-            
+
             if isinstance(w, Line):
-                if np.array_equal(w.start, w.end): continue
+                if np.array_equal(w.start, w.end):
+                    continue
                 p1 = w.start
                 p2 = w.end
                 p3 = np.array([x, y])
-                
-                # Point-Line Segment Distance
+
+                # Point-Line Distance
                 d_vec = p2 - p1
                 len_sq = np.dot(d_vec, d_vec)
                 if len_sq == 0:
                     dist = np.linalg.norm(p3 - p1)
                 else:
-                    t = max(0, min(1, np.dot(p3 - p1, d_vec) / len_sq))
+                    t = np.dot(p3 - p1, d_vec) / len_sq
+                    # For infinite ref lines, don't clamp t to segment bounds
+                    if not (w.ref and w.infinite):
+                        t = max(0, min(1, t))
                     proj = p1 + t * d_vec
                     dist = np.linalg.norm(p3 - proj)
                     

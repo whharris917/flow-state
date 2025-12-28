@@ -130,16 +130,19 @@ class AppController:
         
     def toggle_extend(self):
         if self.session.selection.walls:
+            toggled = 0
             for idx in self.session.selection.walls:
                 if idx < len(self.sketch.entities):
                     entity = self.sketch.entities[idx]
-                    if isinstance(entity, Line):
-                        if not hasattr(entity, 'infinite'):
-                            entity.infinite = False
+                    if isinstance(entity, Line) and entity.ref:
                         entity.infinite = not entity.infinite
-            self.scene.rebuild()
-            self.session.status.set("Toggled Extend")
-            self.sound_manager.play_sound('click')
+                        toggled += 1
+            if toggled > 0:
+                self.session.status.set(f"Toggled Infinite on {toggled} ref line(s)")
+                self.sound_manager.play_sound('click')
+            else:
+                self.session.status.set("Select ref lines to toggle infinite")
+                self.sound_manager.play_sound('error')
             
     def toggle_editor_play(self):
         self.session.editor_paused = not self.session.editor_paused

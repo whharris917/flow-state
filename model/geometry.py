@@ -105,20 +105,22 @@ class Point(Entity):
 class Line(Entity):
     """
     A line segment defined by start and end points.
-    
+
     Attributes:
         start: numpy array [x, y] for start point
         end: numpy array [x, y] for end point
         ref: If True, this is a reference/construction line (not atomized)
         anchored: List [start_anchored, end_anchored]
+        infinite: If True (and ref=True), line extends to world boundaries when rendered
     """
-    
+
     def __init__(self, start, end, is_ref=False, material_id="Default"):
         super().__init__(material_id)
         self.start = np.array(start, dtype=np.float64)
         self.end = np.array(end, dtype=np.float64)
         self.ref = is_ref
         self.anchored = [False, False]
+        self.infinite = False
 
     def length(self):
         """Calculate the length of the line segment."""
@@ -148,13 +150,15 @@ class Line(Entity):
 
     def to_dict(self):
         d = {
-            'type': 'line', 
-            'start': self.start.tolist(), 
+            'type': 'line',
+            'start': self.start.tolist(),
             'end': self.end.tolist(),
-            'ref': self.ref, 
+            'ref': self.ref,
             'anchored': self.anchored,
             'material_id': self.material_id
         }
+        if self.infinite:
+            d['infinite'] = self.infinite
         if self.anim:
             d['anim'] = self.anim
         return d
@@ -164,6 +168,7 @@ class Line(Entity):
         mat_id = data.get('material_id', "Default")
         l = Line(data['start'], data['end'], data.get('ref', False), mat_id)
         l.anchored = data.get('anchored', [False, False])
+        l.infinite = data.get('infinite', False)
         l.anim = data.get('anim', None)
         return l
 

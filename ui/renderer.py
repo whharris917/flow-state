@@ -12,6 +12,7 @@ Handles all rendering for the application including:
 
 import pygame
 import math
+import numpy as np
 import core.config as config
 
 from core.utils import sim_to_screen, screen_to_sim, get_grouped_points, calculate_current_temp
@@ -236,40 +237,52 @@ class Renderer:
         for i, w in enumerate(walls):
             mat = sketch.materials.get(w.material_id)
             base_color = mat.color if mat else (200, 200, 200)
-            
+
             is_sel = (i in session.selection.walls)
             is_pend = (session.constraint_builder.pending_type and i in session.constraint_builder.target_walls)
-            
+
             if isinstance(w, Line):
-                self._draw_line_entity(w, transform, is_sel, is_pend, base_color)
+                self._draw_line_entity(w, transform, is_sel, is_pend, base_color, world_size)
             elif isinstance(w, Circle):
                 self._draw_circle_entity(w, transform, is_sel, is_pend, base_color)
             elif isinstance(w, Point):
                 self._draw_point_entity(w, transform, is_sel, is_pend, base_color)
 
-    def _draw_line_entity(self, line, transform, is_selected, is_pending, color):
-        s1 = transform(line.start[0], line.start[1])
-        s2 = transform(line.end[0], line.end[1])
-        
+    def _draw_line_entity(self, line, transform, is_selected, is_pending, color, world_size=50.0):
         draw_col = color if color else (255, 255, 255)
         width = 1
-        
-        if is_selected: 
+
+        if is_selected:
             draw_col = (255, 200, 50)
             width = 3
         elif is_pending:
             draw_col = (100, 255, 100)
             width = 3
-        
-        if line.ref: 
+
+        # Calculate screen positions
+        if line.ref and line.infinite:
+            # Extend line to world boundaries
+            ext_start, ext_end = self._extend_line_to_bounds(
+                line.start, line.end, world_size
+            )
+            s1 = transform(ext_start[0], ext_start[1])
+            s2 = transform(ext_end[0], ext_end[1])
+        else:
+            s1 = transform(line.start[0], line.start[1])
+            s2 = transform(line.end[0], line.end[1])
+
+        # Draw the line (dashed for ref lines, solid otherwise)
+        if line.ref:
             self._draw_dashed_line(draw_col, s1, s2, width)
-        else: 
+        else:
             pygame.draw.line(self.screen, draw_col, s1, s2, width)
 
-        if line.anchored[0]:
-            pygame.draw.circle(self.screen, (255, 50, 50), s1, 3)
-        if line.anchored[1]:
-            pygame.draw.circle(self.screen, (255, 50, 50), s2, 3)
+        # Draw anchor indicators at original positions (not for infinite lines)
+        if not (line.ref and line.infinite):
+            if line.anchored[0]:
+                pygame.draw.circle(self.screen, (255, 50, 50), s1, 3)
+            if line.anchored[1]:
+                pygame.draw.circle(self.screen, (255, 50, 50), s2, 3)
 
     def _draw_circle_entity(self, circle, transform, is_selected, is_pending, color):
         sx, sy = transform(circle.center[0], circle.center[1])
@@ -306,6 +319,68 @@ class Renderer:
             if pt.anchored:
                 pygame.draw.circle(self.screen, (255, 50, 50), (int(sx), int(sy)), 6)
             pygame.draw.circle(self.screen, draw_col, (int(sx), int(sy)), 4)
+
+    def _extend_line_to_bounds(self, p1, p2, world_size):
+        """
+        Extend a line segment to the world boundaries.
+
+        Args:
+            p1: Start point as numpy array [x, y]
+            p2: End point as numpy array [x, y]
+            world_size: Size of the world (0 to world_size box)
+
+        Returns:
+            Tuple of (extended_start, extended_end) as numpy arrays
+        """
+        dx = p2[0] - p1[0]
+        dy = p2[1] - p1[1]
+
+        # Handle degenerate case (point)
+        if abs(dx) < 1e-9 and abs(dy) < 1e-9:
+            return p1, p2
+
+        # Find t values for intersections with world boundaries
+        t_values = []
+
+        # Left boundary (x = 0)
+        if abs(dx) > 1e-9:
+            t = -p1[0] / dx
+            y = p1[1] + t * dy
+            if 0 <= y <= world_size:
+                t_values.append(t)
+
+        # Right boundary (x = world_size)
+        if abs(dx) > 1e-9:
+            t = (world_size - p1[0]) / dx
+            y = p1[1] + t * dy
+            if 0 <= y <= world_size:
+                t_values.append(t)
+
+        # Bottom boundary (y = 0)
+        if abs(dy) > 1e-9:
+            t = -p1[1] / dy
+            x = p1[0] + t * dx
+            if 0 <= x <= world_size:
+                t_values.append(t)
+
+        # Top boundary (y = world_size)
+        if abs(dy) > 1e-9:
+            t = (world_size - p1[1]) / dy
+            x = p1[0] + t * dx
+            if 0 <= x <= world_size:
+                t_values.append(t)
+
+        if len(t_values) < 2:
+            return p1, p2
+
+        # Get the min and max t values for the extended line
+        t_min = min(t_values)
+        t_max = max(t_values)
+
+        ext_start = np.array([p1[0] + t_min * dx, p1[1] + t_min * dy])
+        ext_end = np.array([p1[0] + t_max * dx, p1[1] + t_max * dy])
+
+        return ext_start, ext_end
 
     def _draw_dashed_line(self, color, start_pos, end_pos, width=1, dash_length=10):
         x1, y1 = start_pos
