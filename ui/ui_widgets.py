@@ -807,26 +807,29 @@ class ContextMenu(UIElement):
 
     def handle_event(self, event):
         if not self.visible: return False
-        
+
         if event.type == pygame.MOUSEMOTION:
             if self.rect.collidepoint(event.pos):
                 rel_y = event.pos[1] - (self.rect.y + 5)
                 if rel_y >= 0: self.selected_idx = rel_y // 30
                 else: self.selected_idx = -1
-                return False 
             else: self.selected_idx = -1
-            
+            return False
+
         elif event.type == pygame.MOUSEBUTTONDOWN:
             if self.rect.collidepoint(event.pos):
+                # Click inside menu - try to select an option
                 rel_y = event.pos[1] - (self.rect.y + 5)
                 idx = rel_y // 30
                 if 0 <= idx < len(self.options):
                     self.action = self.options[idx]
                     SoundManager.get().play_sound('snap')
-                    return True
+                # If click is inside but not on valid option, just consume it
             else:
+                # Click outside menu - dismiss it
                 self.action = "CLOSE"
-                return True
+            # CRITICAL: Always consume MOUSEBUTTONDOWN to prevent click-through
+            return True
         return False
 
     def draw(self, screen, font):

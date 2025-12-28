@@ -190,35 +190,69 @@ class InputHandler:
         """Layer 3: Modals (Context Menu, Dialogs)."""
         # Context Menu
         if self.controller.actions.context_menu:
-            if self.controller.actions.context_menu.handle_event(event):
-                action = self.controller.actions.context_menu.action
+            menu = self.controller.actions.context_menu
+
+            # Click-outside-to-dismiss: Check BEFORE delegating to menu
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                if not menu.rect.collidepoint(event.pos):
+                    # Click outside menu - dismiss and consume event
+                    self.controller.actions.context_menu = None
+                    return True
+
+            # Let menu handle the event (clicks inside, motion, etc.)
+            if menu.handle_event(event):
+                action = menu.action
                 self.controller.actions.context_menu = None
                 if action and action != "CLOSE":
                     self.controller.actions.handle_context_menu_action(action)
                 return True
         
-        # Property Dialog
+        # Property Dialog (MaterialDialog)
         if self.controller.actions.prop_dialog:
-            if self.controller.actions.prop_dialog.handle_event(event):
-                if self.controller.actions.prop_dialog.done:
-                    if self.controller.actions.prop_dialog.apply:
-                         self.controller.actions.apply_material_from_dialog(self.controller.actions.prop_dialog)
+            dialog = self.controller.actions.prop_dialog
+
+            # Click-outside-to-dismiss
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                if not dialog.rect.collidepoint(event.pos):
+                    self.controller.actions.prop_dialog = None
+                    return True
+
+            if dialog.handle_event(event):
+                if dialog.done:
+                    if dialog.apply:
+                        self.controller.actions.apply_material_from_dialog(dialog)
                     self.controller.actions.prop_dialog = None
                 return True
-        
+
         # Rotation Dialog
         if self.controller.actions.rot_dialog:
-            if self.controller.actions.rot_dialog.handle_event(event):
-                if self.controller.actions.rot_dialog.done:
-                     self.controller.actions.rot_dialog = None
+            dialog = self.controller.actions.rot_dialog
+
+            # Click-outside-to-dismiss
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                if not dialog.rect.collidepoint(event.pos):
+                    self.controller.actions.rot_dialog = None
+                    return True
+
+            if dialog.handle_event(event):
+                if dialog.done:
+                    self.controller.actions.rot_dialog = None
                 return True
-        
+
         # Animation Dialog
         if self.controller.actions.anim_dialog:
-            if self.controller.actions.anim_dialog.handle_event(event):
-                if self.controller.actions.anim_dialog.done:
-                    if self.controller.actions.anim_dialog.apply:
-                        self.controller.actions.apply_animation_from_dialog(self.controller.actions.anim_dialog)
+            dialog = self.controller.actions.anim_dialog
+
+            # Click-outside-to-dismiss
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                if not dialog.rect.collidepoint(event.pos):
+                    self.controller.actions.anim_dialog = None
+                    return True
+
+            if dialog.handle_event(event):
+                if dialog.done:
+                    if dialog.apply:
+                        self.controller.actions.apply_animation_from_dialog(dialog)
                     self.controller.actions.anim_dialog = None
                 return True
                 
