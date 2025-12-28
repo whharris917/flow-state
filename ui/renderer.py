@@ -40,7 +40,8 @@ class Renderer:
         
         # 2. Draw Scene Content
         self._draw_viewport(session, sim, layout, viewport_rect)
-        
+        self._draw_world_boundary(session, sim, layout)
+
         if session.mode == config.MODE_SIM:
             self._draw_particles(session, sim, layout)
         else:
@@ -211,13 +212,35 @@ class Renderer:
                 pygame.draw.circle(self.screen, col, (sx, sy), rad)
 
     # =========================================================================
+    # World Boundary
+    # =========================================================================
+
+    def _draw_world_boundary(self, session, sim, layout):
+        """Draw a border around the world bounds (0,0 to world_size,world_size)."""
+        zoom = session.camera.zoom
+        pan_x, pan_y = session.camera.pan_x, session.camera.pan_y
+        world_size = sim.world_size
+
+        # Get the four corners of the world in screen coordinates
+        top_left = sim_to_screen(0, 0, zoom, pan_x, pan_y, world_size, layout)
+        top_right = sim_to_screen(world_size, 0, zoom, pan_x, pan_y, world_size, layout)
+        bottom_left = sim_to_screen(0, world_size, zoom, pan_x, pan_y, world_size, layout)
+        bottom_right = sim_to_screen(world_size, world_size, zoom, pan_x, pan_y, world_size, layout)
+
+        border_color = (80, 80, 90)
+        pygame.draw.line(self.screen, border_color, top_left, top_right, 1)
+        pygame.draw.line(self.screen, border_color, top_right, bottom_right, 1)
+        pygame.draw.line(self.screen, border_color, bottom_right, bottom_left, 1)
+        pygame.draw.line(self.screen, border_color, bottom_left, top_left, 1)
+
+    # =========================================================================
     # Editor Guides
     # =========================================================================
 
     def _draw_editor_guides(self, session, sim, layout):
         cx, cy = sim_to_screen(
-            sim.world_size/2, sim.world_size/2, 
-            session.camera.zoom, session.camera.pan_x, session.camera.pan_y, 
+            sim.world_size/2, sim.world_size/2,
+            session.camera.zoom, session.camera.pan_x, session.camera.pan_y,
             sim.world_size, layout
         )
         pygame.draw.line(self.screen, (50, 50, 50), (cx-10, cy), (cx+10, cy))
