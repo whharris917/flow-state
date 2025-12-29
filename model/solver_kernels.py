@@ -271,6 +271,242 @@ def solve_vertical_pbd(pos, pairs, inv_masses):
 
 
 @njit(cache=True)
+def solve_parallel_pbd(pos, line1_pairs, line2_pairs, inv_masses):
+    """
+    Solve parallel constraints using cross-product minimization.
+
+    Two lines are parallel when their direction vectors have zero cross-product.
+    This kernel rotates both lines toward the average angle.
+
+    Parameters:
+        pos: ndarray (N, 2) - Flattened positions of all points
+        line1_pairs: ndarray (M, 2) - Index pairs (start_idx, end_idx) for first lines
+        line2_pairs: ndarray (M, 2) - Index pairs (start_idx, end_idx) for second lines
+        inv_masses: ndarray (N,) - Inverse masses for all points
+
+    Modifies pos in-place.
+    """
+    num_constraints = line1_pairs.shape[0]
+    stiffness = 0.5
+
+    for i in range(num_constraints):
+        # Line 1 indices
+        a1_idx = line1_pairs[i, 0]
+        b1_idx = line1_pairs[i, 1]
+        # Line 2 indices
+        a2_idx = line2_pairs[i, 0]
+        b2_idx = line2_pairs[i, 1]
+
+        # Get positions
+        a1x, a1y = pos[a1_idx, 0], pos[a1_idx, 1]
+        b1x, b1y = pos[b1_idx, 0], pos[b1_idx, 1]
+        a2x, a2y = pos[a2_idx, 0], pos[a2_idx, 1]
+        b2x, b2y = pos[b2_idx, 0], pos[b2_idx, 1]
+
+        # Direction vectors
+        v1x = b1x - a1x
+        v1y = b1y - a1y
+        v2x = b2x - a2x
+        v2y = b2y - a2y
+
+        # Lengths
+        len1 = np.sqrt(v1x * v1x + v1y * v1y)
+        len2 = np.sqrt(v2x * v2x + v2y * v2y)
+
+        if len1 < 1e-10 or len2 < 1e-10:
+            continue
+
+        # Current angles
+        angle1 = np.arctan2(v1y, v1x)
+        angle2 = np.arctan2(v2y, v2x)
+
+        # Handle anti-parallel case: flip angle2 if lines point opposite
+        diff = angle1 - angle2
+        if diff > np.pi / 2:
+            angle2 += np.pi
+        elif diff < -np.pi / 2:
+            angle2 -= np.pi
+
+        # Target angle: average
+        avg_angle = (angle1 + angle2) / 2.0
+
+        # Calculate rotation deltas
+        delta1 = (avg_angle - angle1) * stiffness
+        delta2 = (avg_angle - angle2) * stiffness
+
+        # Inverse masses for weighting
+        w_a1 = inv_masses[a1_idx]
+        w_b1 = inv_masses[b1_idx]
+        w_a2 = inv_masses[a2_idx]
+        w_b2 = inv_masses[b2_idx]
+
+        # Rotate line 1 around its center (or anchored point)
+        if w_a1 + w_b1 > 0:
+            if w_a1 == 0:
+                # Pivot around a1
+                cos_d = np.cos(delta1)
+                sin_d = np.sin(delta1)
+                new_v1x = v1x * cos_d - v1y * sin_d
+                new_v1y = v1x * sin_d + v1y * cos_d
+                if w_b1 > 0:
+                    pos[b1_idx, 0] = a1x + new_v1x
+                    pos[b1_idx, 1] = a1y + new_v1y
+            elif w_b1 == 0:
+                # Pivot around b1
+                cos_d = np.cos(delta1)
+                sin_d = np.sin(delta1)
+                new_v1x = v1x * cos_d - v1y * sin_d
+                new_v1y = v1x * sin_d + v1y * cos_d
+                if w_a1 > 0:
+                    pos[a1_idx, 0] = b1x - new_v1x
+                    pos[a1_idx, 1] = b1y - new_v1y
+            else:
+                # Pivot around center
+                cx1 = (a1x + b1x) / 2.0
+                cy1 = (a1y + b1y) / 2.0
+                half_len1 = len1 / 2.0
+                new_angle1 = angle1 + delta1
+                cos_a = np.cos(new_angle1)
+                sin_a = np.sin(new_angle1)
+                pos[a1_idx, 0] = cx1 - cos_a * half_len1
+                pos[a1_idx, 1] = cy1 - sin_a * half_len1
+                pos[b1_idx, 0] = cx1 + cos_a * half_len1
+                pos[b1_idx, 1] = cy1 + sin_a * half_len1
+
+        # Rotate line 2 around its center (or anchored point)
+        if w_a2 + w_b2 > 0:
+            if w_a2 == 0:
+                # Pivot around a2
+                cos_d = np.cos(delta2)
+                sin_d = np.sin(delta2)
+                new_v2x = v2x * cos_d - v2y * sin_d
+                new_v2y = v2x * sin_d + v2y * cos_d
+                if w_b2 > 0:
+                    pos[b2_idx, 0] = a2x + new_v2x
+                    pos[b2_idx, 1] = a2y + new_v2y
+            elif w_b2 == 0:
+                # Pivot around b2
+                cos_d = np.cos(delta2)
+                sin_d = np.sin(delta2)
+                new_v2x = v2x * cos_d - v2y * sin_d
+                new_v2y = v2x * sin_d + v2y * cos_d
+                if w_a2 > 0:
+                    pos[a2_idx, 0] = b2x - new_v2x
+                    pos[a2_idx, 1] = b2y - new_v2y
+            else:
+                # Pivot around center
+                cx2 = (a2x + b2x) / 2.0
+                cy2 = (a2y + b2y) / 2.0
+                half_len2 = len2 / 2.0
+                new_angle2 = angle2 + delta2
+                cos_a = np.cos(new_angle2)
+                sin_a = np.sin(new_angle2)
+                pos[a2_idx, 0] = cx2 - cos_a * half_len2
+                pos[a2_idx, 1] = cy2 - sin_a * half_len2
+                pos[b2_idx, 0] = cx2 + cos_a * half_len2
+                pos[b2_idx, 1] = cy2 + sin_a * half_len2
+
+
+@njit(cache=True)
+def solve_equal_length_pbd(pos, line1_pairs, line2_pairs, inv_masses, stiffness=1.0):
+    """
+    Solve equal length constraints using PBD constraint projection.
+
+    Both lines are adjusted to satisfy L1 = L2 by distributing the error
+    to all 4 endpoints based on inverse masses. This prevents the "phantom
+    length" effect when one line has other constraints (like FixedLength).
+
+    Parameters:
+        pos: ndarray (N, 2) - Flattened positions of all points
+        line1_pairs: ndarray (M, 2) - Index pairs (start_idx, end_idx) for first lines
+        line2_pairs: ndarray (M, 2) - Index pairs (start_idx, end_idx) for second lines
+        inv_masses: ndarray (N,) - Inverse masses for all points
+        stiffness: float - Constraint stiffness (0.0 to 1.0)
+
+    Modifies pos in-place (both lines).
+    """
+    num_constraints = line1_pairs.shape[0]
+
+    for i in range(num_constraints):
+        # Line 1 indices
+        a1_idx = line1_pairs[i, 0]
+        b1_idx = line1_pairs[i, 1]
+        # Line 2 indices
+        a2_idx = line2_pairs[i, 0]
+        b2_idx = line2_pairs[i, 1]
+
+        # Get Line 1 positions and length
+        a1x, a1y = pos[a1_idx, 0], pos[a1_idx, 1]
+        b1x, b1y = pos[b1_idx, 0], pos[b1_idx, 1]
+        v1x = b1x - a1x
+        v1y = b1y - a1y
+        len1 = np.sqrt(v1x * v1x + v1y * v1y)
+
+        # Get Line 2 positions and length
+        a2x, a2y = pos[a2_idx, 0], pos[a2_idx, 1]
+        b2x, b2y = pos[b2_idx, 0], pos[b2_idx, 1]
+        v2x = b2x - a2x
+        v2y = b2y - a2y
+        len2 = np.sqrt(v2x * v2x + v2y * v2y)
+
+        if len1 < 1e-10 or len2 < 1e-10:
+            continue
+
+        # Constraint error: C = L1 - L2 (we want L1 = L2)
+        C = len1 - len2
+
+        if abs(C) < 1e-8:
+            continue  # Already equal
+
+        # Inverse masses for all 4 endpoints
+        w_a1 = inv_masses[a1_idx]
+        w_b1 = inv_masses[b1_idx]
+        w_a2 = inv_masses[a2_idx]
+        w_b2 = inv_masses[b2_idx]
+
+        # Total inverse mass per line
+        w1_total = w_a1 + w_b1
+        w2_total = w_a2 + w_b2
+        w_sum = w1_total + w2_total
+
+        if w_sum < 1e-10:
+            continue
+
+        # PBD correction factor
+        lambda_val = (C / w_sum) * stiffness
+
+        # Normalized direction vectors
+        n1x = v1x / len1
+        n1y = v1y / len1
+        n2x = v2x / len2
+        n2y = v2y / len2
+
+        # Apply corrections to Line 1 (shrink if C > 0)
+        if w1_total > 0:
+            corr1 = lambda_val * w1_total
+            if w_a1 > 0:
+                ratio = w_a1 / w1_total
+                pos[a1_idx, 0] += n1x * corr1 * ratio
+                pos[a1_idx, 1] += n1y * corr1 * ratio
+            if w_b1 > 0:
+                ratio = w_b1 / w1_total
+                pos[b1_idx, 0] -= n1x * corr1 * ratio
+                pos[b1_idx, 1] -= n1y * corr1 * ratio
+
+        # Apply corrections to Line 2 (grow if C > 0)
+        if w2_total > 0:
+            corr2 = lambda_val * w2_total
+            if w_a2 > 0:
+                ratio = w_a2 / w2_total
+                pos[a2_idx, 0] -= n2x * corr2 * ratio
+                pos[a2_idx, 1] -= n2y * corr2 * ratio
+            if w_b2 > 0:
+                ratio = w_b2 / w2_total
+                pos[b2_idx, 0] += n2x * corr2 * ratio
+                pos[b2_idx, 1] += n2y * corr2 * ratio
+
+
+@njit(cache=True)
 def solve_interaction_pbd(pos, target, indices, handle_t, inv_masses):
     """
     Solve the mouse interaction constraint (User Servo).

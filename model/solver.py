@@ -30,13 +30,25 @@ class Solver:
         if use_numba:
             Solver.solve_numba(constraints, entities, iterations, interaction_data)
         else:
-            # Legacy OOP path
+            # Legacy OOP path with phased constraint execution
+            # Separate constraints into unary (establish truth) and binary (propagate)
+            unary_types = {'LENGTH', 'RADIUS', 'HORIZONTAL', 'VERTICAL'}
+            unary_constraints = [c for c in constraints if c.type in unary_types]
+            binary_constraints = [c for c in constraints if c.type not in unary_types]
+
             for _ in range(iterations):
-                # Solve interaction constraint first (high priority)
+                # Phase 1: Interaction (Mouse Input) - highest priority
                 if interaction_data:
                     Solver._solve_interaction(entities, interaction_data)
-                # Then solve geometric constraints
-                for c in constraints:
+
+                # Phase 2: Unary Constraints (establish individual entity truth)
+                # These run first so FixedLength/Radius set the correct values
+                for c in unary_constraints:
+                    Solver.solve_single(c, entities)
+
+                # Phase 3: Binary Constraints (propagate between entities)
+                # These run after unary so they read the corrected values
+                for c in binary_constraints:
                     Solver.solve_single(c, entities)
 
     @staticmethod
@@ -103,6 +115,10 @@ class Solver:
 
         horizontal_pairs = []
         vertical_pairs = []
+        parallel_line1_pairs = []
+        parallel_line2_pairs = []
+        equal_line1_pairs = []
+        equal_line2_pairs = []
 
         for c in constraints:
             ctype = c.type
@@ -161,6 +177,30 @@ class Solver:
                         vertical_pairs.append([point_map[(ent_idx, 0)],
                                                point_map[(ent_idx, 1)]])
 
+            elif ctype == 'PARALLEL':
+                # Two-line constraint: indices = [entity_idx1, entity_idx2]
+                if len(c.indices) >= 2:
+                    ent1_idx = c.indices[0]
+                    ent2_idx = c.indices[1]
+                    if ((ent1_idx, 0) in point_map and (ent1_idx, 1) in point_map and
+                        (ent2_idx, 0) in point_map and (ent2_idx, 1) in point_map):
+                        parallel_line1_pairs.append([point_map[(ent1_idx, 0)],
+                                                     point_map[(ent1_idx, 1)]])
+                        parallel_line2_pairs.append([point_map[(ent2_idx, 0)],
+                                                     point_map[(ent2_idx, 1)]])
+
+            elif ctype == 'EQUAL':
+                # Two-line constraint: indices = [entity_idx1, entity_idx2]
+                if len(c.indices) >= 2:
+                    ent1_idx = c.indices[0]
+                    ent2_idx = c.indices[1]
+                    if ((ent1_idx, 0) in point_map and (ent1_idx, 1) in point_map and
+                        (ent2_idx, 0) in point_map and (ent2_idx, 1) in point_map):
+                        equal_line1_pairs.append([point_map[(ent1_idx, 0)],
+                                                  point_map[(ent1_idx, 1)]])
+                        equal_line2_pairs.append([point_map[(ent2_idx, 0)],
+                                                  point_map[(ent2_idx, 1)]])
+
         # Convert to numpy arrays
         length_pairs_arr = np.array(length_pairs, dtype=np.int64) if length_pairs else np.empty((0, 2), dtype=np.int64)
         length_values_arr = np.array(length_values, dtype=np.float64) if length_values else np.empty(0, dtype=np.float64)
@@ -170,6 +210,10 @@ class Solver:
         collinear_ends_arr = np.array(collinear_line_ends, dtype=np.int64) if collinear_line_ends else np.empty(0, dtype=np.int64)
         horizontal_pairs_arr = np.array(horizontal_pairs, dtype=np.int64) if horizontal_pairs else np.empty((0, 2), dtype=np.int64)
         vertical_pairs_arr = np.array(vertical_pairs, dtype=np.int64) if vertical_pairs else np.empty((0, 2), dtype=np.int64)
+        parallel_line1_arr = np.array(parallel_line1_pairs, dtype=np.int64) if parallel_line1_pairs else np.empty((0, 2), dtype=np.int64)
+        parallel_line2_arr = np.array(parallel_line2_pairs, dtype=np.int64) if parallel_line2_pairs else np.empty((0, 2), dtype=np.int64)
+        equal_line1_arr = np.array(equal_line1_pairs, dtype=np.int64) if equal_line1_pairs else np.empty((0, 2), dtype=np.int64)
+        equal_line2_arr = np.array(equal_line2_pairs, dtype=np.int64) if equal_line2_pairs else np.empty((0, 2), dtype=np.int64)
 
         # === Prepare Interaction Data ===
         interaction_target = None
@@ -203,31 +247,33 @@ class Solver:
                     if key in point_map:
                         interaction_indices = np.array([point_map[key], -1], dtype=np.int64)
 
-        # === Step 3: Run Numba Kernels ===
+        # === Step 3: Run Numba Kernels (Phased Execution) ===
         for _ in range(iterations):
-            # Interaction constraint first (highest priority - User Servo)
+            # Phase 1: Interaction (Mouse Input) - highest priority
             if interaction_target is not None and interaction_indices is not None:
                 kernels.solve_interaction_pbd(pos_array, interaction_target,
                                               interaction_indices, interaction_handle_t, inv_mass_array)
 
-            # Coincident (tends to be foundational)
-            if coincident_pairs_arr.shape[0] > 0:
-                kernels.solve_coincident_pbd(pos_array, coincident_pairs_arr, inv_mass_array)
-
-            # Length constraints
+            # Phase 2: Unary Constraints (establish individual entity truth)
+            # These run first so FixedLength/Radius set the correct values
             if length_pairs_arr.shape[0] > 0:
                 kernels.solve_length_pbd(pos_array, length_pairs_arr, length_values_arr, inv_mass_array)
-
-            # Collinear constraints
-            if collinear_points_arr.shape[0] > 0:
-                kernels.solve_collinear_pbd(pos_array, collinear_points_arr,
-                                            collinear_starts_arr, collinear_ends_arr, inv_mass_array)
-
-            # Horizontal/Vertical
             if horizontal_pairs_arr.shape[0] > 0:
                 kernels.solve_horizontal_pbd(pos_array, horizontal_pairs_arr, inv_mass_array)
             if vertical_pairs_arr.shape[0] > 0:
                 kernels.solve_vertical_pbd(pos_array, vertical_pairs_arr, inv_mass_array)
+
+            # Phase 3: Binary Constraints (propagate between entities)
+            # These run after unary so they read the corrected values
+            if coincident_pairs_arr.shape[0] > 0:
+                kernels.solve_coincident_pbd(pos_array, coincident_pairs_arr, inv_mass_array)
+            if collinear_points_arr.shape[0] > 0:
+                kernels.solve_collinear_pbd(pos_array, collinear_points_arr,
+                                            collinear_starts_arr, collinear_ends_arr, inv_mass_array)
+            if parallel_line1_arr.shape[0] > 0:
+                kernels.solve_parallel_pbd(pos_array, parallel_line1_arr, parallel_line2_arr, inv_mass_array)
+            if equal_line1_arr.shape[0] > 0:
+                kernels.solve_equal_length_pbd(pos_array, equal_line1_arr, equal_line2_arr, inv_mass_array)
 
         # === Step 4: Write Back to Entities ===
         for (ent_idx, pt_idx), flat_idx in point_map.items():
@@ -416,27 +462,90 @@ class Solver:
 
     @staticmethod
     def _solve_equal_length(c, entities):
-        try: 
+        """
+        Solve equal length constraint using PBD constraint projection.
+
+        This implements a proper Position-Based Dynamics approach where:
+        - Error C = L1 - L2 is distributed to ALL 4 endpoints
+        - Both lines negotiate toward equal length
+        - Works correctly with other constraints (e.g., FixedLength on one line)
+
+        The key insight is that we don't copy one length to the other.
+        Instead, we project both lines toward satisfying L1 = L2.
+        """
+        try:
             e1 = entities[c.indices[0]]
             e2 = entities[c.indices[1]]
-        except IndexError: return
-        
-        l1 = e1.length()
-        l2 = e2.length()
-        
-        # Approximate mass of the "Length" property
-        im1 = e1.get_inv_mass(0) + e1.get_inv_mass(1)
-        im2 = e2.get_inv_mass(0) + e2.get_inv_mass(1)
-        
-        if im1 + im2 == 0: return
-        
-        target = (l1 * im2 + l2 * im1) / (im1 + im2)
-        
-        # Apply target length to both
-        c_temp = type('obj', (object,), {'indices': [c.indices[0]], 'value': target})
-        Solver._solve_length(c_temp, entities)
-        c_temp.indices = [c.indices[1]]
-        Solver._solve_length(c_temp, entities)
+        except IndexError:
+            return
+
+        # Get current positions
+        p1_start = e1.get_point(0)
+        p1_end = e1.get_point(1)
+        p2_start = e2.get_point(0)
+        p2_end = e2.get_point(1)
+
+        # Calculate current lengths
+        v1 = p1_end - p1_start
+        v2 = p2_end - p2_start
+        len1 = np.linalg.norm(v1)
+        len2 = np.linalg.norm(v2)
+
+        if len1 < 1e-6 or len2 < 1e-6:
+            return
+
+        # Constraint error: we want L1 = L2, so C = L1 - L2
+        C = len1 - len2
+
+        if abs(C) < 1e-8:
+            return  # Already equal
+
+        # Get inverse masses for all 4 endpoints
+        w1_start = e1.get_inv_mass(0)
+        w1_end = e1.get_inv_mass(1)
+        w2_start = e2.get_inv_mass(0)
+        w2_end = e2.get_inv_mass(1)
+
+        # Total inverse mass (weighted by how much each point affects length)
+        # For a length constraint, each endpoint contributes equally (factor 0.5 each)
+        # But we have 2 lines, so we need the sum of their "length mobilities"
+        w1_total = w1_start + w1_end  # Line 1's ability to change length
+        w2_total = w2_start + w2_end  # Line 2's ability to change length
+
+        w_sum = w1_total + w2_total
+        if w_sum < 1e-10:
+            return  # Both lines fully anchored
+
+        # PBD correction factor: how much total length change to distribute
+        # Positive C means L1 > L2, so we need to shrink L1 and/or grow L2
+        lambda_val = C / w_sum
+
+        # Normalized direction vectors
+        n1 = v1 / len1
+        n2 = v2 / len2
+
+        # Apply corrections to Line 1 (shrink if C > 0)
+        # Line 1 correction magnitude: lambda * w1_total
+        # Distributed to endpoints based on their individual masses
+        if w1_total > 0:
+            corr1 = lambda_val * w1_total
+            if w1_start > 0:
+                # Move start toward end (shrinks line)
+                e1.set_point(0, p1_start + n1 * (corr1 * w1_start / w1_total))
+            if w1_end > 0:
+                # Move end toward start (shrinks line)
+                e1.set_point(1, p1_end - n1 * (corr1 * w1_end / w1_total))
+
+        # Apply corrections to Line 2 (grow if C > 0)
+        # Line 2 correction magnitude: lambda * w2_total (but opposite direction)
+        if w2_total > 0:
+            corr2 = lambda_val * w2_total
+            if w2_start > 0:
+                # Move start away from end (grows line)
+                e2.set_point(0, p2_start - n2 * (corr2 * w2_start / w2_total))
+            if w2_end > 0:
+                # Move end away from start (grows line)
+                e2.set_point(1, p2_end + n2 * (corr2 * w2_end / w2_total))
 
     @staticmethod
     def _solve_angle(c, entities):

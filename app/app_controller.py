@@ -428,10 +428,13 @@ class AppController:
             initial_points=list(self.session.selection.points)
         )
 
-        # Handle multi-apply constraints (H/V) - apply to each selected entity
+        # Handle multi-apply constraints - apply to selected entities
+        # This handles: H/V (unary), LENGTH (context-aware), PARALLEL/EQUAL (binary)
         if builder.is_multi_apply():
             walls = list(self.session.selection.walls)
-            if walls:
+            # Binary constraints need at least 2, unary needs at least 1
+            min_required = 2 if builder.is_binary_multi() else 1
+            if len(walls) >= min_required:
                 cmd = builder.build_multi_command(self.sketch, walls)
                 if cmd:
                     self.scene.execute(cmd)

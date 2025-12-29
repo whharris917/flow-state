@@ -54,8 +54,7 @@ class InputHandler:
             'const_parallel': 'PARALLEL', 'const_perp': 'PERPENDICULAR',
             'const_coincident': 'COINCIDENT', 'const_collinear': 'COLLINEAR',
             'const_midpoint': 'MIDPOINT', 'const_angle': 'ANGLE',
-            'const_horiz': 'HORIZONTAL', 'const_vert': 'VERTICAL',
-            'const_radius': 'RADIUS'
+            'const_horiz': 'HORIZONTAL', 'const_vert': 'VERTICAL'
         }
         for key, val in constraint_defs.items():
             if key in self.ui.buttons:

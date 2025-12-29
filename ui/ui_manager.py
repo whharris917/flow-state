@@ -253,15 +253,10 @@ class UIManager:
             self.buttons[k2] = b2
 
         add_const_row('const_coincident', 'coincident', "Coincident", 'const_collinear', 'collinear', "Collinear")
-        add_const_row('const_midpoint', 'midpoint', "Midpoint", 'const_length', 'length', "Fix Length")
+        add_const_row('const_midpoint', 'midpoint', "Midpoint", 'const_length', 'length', "Fix Dimension")
         add_const_row('const_equal', 'equal', "Equal Length", 'const_parallel', 'parallel', "Parallel")
         add_const_row('const_perp', 'perpendicular', "Perpendicular", 'const_angle', 'angle', "Angle")
         add_const_row('const_horiz', 'horizontal', "Horizontal", 'const_vert', 'vertical', "Vertical")
-
-        # Radius constraint (for circles)
-        btn_radius = Button(0, 0, btn_size, btn_size, icon=icons.get_icon('radius'), tooltip="Fix Radius", toggle=False)
-        rp.add_child(btn_radius)
-        self.buttons['const_radius'] = btn_radius
 
         row_io = UIContainer(0, 0, rp_w, btn_size, layout_type='horizontal', padding=0, spacing=spacing)
         rp.add_child(row_io)

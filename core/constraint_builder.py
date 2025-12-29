@@ -251,9 +251,13 @@ class ConstraintBuilder:
 
     def build_multi_command(self, sketch, entity_indices):
         """
-        Build a CompositeCommand for multi-apply constraints (H/V).
+        Build a CompositeCommand for multi-apply constraints.
 
-        Used for constraints that apply individually to each selected entity.
+        Handles three patterns:
+        1. Unary constraints (H/V): Apply to each entity individually
+        2. Context-aware unary (LENGTH): Apply Length to Lines, Radius to Circles
+        3. Binary master/follower (PARALLEL, EQUAL): First entity is master,
+           create constraint between master and each follower
 
         Args:
             sketch: The Sketch instance
@@ -267,11 +271,35 @@ class ConstraintBuilder:
         if not self._pending_type:
             return None
 
+        rules = CONSTRAINT_DEFS.get(self._pending_type, [])
+        if not rules:
+            return None
+
+        # Check if this is a binary constraint (master/follower pattern)
+        is_binary = rules[0].get('binary', False)
+
         commands = []
-        for idx in entity_indices:
-            constraint = sketch.try_create_constraint(self._pending_type, [idx], [])
-            if constraint:
-                commands.append(AddConstraintCommand(sketch, constraint, historize=False))
+
+        if is_binary:
+            # Binary master/follower: selection[0] is master, apply to each follower
+            if len(entity_indices) < 2:
+                return None
+
+            master_idx = entity_indices[0]
+            for follower_idx in entity_indices[1:]:
+                constraint = sketch.try_create_constraint(
+                    self._pending_type, [master_idx, follower_idx], []
+                )
+                if constraint:
+                    commands.append(AddConstraintCommand(sketch, constraint, historize=False))
+        else:
+            # Unary: apply to each entity individually
+            # For context-aware constraints (LENGTH), try_create_constraint will
+            # match the appropriate rule based on entity type
+            for idx in entity_indices:
+                constraint = sketch.try_create_constraint(self._pending_type, [idx], [])
+                if constraint:
+                    commands.append(AddConstraintCommand(sketch, constraint, historize=False))
 
         if commands:
             return CompositeCommand(
@@ -281,8 +309,15 @@ class ConstraintBuilder:
         return None
 
     def is_multi_apply(self) -> bool:
-        """Check if current pending type is a multi-apply constraint (H/V)."""
+        """Check if current pending type is a multi-apply constraint."""
         if not self._pending_type:
             return False
         rules = CONSTRAINT_DEFS.get(self._pending_type, [])
         return bool(rules and rules[0].get('multi'))
+
+    def is_binary_multi(self) -> bool:
+        """Check if current pending type uses binary master/follower pattern."""
+        if not self._pending_type:
+            return False
+        rules = CONSTRAINT_DEFS.get(self._pending_type, [])
+        return bool(rules and rules[0].get('binary'))

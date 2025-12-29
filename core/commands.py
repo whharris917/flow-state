@@ -536,23 +536,75 @@ class SetCircleRadiusCommand(Command):
 # =============================================================================
 
 class AddConstraintCommand(Command):
-    """Add a constraint to the sketch."""
-    
+    """
+    Add a constraint to the sketch.
+
+    Captures geometry state before solver runs so undo restores both the
+    constraint AND the original entity positions.
+    """
+
     def __init__(self, sketch, constraint, historize=True, supersede=False, solve=True):
         super().__init__(historize, supersede)
         self.sketch = sketch
         self.constraint = constraint
         self.solve = solve  # Whether to run solver after adding
         self.description = f"Add {constraint.type}"
-    
+        self.previous_geometry = {}  # {entity_idx: geometry_data}
+
+    def _get_entity_indices(self):
+        """Extract all unique entity indices from the constraint."""
+        indices = set()
+        for item in self.constraint.indices:
+            if isinstance(item, tuple):
+                # Point reference: (entity_idx, point_idx)
+                indices.add(item[0])
+            else:
+                # Direct entity index
+                indices.add(item)
+        return indices
+
+    def _capture_geometry(self, entity_idx):
+        """Capture the full geometry state of an entity."""
+        if entity_idx >= len(self.sketch.entities):
+            return None
+        entity = self.sketch.entities[entity_idx]
+        # Use entity's to_dict for full state capture
+        return entity.to_dict()
+
+    def _restore_geometry(self, entity_idx, geometry_data):
+        """Restore an entity's geometry from captured state."""
+        if entity_idx >= len(self.sketch.entities) or not geometry_data:
+            return
+        entity = self.sketch.entities[entity_idx]
+        e_type = geometry_data.get('type')
+
+        if e_type == 'line':
+            entity.start[:] = geometry_data['start']
+            entity.end[:] = geometry_data['end']
+        elif e_type == 'circle':
+            entity.center[:] = geometry_data['center']
+            entity.radius = geometry_data['radius']
+        elif e_type == 'point':
+            entity.pos[:] = [geometry_data['x'], geometry_data['y']]
+
     def execute(self) -> bool:
+        # Capture geometry of all involved entities BEFORE adding constraint
+        self.previous_geometry.clear()
+        for entity_idx in self._get_entity_indices():
+            self.previous_geometry[entity_idx] = self._capture_geometry(entity_idx)
+
+        # Add constraint and run solver (existing behavior)
         self.sketch.add_constraint_object(self.constraint, solve=self.solve)
         return True
-    
+
     def undo(self):
-        # Find and remove the constraint
+        # Remove the constraint
         if self.constraint in self.sketch.constraints:
             self.sketch.constraints.remove(self.constraint)
+
+        # Restore original geometry positions
+        for entity_idx, geometry_data in self.previous_geometry.items():
+            self._restore_geometry(entity_idx, geometry_data)
 
 
 class RemoveConstraintCommand(Command):
