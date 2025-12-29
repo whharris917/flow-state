@@ -39,6 +39,13 @@ class Length(Constraint):
         self.indices = [entity_idx]
         self.value = target_length
 
+
+class Radius(Constraint):
+    def __init__(self, entity_idx, target_radius):
+        super().__init__('RADIUS')
+        self.indices = [entity_idx]
+        self.value = target_radius
+
 class EqualLength(Constraint):
     def __init__(self, entity_idx1, entity_idx2):
         super().__init__('EQUAL')
@@ -65,6 +72,7 @@ def create_constraint(data):
     elif t == 'COLLINEAR': c = Collinear(idx[0][0], idx[0][1], idx[1])
     elif t == 'MIDPOINT': c = Midpoint(idx[0][0], idx[0][1], idx[1])
     elif t == 'LENGTH': c = Length(idx[0], data['value'])
+    elif t == 'RADIUS': c = Radius(idx[0], data['value'])
     elif t == 'EQUAL': c = EqualLength(idx[0], idx[1])
     elif t == 'ANGLE': c = FixedAngle(idx[0], idx[1], data['value'])
     elif t in ['HORIZONTAL', 'VERTICAL', 'PARALLEL', 'PERPENDICULAR']:

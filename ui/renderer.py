@@ -447,6 +447,15 @@ class Renderer:
                 c2 = self._get_entity_center_screen(c.indices[1], sketch.entities, transform)
                 self._draw_connector((x, y), c1)
                 self._draw_connector((x, y), c2)
+            elif c.type == 'RADIUS':
+                # Draw radius line from center to edge
+                entity_idx = c.indices[0]
+                if entity_idx < len(sketch.entities):
+                    circle = sketch.entities[entity_idx]
+                    if hasattr(circle, 'center') and hasattr(circle, 'radius'):
+                        center = transform(circle.center[0], circle.center[1])
+                        edge = transform(circle.center[0] + circle.radius, circle.center[1])
+                        self._draw_connector(center, edge)
 
         # Second pass: draw all badges (on top of connectors)
         for item in layout_data:
@@ -499,6 +508,15 @@ class Renderer:
             return (px + 15, py - 15)
         elif t == 'LENGTH':
             return self._get_entity_center_screen(idx[0], entities, transform)
+        elif t == 'RADIUS':
+            # Position at midpoint of radius line (center to edge, going right)
+            if idx[0] < len(entities):
+                circle = entities[idx[0]]
+                if hasattr(circle, 'center') and hasattr(circle, 'radius'):
+                    center = transform(circle.center[0], circle.center[1])
+                    edge = transform(circle.center[0] + circle.radius, circle.center[1])
+                    return ((center[0] + edge[0]) // 2, (center[1] + edge[1]) // 2)
+            return self._get_entity_center_screen(idx[0], entities, transform)
         elif t in ['EQUAL', 'PARALLEL', 'PERPENDICULAR', 'ANGLE']:
             c1 = self._get_entity_center_screen(idx[0], entities, transform)
             c2 = self._get_entity_center_screen(idx[1], entities, transform)
@@ -548,6 +566,9 @@ class Renderer:
         elif t == 'LENGTH':
             val = getattr(c, 'value', 0)
             return f'L:{val:.1f}'
+        elif t == 'RADIUS':
+            val = getattr(c, 'value', 0)
+            return f'R:{val:.1f}'
         elif t == 'EQUAL':
             return '='
         elif t == 'PARALLEL':

@@ -30,6 +30,10 @@ class Solver:
         elif ctype == 'LENGTH':
             Solver._solve_length(constraint, entities)
 
+        # --- RADIUS ---
+        elif ctype == 'RADIUS':
+            Solver._solve_radius(constraint, entities)
+
         # --- EQUAL LENGTH ---
         elif ctype == 'EQUAL':
             Solver._solve_equal_length(constraint, entities)
@@ -172,6 +176,20 @@ class Solver:
         
         if w1 > 0: e.set_point(0, p1 + correction * (w1 / (w1+w2)))
         if w2 > 0: e.set_point(1, p2 - correction * (w2 / (w1+w2)))
+
+    @staticmethod
+    def _solve_radius(c, entities):
+        try:
+            e = entities[c.indices[0]]
+        except IndexError:
+            return
+
+        # Only applies to circles
+        if not isinstance(e, Circle):
+            return
+
+        # Directly set the radius to the constraint value
+        e.radius = c.value
 
     @staticmethod
     def _solve_equal_length(c, entities):

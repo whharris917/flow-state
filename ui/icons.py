@@ -238,6 +238,22 @@ def draw_icon_angle(surface, rect, color):
     pygame.draw.arc(surface, color, arc_rect, 0, math.pi / 3 + 0.2, 2)
 
 
+def draw_icon_radius(surface, rect, color):
+    """Radius constraint - circle with radius line from center to edge."""
+    cx, cy = rect.center
+    size = min(rect.width, rect.height) // 2 - 3
+    radius = size - 2
+
+    # Draw circle outline
+    pygame.draw.circle(surface, color, (cx, cy), radius, 2)
+
+    # Draw radius line from center to edge (going right)
+    pygame.draw.line(surface, color, (cx, cy), (cx + radius, cy), 2)
+
+    # Small dot at center
+    pygame.draw.circle(surface, color, (cx, cy), 2)
+
+
 def draw_icon_undo(surface, rect, color):
     """Undo - curved arrow pointing left."""
     cx, cy = rect.center
@@ -412,6 +428,7 @@ PROCEDURAL_ICONS = {
     'horizontal': draw_icon_horizontal,
     'vertical': draw_icon_vertical,
     'angle': draw_icon_angle,
+    'radius': draw_icon_radius,
     'undo': draw_icon_undo,
     'redo': draw_icon_redo,
     'delete': draw_icon_delete,

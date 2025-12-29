@@ -258,6 +258,11 @@ class UIManager:
         add_const_row('const_perp', 'perpendicular', "Perpendicular", 'const_angle', 'angle', "Angle")
         add_const_row('const_horiz', 'horizontal', "Horizontal", 'const_vert', 'vertical', "Vertical")
 
+        # Radius constraint (for circles)
+        btn_radius = Button(0, 0, btn_size, btn_size, icon=icons.get_icon('radius'), tooltip="Fix Radius", toggle=False)
+        rp.add_child(btn_radius)
+        self.buttons['const_radius'] = btn_radius
+
         row_io = UIContainer(0, 0, rp_w, btn_size, layout_type='horizontal', padding=0, spacing=spacing)
         rp.add_child(row_io)
         btn_save = Button(0, 0, btn_size, btn_size, icon=icons.get_icon('save'), tooltip="Save", active=False, toggle=False, color_inactive=config.COLOR_SUCCESS)

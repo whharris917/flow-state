@@ -1,10 +1,13 @@
 import math
 import numpy as np
 from model.geometry import Line, Circle
-from model.constraints import Length, EqualLength, Angle, Midpoint, Coincident, Collinear, FixedAngle
+from model.constraints import Length, EqualLength, Angle, Midpoint, Coincident, Collinear, FixedAngle, Radius
 
-def get_l(s, w): 
+def get_l(s, w):
     return np.linalg.norm(s.walls[w].end - s.walls[w].start)
+
+def get_r(s, w):
+    return s.walls[w].radius
 
 def get_angle(s, w1, w2):
     l1 = s.walls[w1]; l2 = s.walls[w2]
@@ -14,6 +17,7 @@ def get_angle(s, w1, w2):
 
 CONSTRAINT_DEFS = {
     'LENGTH':   [{'w':1, 'p':0, 't':Line, 'msg':"Select 1 Line", 'f': lambda s,w,p: Length(w[0], get_l(s, w[0]))}],
+    'RADIUS':   [{'w':1, 'p':0, 't':Circle, 'msg':"Select 1 Circle", 'f': lambda s,w,p: Radius(w[0], get_r(s, w[0]))}],
     'EQUAL':    [{'w':2, 'p':0, 't':Line, 'msg':"Select 2 Lines", 'f': lambda s,w,p: EqualLength(w[0], w[1])}],
     'PARALLEL': [{'w':2, 'p':0, 't':Line, 'msg':"Select 2 Lines", 'f': lambda s,w,p: Angle('PARALLEL', w[0], w[1])}],
     'PERPENDICULAR': [{'w':2, 'p':0, 't':Line, 'msg':"Select 2 Lines", 'f': lambda s,w,p: Angle('PERPENDICULAR', w[0], w[1])}],

@@ -526,30 +526,45 @@ class RectTool(GeometryTool):
 class CircleTool(GeometryTool):
     """
     Circle drawing tool using supersede pattern.
-    
-    - Click: Create circle with minimal radius at center
-    - Drag: Supersede with updated radius
-    - Release: Final supersede stays in undo stack
+
+    Supports two interaction modes:
+    - Drag mode: Click, hold, drag to set radius, release
+    - Click-click mode: Quick click sets center, move mouse, click again for radius
+
+    If user releases within 0.1s of clicking, enters click-click mode.
     """
+    QUICK_CLICK_THRESHOLD = 0.1  # seconds
+
     def __init__(self, app):
         super().__init__(app, "Circle")
         self.center_snap = None
+        self.click_time = 0
+        self.click_click_mode = False
 
     def handle_event(self, event, layout):
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             mx, my = event.pos
-            if layout['LEFT_X'] < mx < layout['RIGHT_X']:
-                sx, sy, snap = self.get_snapped(mx, my, layout)
-                self.start_pos = (sx, sy)
-                self.center_snap = snap
-                
-                # Create initial circle with minimal radius
-                cmd = AddCircleCommand(self.sketch, (sx, sy), 0.1)
-                self.scene.execute(cmd)
-                
-                self.dragging = True
-                self.app.session.state = InteractionState.DRAGGING_GEOMETRY
-                return True
+            if not (layout['LEFT_X'] < mx < layout['RIGHT_X']):
+                return False
+
+            # If in click-click mode, this click finalizes the circle
+            if self.click_click_mode and self.dragging:
+                return self._finalize_circle(mx, my, layout)
+
+            # Start a new circle
+            sx, sy, snap = self.get_snapped(mx, my, layout)
+            self.start_pos = (sx, sy)
+            self.center_snap = snap
+            self.click_time = time.time()
+            self.click_click_mode = False
+
+            # Create initial circle with minimal radius
+            cmd = AddCircleCommand(self.sketch, (sx, sy), 0.1)
+            self.scene.execute(cmd)
+
+            self.dragging = True
+            self.app.session.state = InteractionState.DRAGGING_GEOMETRY
+            return True
 
         elif event.type == pygame.MOUSEMOTION:
             mx, my = event.pos
@@ -557,49 +572,72 @@ class CircleTool(GeometryTool):
                 cx, cy = self.get_world_pos(mx, my, layout)
                 center = self.start_pos
                 radius = max(0.1, math.hypot(cx - center[0], cy - center[1]))
-                
+
                 # Supersede with updated circle
                 cmd = AddCircleCommand(
                     self.sketch, center, radius,
                     supersede=True
                 )
                 self.scene.execute(cmd)
+
+                # Show radius in status bar
+                if self.app.session.mode == config.MODE_EDITOR:
+                    self.app.session.status.set(f"Radius: {radius:.2f}")
                 return True
             else:
                 self._update_hover_snap(mx, my, layout)
                 return False
 
         elif event.type == pygame.MOUSEBUTTONUP and event.button == 1 and self.dragging:
+            # Check if this was a quick click (< threshold)
+            elapsed = time.time() - self.click_time
+            if elapsed < self.QUICK_CLICK_THRESHOLD and not self.click_click_mode:
+                # Enter click-click mode - don't finalize yet
+                self.click_click_mode = True
+                self.app.session.status.set("Click to set radius")
+                return True
+
+            # Normal drag release - finalize the circle
             mx, my = event.pos
-            cx, cy = self.get_world_pos(mx, my, layout)
-            center = self.start_pos
-            radius = max(0.1, math.hypot(cx - center[0], cy - center[1]))
-            
-            # Final supersede - stays in undo stack
-            cmd = AddCircleCommand(
-                self.sketch, center, radius,
-                supersede=True
-            )
-            self.scene.execute(cmd)
-            circle_idx = cmd.created_index
-            
-            # Add snap constraint if Ctrl held
-            if pygame.key.get_mods() & pygame.KMOD_CTRL and self.center_snap:
-                c = Coincident(circle_idx, 0, self.center_snap[0], self.center_snap[1])
-                self.scene.execute(AddConstraintCommand(self.sketch, c))
-            
-            self._finish_drag()
-            return True
-        
+            return self._finalize_circle(mx, my, layout)
+
         return False
+
+    def _finalize_circle(self, mx, my, layout):
+        """Finalize circle creation with snap constraints."""
+        cx, cy = self.get_world_pos(mx, my, layout)
+        center = self.start_pos
+        radius = max(0.1, math.hypot(cx - center[0], cy - center[1]))
+
+        # Final supersede - stays in undo stack
+        cmd = AddCircleCommand(
+            self.sketch, center, radius,
+            supersede=True
+        )
+        self.scene.execute(cmd)
+        circle_idx = cmd.created_index
+
+        # Add snap constraint if Ctrl held
+        if pygame.key.get_mods() & pygame.KMOD_CTRL and self.center_snap:
+            c = Coincident(circle_idx, 0, self.center_snap[0], self.center_snap[1])
+            self.scene.execute(AddConstraintCommand(self.sketch, c))
+
+        self._finish_drag()
+        return True
 
     def _finish_drag(self):
         """Clean up drag state."""
         self.dragging = False
         self.start_pos = None
         self.center_snap = None
+        self.click_click_mode = False
         self.app.session.state = InteractionState.IDLE
         self.app.session.constraint_builder.snap_target = None
+
+    def cancel(self):
+        """Cancel current operation - also resets click-click mode."""
+        self.click_click_mode = False
+        super().cancel()
 
     def draw_overlay(self, screen, renderer, layout):
         if not self.dragging:
@@ -919,11 +957,16 @@ class SelectTool(Tool):
         self.mode = 'RESIZE_CIRCLE'
         self.target_idx = circle_idx
         self.drag_start_mouse = mouse_pos
-        
+
+        # Select the circle being resized so it highlights yellow
+        self.app.session.selection.walls.clear()
+        self.app.session.selection.points.clear()
+        self.app.session.selection.walls.add(circle_idx)
+
         # Capture original radius for cancel/commit
         entity = self.sketch.entities[circle_idx]
         self.original_radius = float(entity.radius)
-        
+
         self.app.session.state = InteractionState.DRAGGING_GEOMETRY
 
     def _start_entity_move(self, entity_idx, mouse_pos, layout):
