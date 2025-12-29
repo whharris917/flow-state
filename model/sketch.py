@@ -15,12 +15,16 @@ class Sketch:
         self.entities = []      # Lines, Circles, Points
         self.constraints = []   # Constraint Data Objects
         self.drivers = []       # Animation Drivers
-        
+
         # Material Registry
         self.materials = {
             "Default": Material("Default", sigma=1.0, epsilon=1.0, color=(180, 180, 180), physical=True),
             "Steel": Material("Steel", sigma=1.0, epsilon=2.0, color=(100, 150, 200), physical=True)
         }
+
+        # Solver Configuration (runtime toggles for benchmarking)
+        self.use_numba = False          # Default to legacy OOP path for safety
+        self.solver_iterations = 20     # Default iteration count
 
     # --- Geometry Queries (New SoC Compliance) ---
 
@@ -289,8 +293,10 @@ class Sketch:
                 elif d['type'] == 'lin':
                     c.value = base + d['rate'] * dt_drive
 
-    def solve(self, iterations=20):
-        Solver.solve(self.constraints, self.entities, iterations)
+    def solve(self, iterations=None):
+        if iterations is None:
+            iterations = self.solver_iterations
+        Solver.solve(self.constraints, self.entities, iterations, use_numba=self.use_numba)
 
     def clear(self):
         self.entities = []

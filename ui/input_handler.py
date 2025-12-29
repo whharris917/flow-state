@@ -185,6 +185,29 @@ class InputHandler:
             if event.key == pygame.K_s and (pygame.key.get_mods() & pygame.KMOD_SHIFT):
                 self.controller.change_tool(config.TOOL_SOURCE)
                 return True
+
+            # Solver Benchmarking Controls (F9/F10/F11)
+            sketch = self.controller.scene.sketch
+
+            if event.key == pygame.K_F9:
+                # Toggle Numba solver
+                sketch.use_numba = not sketch.use_numba
+                mode = "ON" if sketch.use_numba else "OFF"
+                self.session.status.set(f"Solver: Numba {mode}")
+                return True
+
+            if event.key == pygame.K_F10:
+                # Decrease solver iterations
+                sketch.solver_iterations = max(1, sketch.solver_iterations - 10)
+                self.session.status.set(f"Solver: Iterations {sketch.solver_iterations}")
+                return True
+
+            if event.key == pygame.K_F11:
+                # Increase solver iterations
+                sketch.solver_iterations += 10
+                self.session.status.set(f"Solver: Iterations {sketch.solver_iterations}")
+                return True
+
         return False
 
     def _attempt_handle_modals(self, event):
