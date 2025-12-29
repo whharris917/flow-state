@@ -15,7 +15,7 @@ def _get_kernels():
 
 class Solver:
     @staticmethod
-    def solve(constraints, entities, iterations=10, use_numba=False):
+    def solve(constraints, entities, iterations=10, use_numba=False, interaction_data=None):
         """
         Iteratively solves the provided constraints against the entities.
 
@@ -24,24 +24,30 @@ class Solver:
             entities: List of Entity objects (Point, Line, Circle)
             iterations: Number of solver iterations
             use_numba: If True, use the Numba-accelerated path; else use legacy OOP path
+            interaction_data: Optional mouse interaction constraint (User Servo)
+                Format: {'entity_idx': int, 'point_idx': int/None, 'handle_t': float/None, 'target': (x,y)}
         """
         if use_numba:
-            Solver.solve_numba(constraints, entities, iterations)
+            Solver.solve_numba(constraints, entities, iterations, interaction_data)
         else:
             # Legacy OOP path
             for _ in range(iterations):
+                # Solve interaction constraint first (high priority)
+                if interaction_data:
+                    Solver._solve_interaction(entities, interaction_data)
+                # Then solve geometric constraints
                 for c in constraints:
                     Solver.solve_single(c, entities)
 
     @staticmethod
-    def solve_numba(constraints, entities, iterations=10):
+    def solve_numba(constraints, entities, iterations=10, interaction_data=None):
         """
         Numba-accelerated constraint solver using Data-Oriented Design.
 
         This method:
         1. Flattens entities into contiguous arrays
         2. Converts constraints to index-based arrays
-        3. Runs JIT-compiled kernels
+        3. Runs JIT-compiled kernels (including interaction constraint)
         4. Writes results back to entity objects
         """
         kernels = _get_kernels()
@@ -165,9 +171,46 @@ class Solver:
         horizontal_pairs_arr = np.array(horizontal_pairs, dtype=np.int64) if horizontal_pairs else np.empty((0, 2), dtype=np.int64)
         vertical_pairs_arr = np.array(vertical_pairs, dtype=np.int64) if vertical_pairs else np.empty((0, 2), dtype=np.int64)
 
+        # === Prepare Interaction Data ===
+        interaction_target = None
+        interaction_indices = None
+        interaction_handle_t = -1.0  # -1 means no handle_t (use point_idx mode)
+
+        if interaction_data:
+            entity_idx = interaction_data.get('entity_idx')
+            point_idx = interaction_data.get('point_idx')
+            handle_t = interaction_data.get('handle_t')
+            target = interaction_data.get('target')
+
+            if entity_idx is not None and target is not None:
+                interaction_target = np.array(target, dtype=np.float64)
+
+                if point_idx is not None:
+                    # EDIT mode: single point
+                    key = (entity_idx, point_idx)
+                    if key in point_map:
+                        interaction_indices = np.array([point_map[key], -1], dtype=np.int64)
+                elif handle_t is not None:
+                    # Body drag mode: both endpoints of a line
+                    key0 = (entity_idx, 0)
+                    key1 = (entity_idx, 1)
+                    if key0 in point_map and key1 in point_map:
+                        interaction_indices = np.array([point_map[key0], point_map[key1]], dtype=np.int64)
+                        interaction_handle_t = handle_t
+                else:
+                    # Point or Circle: single point at index 0
+                    key = (entity_idx, 0)
+                    if key in point_map:
+                        interaction_indices = np.array([point_map[key], -1], dtype=np.int64)
+
         # === Step 3: Run Numba Kernels ===
         for _ in range(iterations):
-            # Coincident first (tends to be foundational)
+            # Interaction constraint first (highest priority - User Servo)
+            if interaction_target is not None and interaction_indices is not None:
+                kernels.solve_interaction_pbd(pos_array, interaction_target,
+                                              interaction_indices, interaction_handle_t, inv_mass_array)
+
+            # Coincident (tends to be foundational)
             if coincident_pairs_arr.shape[0] > 0:
                 kernels.solve_coincident_pbd(pos_array, coincident_pairs_arr, inv_mass_array)
 
@@ -557,3 +600,84 @@ class Solver:
             half = length / 2.0
             e.set_point(0, pivot - np.array([c*half, s*half]))
             e.set_point(1, pivot + np.array([c*half, s*half]))
+
+    # -------------------------------------------------------------------------
+    # Interaction Constraint (User Servo / Mouse Drag)
+    # -------------------------------------------------------------------------
+
+    @staticmethod
+    def _solve_interaction(entities, data):
+        """
+        Solve the mouse interaction as a high-priority position constraint.
+
+        The 'User Servo' pulls the grabbed point/handle toward the mouse target,
+        treating it like a 0-length spring with very high stiffness.
+
+        Args:
+            entities: List of Entity objects
+            data: {'entity_idx': int, 'point_idx': int/None, 'handle_t': float/None, 'target': (x,y)}
+        """
+        entity_idx = data.get('entity_idx')
+        point_idx = data.get('point_idx')
+        handle_t = data.get('handle_t')
+        target = data.get('target')
+
+        if entity_idx is None or target is None:
+            return
+        if entity_idx < 0 or entity_idx >= len(entities):
+            return
+
+        entity = entities[entity_idx]
+        target = np.array(target, dtype=np.float64)
+
+        # High stiffness for responsive feel (acts like near-infinite spring)
+        stiffness = 0.8
+
+        if isinstance(entity, Point):
+            # Point entity: move directly toward target
+            w = entity.get_inv_mass(0)
+            if w > 0:
+                current = entity.get_point(0)
+                delta = target - current
+                entity.set_point(0, current + delta * stiffness)
+
+        elif isinstance(entity, Line):
+            if point_idx is not None:
+                # Dragging a specific endpoint (EDIT mode)
+                w = entity.get_inv_mass(point_idx)
+                if w > 0:
+                    current = entity.get_point(point_idx)
+                    delta = target - current
+                    entity.set_point(point_idx, current + delta * stiffness)
+            elif handle_t is not None:
+                # Dragging the line body at parameter t
+                # Calculate current handle position
+                A = entity.get_point(0)
+                B = entity.get_point(1)
+                t = handle_t
+                current_handle = A * (1.0 - t) + B * t
+
+                # Error vector from handle to target
+                delta = target - current_handle
+
+                # Distribute correction to both endpoints based on t
+                # Point closer to handle gets more movement
+                w0 = entity.get_inv_mass(0)
+                w1 = entity.get_inv_mass(1)
+
+                # Weight by distance from handle (1-t for start, t for end)
+                weight0 = (1.0 - t)
+                weight1 = t
+
+                if w0 > 0:
+                    entity.set_point(0, A + delta * stiffness * weight0)
+                if w1 > 0:
+                    entity.set_point(1, B + delta * stiffness * weight1)
+
+        elif isinstance(entity, Circle):
+            # Circle: move center toward target
+            w = entity.get_inv_mass(0)
+            if w > 0:
+                current = entity.get_point(0)
+                delta = target - current
+                entity.set_point(0, current + delta * stiffness)

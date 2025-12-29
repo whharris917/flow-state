@@ -268,3 +268,64 @@ def solve_vertical_pbd(pos, pairs, inv_masses):
             pos[idx1, 0] = avg_x
         if w2 > 0:
             pos[idx2, 0] = avg_x
+
+
+@njit(cache=True)
+def solve_interaction_pbd(pos, target, indices, handle_t, inv_masses):
+    """
+    Solve the mouse interaction constraint (User Servo).
+
+    Pulls the grabbed point(s) toward the mouse target with high stiffness.
+    This acts like a 0-length spring that negotiates with other constraints.
+
+    Parameters:
+        pos: ndarray (N, 2) - Flattened positions of all points
+        target: ndarray (2,) - Target world position (mouse location)
+        indices: ndarray (2,) - Point indices [idx0, idx1]. If idx1 == -1, single point mode.
+        handle_t: float - Parameter t (0.0-1.0) for line body drag. If < 0, use single point mode.
+        inv_masses: ndarray (N,) - Inverse masses for all points
+
+    Modifies pos in-place.
+    """
+    # High stiffness for responsive feel
+    stiffness = 0.8
+
+    idx0 = indices[0]
+    idx1 = indices[1]
+
+    if idx1 < 0 or handle_t < 0:
+        # Single point mode (Point, Circle, or EDIT mode on Line endpoint)
+        w = inv_masses[idx0]
+        if w > 0:
+            delta_x = target[0] - pos[idx0, 0]
+            delta_y = target[1] - pos[idx0, 1]
+            pos[idx0, 0] += delta_x * stiffness
+            pos[idx0, 1] += delta_y * stiffness
+    else:
+        # Line body drag mode: both endpoints, weighted by handle_t
+        # Current handle position = A * (1-t) + B * t
+        t = handle_t
+        ax, ay = pos[idx0, 0], pos[idx0, 1]
+        bx, by = pos[idx1, 0], pos[idx1, 1]
+
+        handle_x = ax * (1.0 - t) + bx * t
+        handle_y = ay * (1.0 - t) + by * t
+
+        # Error from handle to target
+        delta_x = target[0] - handle_x
+        delta_y = target[1] - handle_y
+
+        # Distribute correction to endpoints based on t
+        w0 = inv_masses[idx0]
+        w1 = inv_masses[idx1]
+
+        # Weight by proximity to grab point
+        weight0 = 1.0 - t
+        weight1 = t
+
+        if w0 > 0:
+            pos[idx0, 0] += delta_x * stiffness * weight0
+            pos[idx0, 1] += delta_y * stiffness * weight0
+        if w1 > 0:
+            pos[idx1, 0] += delta_x * stiffness * weight1
+            pos[idx1, 1] += delta_y * stiffness * weight1

@@ -723,6 +723,8 @@ class SelectTool(Tool):
         # For edit/resize commit
         self.original_position = None
         self.original_radius = None
+        # For interaction constraint (User Servo)
+        self.handle_t = None  # Parametric grab position on line (0.0-1.0)
 
     @property
     def sketch(self):
@@ -779,7 +781,10 @@ class SelectTool(Tool):
         
         # Rebuild atoms to match restored geometry
         self.scene.rebuild()
-        
+
+        # Clear interaction data (User Servo cancelled)
+        self.sketch.interaction_data = None
+
         self._reset_drag_state()
         self.app.session.state = InteractionState.IDLE
         self.app.session.status.set("Cancelled")
@@ -898,27 +903,31 @@ class SelectTool(Tool):
         """Handle mouse move during drag."""
         mx, my = mouse_pos
         curr_sim = utils.screen_to_sim(
-            mx, my, 
-            self.app.session.camera.zoom, self.app.session.camera.pan_x, self.app.session.camera.pan_y, 
+            mx, my,
+            self.app.session.camera.zoom, self.app.session.camera.pan_x, self.app.session.camera.pan_y,
             self.app.sim.world_size, layout
         )
         prev_sim = utils.screen_to_sim(
-            self.drag_start_mouse[0], self.drag_start_mouse[1], 
-            self.app.session.camera.zoom, self.app.session.camera.pan_x, self.app.session.camera.pan_y, 
+            self.drag_start_mouse[0], self.drag_start_mouse[1],
+            self.app.session.camera.zoom, self.app.session.camera.pan_x, self.app.session.camera.pan_y,
             self.app.sim.world_size, layout
         )
-        
+
         dx = curr_sim[0] - prev_sim[0]
         dy = curr_sim[1] - prev_sim[1]
         self.drag_start_mouse = (mx, my)
-        
+
+        # Update interaction data target (User Servo tracks mouse)
+        if self.sketch.interaction_data is not None:
+            self.sketch.interaction_data['target'] = curr_sim
+
         if self.mode == 'EDIT':
             return self._handle_edit_drag(mx, my, layout)
         elif self.mode == 'RESIZE_CIRCLE':
             return self._handle_resize_drag(curr_sim)
         elif self.mode in ['MOVE_WALL', 'MOVE_GROUP']:
             return self._handle_move_drag(dx, dy)
-        
+
         return False
 
     def _handle_release(self, mouse_pos, layout):
@@ -929,7 +938,10 @@ class SelectTool(Tool):
             self._commit_resize()
         elif self.mode in ['MOVE_WALL', 'MOVE_GROUP']:
             self._commit_move()
-        
+
+        # Clear interaction data (User Servo released)
+        self.sketch.interaction_data = None
+
         self._reset_drag_state()
         self.app.session.state = InteractionState.IDLE
         return True
@@ -944,12 +956,25 @@ class SelectTool(Tool):
         self.target_idx = wall_idx
         self.target_pt = pt_idx
         self.drag_start_mouse = mouse_pos
-        
+
         # Capture original position for cancel/commit
         entity = self.sketch.entities[wall_idx]
         pt = entity.get_point(pt_idx)
         self.original_position = (float(pt[0]), float(pt[1]))
-        
+
+        # Set interaction data for point editing (User Servo)
+        sim_pos = utils.screen_to_sim(
+            mouse_pos[0], mouse_pos[1],
+            self.app.session.camera.zoom, self.app.session.camera.pan_x, self.app.session.camera.pan_y,
+            self.app.sim.world_size, layout
+        )
+        self.sketch.interaction_data = {
+            'entity_idx': wall_idx,
+            'point_idx': pt_idx,
+            'handle_t': None,
+            'target': sim_pos
+        }
+
         self.app.session.state = InteractionState.DRAGGING_GEOMETRY
 
     def _start_resize_drag(self, circle_idx, mouse_pos):
@@ -976,7 +1001,37 @@ class SelectTool(Tool):
         self.drag_start_mouse = mouse_pos
         self.total_dx = 0.0
         self.total_dy = 0.0
-        
+
+        # Calculate handle_t for lines (parametric grab position)
+        entity = self.sketch.entities[entity_idx]
+        sim_pos = utils.screen_to_sim(
+            mouse_pos[0], mouse_pos[1],
+            self.app.session.camera.zoom, self.app.session.camera.pan_x, self.app.session.camera.pan_y,
+            self.app.sim.world_size, layout
+        )
+
+        if isinstance(entity, Line):
+            # Calculate t parameter (0.0 = start, 1.0 = end)
+            A = entity.start
+            B = entity.end
+            AB = B - A
+            len_sq = np.dot(AB, AB)
+            if len_sq > 1e-8:
+                AP = np.array(sim_pos) - A
+                self.handle_t = np.clip(np.dot(AP, AB) / len_sq, 0.0, 1.0)
+            else:
+                self.handle_t = 0.5
+        else:
+            self.handle_t = None
+
+        # Set initial interaction data (User Servo)
+        self.sketch.interaction_data = {
+            'entity_idx': entity_idx,
+            'point_idx': None,
+            'handle_t': self.handle_t,
+            'target': sim_pos
+        }
+
         self.app.session.state = InteractionState.DRAGGING_GEOMETRY
 
     def _start_group_move(self, mouse_pos, layout):
@@ -986,7 +1041,7 @@ class SelectTool(Tool):
         self.drag_start_mouse = mouse_pos
         self.total_dx = 0.0
         self.total_dy = 0.0
-        
+
         self.app.session.state = InteractionState.DRAGGING_GEOMETRY
 
     # -------------------------------------------------------------------------

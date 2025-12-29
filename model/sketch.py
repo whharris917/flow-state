@@ -26,6 +26,14 @@ class Sketch:
         self.use_numba = False          # Default to legacy OOP path for safety
         self.solver_iterations = 20     # Default iteration count
 
+        # Interaction Data (mouse drag as a constraint - "User Servo")
+        # Format: {'entity_idx': int, 'point_idx': int or None, 'handle_t': float or None, 'target': (x, y)}
+        # - entity_idx: Index of entity being dragged
+        # - point_idx: Specific point index (for EDIT mode), or None for body drag
+        # - handle_t: Parameter t (0.0-1.0) along line where user grabbed, or None
+        # - target: World coordinates the user is dragging toward
+        self.interaction_data = None
+
     # --- Geometry Queries (New SoC Compliance) ---
 
     def find_entity_at(self, x, y, radius):
@@ -296,7 +304,8 @@ class Sketch:
     def solve(self, iterations=None):
         if iterations is None:
             iterations = self.solver_iterations
-        Solver.solve(self.constraints, self.entities, iterations, use_numba=self.use_numba)
+        Solver.solve(self.constraints, self.entities, iterations,
+                     use_numba=self.use_numba, interaction_data=self.interaction_data)
 
     def clear(self):
         self.entities = []
