@@ -365,6 +365,46 @@ class MoveMultipleCommand(Command):
         return False
 
 
+class SetEntityGeometryCommand(Command):
+    """
+    Set all points of an entity to absolute positions.
+
+    Used for operations that change both position AND rotation (e.g., parametric
+    drag with User Servo). Unlike MoveEntityCommand which stores delta (dx, dy),
+    this stores the complete before/after geometry state for exact undo/redo.
+
+    Args:
+        sketch: The Sketch instance
+        entity_index: Index of the entity
+        old_positions: List of (x, y) tuples for original point positions
+        new_positions: List of (x, y) tuples for new point positions
+        historize: Whether to add to undo stack
+    """
+
+    def __init__(self, sketch, entity_index, old_positions, new_positions,
+                 historize=True, supersede=False):
+        super().__init__(historize, supersede)
+        self.sketch = sketch
+        self.entity_index = entity_index
+        self.old_positions = [tuple(p) for p in old_positions]
+        self.new_positions = [tuple(p) for p in new_positions]
+        self.description = "Transform"
+
+    def execute(self) -> bool:
+        if 0 <= self.entity_index < len(self.sketch.entities):
+            entity = self.sketch.entities[self.entity_index]
+            for i, pos in enumerate(self.new_positions):
+                entity.set_point(i, np.array(pos, dtype=np.float64))
+            return True
+        return False
+
+    def undo(self):
+        if 0 <= self.entity_index < len(self.sketch.entities):
+            entity = self.sketch.entities[self.entity_index]
+            for i, pos in enumerate(self.old_positions):
+                entity.set_point(i, np.array(pos, dtype=np.float64))
+
+
 # =============================================================================
 # Point Editing Commands
 # =============================================================================
@@ -372,7 +412,7 @@ class MoveMultipleCommand(Command):
 class SetPointCommand(Command):
     """
     Set a specific point on an entity to an absolute position.
-    
+
     This is the fundamental command for point editing. During drags:
     - Execute with historize=False for intermediate positions
     - Execute with historize=True for final commit, with old_position

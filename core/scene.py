@@ -264,11 +264,12 @@ class Scene:
             old_values = self._snapshot_constraint_values()
             self.sketch.update_drivers(geo_time)
             new_values = self._snapshot_constraint_values()
-            
+
             if old_values != new_values:
                 geometry_changed = True
-            
-            # 2. Solve constraints
+
+        # 2. Solve constraints (also run if interaction is active for User Servo)
+        if self.sketch.constraints or self.sketch.interaction_data:
             self.sketch.solve()
             geometry_changed = True  # Conservative: assume solve moved something
         

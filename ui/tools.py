@@ -61,7 +61,8 @@ from engine.particle_brush import ParticleBrush
 from core.commands import (
     AddLineCommand, AddCircleCommand, RemoveEntityCommand,
     MoveEntityCommand, MoveMultipleCommand, AddConstraintCommand,
-    AddRectangleCommand, SetPointCommand, SetCircleRadiusCommand
+    AddRectangleCommand, SetPointCommand, SetCircleRadiusCommand,
+    SetEntityGeometryCommand
 )
 
 
@@ -725,6 +726,8 @@ class SelectTool(Tool):
         self.original_radius = None
         # For interaction constraint (User Servo)
         self.handle_t = None  # Parametric grab position on line (0.0-1.0)
+        # For geometry undo (stores all point positions at drag start)
+        self.start_positions = None
 
     @property
     def sketch(self):
@@ -1010,6 +1013,9 @@ class SelectTool(Tool):
             self.app.sim.world_size, layout
         )
 
+        # Capture start positions for undo (before any movement)
+        self.start_positions = self._capture_entity_positions(entity)
+
         if isinstance(entity, Line):
             # Calculate t parameter (0.0 = start, 1.0 = end)
             A = entity.start
@@ -1033,6 +1039,19 @@ class SelectTool(Tool):
         }
 
         self.app.session.state = InteractionState.DRAGGING_GEOMETRY
+
+    def _capture_entity_positions(self, entity):
+        """Capture all point positions of an entity for undo."""
+        positions = []
+        if isinstance(entity, Line):
+            positions.append(tuple(entity.start))
+            positions.append(tuple(entity.end))
+        elif isinstance(entity, Circle):
+            positions.append(tuple(entity.center))
+        elif hasattr(entity, 'pos'):
+            # Point entity
+            positions.append(tuple(entity.pos))
+        return positions
 
     def _start_group_move(self, mouse_pos, layout):
         """Start moving multiple selected entities."""
@@ -1117,20 +1136,18 @@ class SelectTool(Tool):
         """Handle entity/group move drag using commands."""
         self.total_dx += dx
         self.total_dy += dy
-        
+
         if self.mode == 'MOVE_GROUP':
+            # Group move: use uniform translation (no parametric drag)
             cmd = MoveMultipleCommand(
                 self.sketch, self.group_indices, dx, dy,
                 historize=False
             )
             self.scene.execute(cmd)
-        else:
-            cmd = MoveEntityCommand(
-                self.sketch, self.target_idx, dx, dy,
-                historize=False
-            )
-            self.scene.execute(cmd)
-        
+        # For MOVE_WALL mode: interaction constraint handles movement via solver
+        # Don't apply MoveEntityCommand here - let the User Servo do the work
+        # with proper weighted distribution based on handle_t
+
         return True
 
     # -------------------------------------------------------------------------
@@ -1191,11 +1208,10 @@ class SelectTool(Tool):
 
     def _commit_move(self):
         """Commit entity/group move with historized command."""
-        # Only commit if there was actual movement
-        if abs(self.total_dx) < 1e-6 and abs(self.total_dy) < 1e-6:
-            return
-        
         if self.mode == 'MOVE_GROUP' and self.group_indices:
+            # Group move: still uses delta-based command (uniform translation)
+            if abs(self.total_dx) < 1e-6 and abs(self.total_dy) < 1e-6:
+                return
             cmd = MoveMultipleCommand(
                 self.sketch, self.group_indices,
                 self.total_dx, self.total_dy,
@@ -1204,16 +1220,22 @@ class SelectTool(Tool):
             # Add directly to queue (already moved)
             self.scene.commands.undo_stack.append(cmd)
             self.scene.commands.redo_stack.clear()
-            
+
         elif self.mode == 'MOVE_WALL' and self.target_idx >= 0:
-            cmd = MoveEntityCommand(
-                self.sketch, self.target_idx,
-                self.total_dx, self.total_dy,
-                historize=True
-            )
-            # Add directly to queue (already moved)
-            self.scene.commands.undo_stack.append(cmd)
-            self.scene.commands.redo_stack.clear()
+            # Single entity: use absolute geometry command (handles rotation)
+            entity = self.sketch.entities[self.target_idx]
+            current_positions = self._capture_entity_positions(entity)
+
+            # Only commit if positions actually changed
+            if self.start_positions and current_positions != self.start_positions:
+                cmd = SetEntityGeometryCommand(
+                    self.sketch, self.target_idx,
+                    self.start_positions, current_positions,
+                    historize=True
+                )
+                # Add directly to queue (geometry already at final state)
+                self.scene.commands.undo_stack.append(cmd)
+                self.scene.commands.redo_stack.clear()
 
     # -------------------------------------------------------------------------
     # Hit Testing Helpers
