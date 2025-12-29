@@ -1,16 +1,196 @@
 import math
 import numpy as np
-from model.geometry import Line, Circle
+from model.geometry import Line, Circle, Point
+
+# Import Numba kernels (lazy import handled in solve_numba)
+_kernels = None
+
+def _get_kernels():
+    """Lazy import of Numba kernels to avoid import-time JIT compilation."""
+    global _kernels
+    if _kernels is None:
+        from model import solver_kernels as _kernels
+    return _kernels
+
 
 class Solver:
     @staticmethod
-    def solve(constraints, entities, iterations=10):
+    def solve(constraints, entities, iterations=10, use_numba=False):
         """
         Iteratively solves the provided constraints against the entities.
+
+        Parameters:
+            constraints: List of Constraint objects
+            entities: List of Entity objects (Point, Line, Circle)
+            iterations: Number of solver iterations
+            use_numba: If True, use the Numba-accelerated path; else use legacy OOP path
         """
+        if use_numba:
+            Solver.solve_numba(constraints, entities, iterations)
+        else:
+            # Legacy OOP path
+            for _ in range(iterations):
+                for c in constraints:
+                    Solver.solve_single(c, entities)
+
+    @staticmethod
+    def solve_numba(constraints, entities, iterations=10):
+        """
+        Numba-accelerated constraint solver using Data-Oriented Design.
+
+        This method:
+        1. Flattens entities into contiguous arrays
+        2. Converts constraints to index-based arrays
+        3. Runs JIT-compiled kernels
+        4. Writes results back to entity objects
+        """
+        kernels = _get_kernels()
+
+        # === Step 1: Flatten Entities ===
+        # Build mapping: (entity_idx, point_idx) -> flat_array_idx
+        # and extract positions + inverse masses
+
+        point_map = {}  # (ent_idx, pt_idx) -> flat_idx
+        flat_positions = []
+        flat_inv_masses = []
+        flat_idx = 0
+
+        for ent_idx, entity in enumerate(entities):
+            if isinstance(entity, Point):
+                point_map[(ent_idx, 0)] = flat_idx
+                flat_positions.append(entity.pos.copy())
+                flat_inv_masses.append(entity.get_inv_mass(0))
+                flat_idx += 1
+            elif isinstance(entity, Line):
+                # Line has 2 points: index 0 (start) and index 1 (end)
+                point_map[(ent_idx, 0)] = flat_idx
+                flat_positions.append(entity.start.copy())
+                flat_inv_masses.append(entity.get_inv_mass(0))
+                flat_idx += 1
+
+                point_map[(ent_idx, 1)] = flat_idx
+                flat_positions.append(entity.end.copy())
+                flat_inv_masses.append(entity.get_inv_mass(1))
+                flat_idx += 1
+            elif isinstance(entity, Circle):
+                # Circle has 1 point: index 0 (center)
+                point_map[(ent_idx, 0)] = flat_idx
+                flat_positions.append(entity.center.copy())
+                flat_inv_masses.append(entity.get_inv_mass(0))
+                flat_idx += 1
+
+        if flat_idx == 0:
+            return  # No points to solve
+
+        pos_array = np.array(flat_positions, dtype=np.float64)
+        inv_mass_array = np.array(flat_inv_masses, dtype=np.float64)
+
+        # === Step 2: Flatten Constraints by Type ===
+        length_pairs = []
+        length_values = []
+
+        coincident_pairs = []
+
+        collinear_points = []
+        collinear_line_starts = []
+        collinear_line_ends = []
+
+        horizontal_pairs = []
+        vertical_pairs = []
+
+        for c in constraints:
+            ctype = c.type
+
+            if ctype == 'LENGTH':
+                # indices = [entity_idx], value = target_length
+                ent_idx = c.indices[0]
+                # Length constraints apply to lines (start and end points)
+                if (ent_idx, 0) in point_map and (ent_idx, 1) in point_map:
+                    idx1 = point_map[(ent_idx, 0)]
+                    idx2 = point_map[(ent_idx, 1)]
+                    length_pairs.append([idx1, idx2])
+                    length_values.append(c.value)
+
+            elif ctype == 'COINCIDENT':
+                # indices = [(e1, p1), (e2, p2)]
+                if len(c.indices) == 2:
+                    idx1_tuple = c.indices[0]
+                    idx2_tuple = c.indices[1]
+                    # Check it's point-point (both have valid pt_idx != -1)
+                    if (isinstance(idx1_tuple, (list, tuple)) and
+                        isinstance(idx2_tuple, (list, tuple)) and
+                        idx1_tuple[1] != -1 and idx2_tuple[1] != -1):
+                        key1 = (idx1_tuple[0], idx1_tuple[1])
+                        key2 = (idx2_tuple[0], idx2_tuple[1])
+                        if key1 in point_map and key2 in point_map:
+                            coincident_pairs.append([point_map[key1], point_map[key2]])
+
+            elif ctype == 'COLLINEAR':
+                # indices = [(pt_entity_idx, pt_idx), line_entity_idx]
+                pt_ref = c.indices[0]
+                line_idx = c.indices[1]
+                pt_key = (pt_ref[0], pt_ref[1])
+                line_start_key = (line_idx, 0)
+                line_end_key = (line_idx, 1)
+                if (pt_key in point_map and
+                    line_start_key in point_map and
+                    line_end_key in point_map):
+                    collinear_points.append(point_map[pt_key])
+                    collinear_line_starts.append(point_map[line_start_key])
+                    collinear_line_ends.append(point_map[line_end_key])
+
+            elif ctype == 'HORIZONTAL':
+                # Single line constraint
+                if len(c.indices) >= 1:
+                    ent_idx = c.indices[0]
+                    if (ent_idx, 0) in point_map and (ent_idx, 1) in point_map:
+                        horizontal_pairs.append([point_map[(ent_idx, 0)],
+                                                 point_map[(ent_idx, 1)]])
+
+            elif ctype == 'VERTICAL':
+                # Single line constraint
+                if len(c.indices) >= 1:
+                    ent_idx = c.indices[0]
+                    if (ent_idx, 0) in point_map and (ent_idx, 1) in point_map:
+                        vertical_pairs.append([point_map[(ent_idx, 0)],
+                                               point_map[(ent_idx, 1)]])
+
+        # Convert to numpy arrays
+        length_pairs_arr = np.array(length_pairs, dtype=np.int64) if length_pairs else np.empty((0, 2), dtype=np.int64)
+        length_values_arr = np.array(length_values, dtype=np.float64) if length_values else np.empty(0, dtype=np.float64)
+        coincident_pairs_arr = np.array(coincident_pairs, dtype=np.int64) if coincident_pairs else np.empty((0, 2), dtype=np.int64)
+        collinear_points_arr = np.array(collinear_points, dtype=np.int64) if collinear_points else np.empty(0, dtype=np.int64)
+        collinear_starts_arr = np.array(collinear_line_starts, dtype=np.int64) if collinear_line_starts else np.empty(0, dtype=np.int64)
+        collinear_ends_arr = np.array(collinear_line_ends, dtype=np.int64) if collinear_line_ends else np.empty(0, dtype=np.int64)
+        horizontal_pairs_arr = np.array(horizontal_pairs, dtype=np.int64) if horizontal_pairs else np.empty((0, 2), dtype=np.int64)
+        vertical_pairs_arr = np.array(vertical_pairs, dtype=np.int64) if vertical_pairs else np.empty((0, 2), dtype=np.int64)
+
+        # === Step 3: Run Numba Kernels ===
         for _ in range(iterations):
-            for c in constraints:
-                Solver.solve_single(c, entities)
+            # Coincident first (tends to be foundational)
+            if coincident_pairs_arr.shape[0] > 0:
+                kernels.solve_coincident_pbd(pos_array, coincident_pairs_arr, inv_mass_array)
+
+            # Length constraints
+            if length_pairs_arr.shape[0] > 0:
+                kernels.solve_length_pbd(pos_array, length_pairs_arr, length_values_arr, inv_mass_array)
+
+            # Collinear constraints
+            if collinear_points_arr.shape[0] > 0:
+                kernels.solve_collinear_pbd(pos_array, collinear_points_arr,
+                                            collinear_starts_arr, collinear_ends_arr, inv_mass_array)
+
+            # Horizontal/Vertical
+            if horizontal_pairs_arr.shape[0] > 0:
+                kernels.solve_horizontal_pbd(pos_array, horizontal_pairs_arr, inv_mass_array)
+            if vertical_pairs_arr.shape[0] > 0:
+                kernels.solve_vertical_pbd(pos_array, vertical_pairs_arr, inv_mass_array)
+
+        # === Step 4: Write Back to Entities ===
+        for (ent_idx, pt_idx), flat_idx in point_map.items():
+            entity = entities[ent_idx]
+            new_pos = pos_array[flat_idx]
+            entity.set_point(pt_idx, new_pos)
 
     @staticmethod
     def solve_single(constraint, entities):
