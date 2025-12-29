@@ -22,7 +22,11 @@ from core.definitions import CONSTRAINT_DEFS
 from core.sound_manager import SoundManager
 
 # Import commands
-from core.commands import RemoveEntityCommand, RemoveConstraintCommand, CompositeCommand
+from core.commands import (
+    RemoveEntityCommand, RemoveConstraintCommand, CompositeCommand,
+    ToggleAnchorCommand, ToggleInfiniteCommand, SetPhysicalCommand,
+    SetMaterialCommand, SetDriverCommand
+)
 
 
 class AppController:
@@ -138,9 +142,11 @@ class AppController:
                 if idx < len(self.sketch.entities):
                     entity = self.sketch.entities[idx]
                     if isinstance(entity, Line) and entity.ref:
-                        entity.infinite = not entity.infinite
+                        cmd = ToggleInfiniteCommand(self.sketch, idx)
+                        self.scene.execute(cmd)
                         toggled += 1
             if toggled > 0:
+                self.scene.rebuild()
                 self.session.status.set(f"Toggled Infinite on {toggled} ref line(s)")
                 self.sound_manager.play_sound('click')
             else:
@@ -176,9 +182,10 @@ class AppController:
             for idx in self.session.selection.walls:
                 if idx < len(self.sketch.entities):
                     entity = self.sketch.entities[idx]
-                    # Toggle the physical flag
+                    # Toggle the physical flag via Command
                     new_state = not getattr(entity, 'physical', False)
-                    self.sketch.update_entity(idx, physical=new_state)
+                    cmd = SetPhysicalCommand(self.sketch, idx, new_state)
+                    self.scene.execute(cmd)
                     if new_state:
                         atomized += 1
                     else:
@@ -230,18 +237,21 @@ class AppController:
 
     def apply_material_from_dialog(self, dialog):
         mat = dialog.get_result()
+        # Add material to sketch (this is a definition, not an entity mutation)
         self.sketch.add_material(mat)
-        
+
         targets = []
         if self.session.selection.walls:
             targets = list(self.session.selection.walls)
         elif self.ctx_vars['wall'] != -1:
             targets = [self.ctx_vars['wall']]
-            
+
+        # Apply material to each target via Command
         for idx in targets:
             if idx < len(self.sketch.entities):
-                self.sketch.update_entity(idx, material_id=mat.name)
-        
+                cmd = SetMaterialCommand(self.sketch, idx, mat.name)
+                self.scene.execute(cmd)
+
         self.scene.rebuild()
         self.session.status.set(f"Material Applied: {mat.name}")
         self.sound_manager.play_sound('click')
@@ -254,7 +264,8 @@ class AppController:
 
     def apply_animation_from_dialog(self, dialog):
         if self.ctx_vars['const'] != -1:
-            self.sketch.set_driver(self.ctx_vars['const'], dialog.get_values())
+            cmd = SetDriverCommand(self.sketch, self.ctx_vars['const'], dialog.get_values())
+            self.scene.execute(cmd)
             self.session.status.set("Animation Set")
             self.sound_manager.play_sound('click')
 
@@ -325,8 +336,8 @@ class AppController:
             self.action_delete_constraint()
         elif action == "Anchor" or action == "Un-Anchor":
             if self.ctx_vars['wall'] != -1 and self.ctx_vars['pt'] is not None:
-                self.sketch.toggle_anchor(self.ctx_vars['wall'], self.ctx_vars['pt'])
-                self.scene.rebuild()
+                cmd = ToggleAnchorCommand(self.sketch, self.ctx_vars['wall'], self.ctx_vars['pt'])
+                self.scene.execute(cmd)
                 self.sound_manager.play_sound('click')
         elif action == "Atomize":
             if self.ctx_vars['wall'] != -1:
