@@ -19,7 +19,6 @@ class Sketch:
         # Material Registry
         self.materials = {
             "Default": Material("Default", sigma=1.0, epsilon=1.0, color=(180, 180, 180), physical=True),
-            "Ghost": Material("Ghost", sigma=1.0, epsilon=1.0, color=(100, 100, 100), physical=False),
             "Steel": Material("Steel", sigma=1.0, epsilon=2.0, color=(100, 150, 200), physical=True)
         }
 

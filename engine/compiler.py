@@ -67,7 +67,7 @@ class Compiler:
             # Look up material properties
             mat = sketch.materials.get(w.material_id, sketch.materials["Default"])
 
-            # Check Physical Flag from Material (Ghost material overrides entity)
+            # Check Physical Flag from Material (non-physical materials are not atomized)
             if not mat.physical:
                 continue
 

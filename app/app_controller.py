@@ -123,9 +123,12 @@ class AppController:
     def toggle_ghost_mode(self):
         self.session.show_wall_atoms = not getattr(self.session, 'show_wall_atoms', True)
         if 'mode_ghost' in self.app.ui.buttons:
-            self.app.ui.buttons['mode_ghost'].active = not self.session.show_wall_atoms 
-        state = "Hidden" if not self.session.show_wall_atoms else "Visible"
-        self.session.status.set(f"Wall Atoms: {state}")
+            btn = self.app.ui.buttons['mode_ghost']
+            btn.active = not self.session.show_wall_atoms
+            btn.text = "Mode: Blueprint" if not self.session.show_wall_atoms else "Mode: Physical"
+            btn.cached_surf = None  # Force text re-render
+        state = "Blueprint" if not self.session.show_wall_atoms else "Physical"
+        self.session.status.set(f"View Mode: {state}")
         self.sound_manager.play_sound('click')
         
     def toggle_extend(self):

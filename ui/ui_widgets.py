@@ -492,43 +492,87 @@ class InputField(UIElement):
         self.text_color = text_color
         self.last_text = None
         self.hovered = False
+        # Cursor support
+        self.cursor_pos = len(self.text)  # Position in text (0 = before first char)
+        self.cursor_blink_timer = 0.0
+        self.cursor_visible = True
+        self.CURSOR_BLINK_RATE = 0.5  # seconds per blink cycle
 
     def move(self, dx, dy):
         """Manual move helper (Legacy support)."""
         self.rect.x += dx; self.rect.y += dy
 
+    def update(self, dt):
+        """Update cursor blink state."""
+        if self.active:
+            self.cursor_blink_timer += dt
+            if self.cursor_blink_timer >= self.CURSOR_BLINK_RATE:
+                self.cursor_blink_timer = 0.0
+                self.cursor_visible = not self.cursor_visible
+        else:
+            self.cursor_visible = True
+            self.cursor_blink_timer = 0.0
+
     def handle_event(self, event):
         if not self.visible: return False
         changed = False
         consumed = False
-        
+
         if event.type == pygame.MOUSEMOTION:
             self.hovered = self.rect.collidepoint(event.pos)
-            
+
         elif event.type == pygame.MOUSEBUTTONDOWN:
             if self.rect.collidepoint(event.pos):
-                self.active = True; changed = True
+                was_active = self.active
+                self.active = True
+                # Reset cursor blink on click
+                self.cursor_blink_timer = 0.0
+                self.cursor_visible = True
+                # Move cursor to end when clicking to activate
+                if not was_active:
+                    self.cursor_pos = len(self.text)
+                changed = True
                 SoundManager.get().play_sound('click')
                 consumed = True
             elif self.active:
                 self.active = False; changed = True
                 # Don't consume here to allow click-off to register elsewhere
-        
+
         elif event.type == pygame.KEYDOWN and self.active:
-            if event.key == pygame.K_RETURN: 
+            # Reset cursor visibility on any keypress
+            self.cursor_blink_timer = 0.0
+            self.cursor_visible = True
+
+            if event.key == pygame.K_RETURN:
                 self.active = False
                 SoundManager.get().play_sound('snap')
-            elif event.key == pygame.K_BACKSPACE: 
-                self.text = self.text[:-1]
-            else: 
+            elif event.key == pygame.K_BACKSPACE:
+                if self.cursor_pos > 0:
+                    self.text = self.text[:self.cursor_pos-1] + self.text[self.cursor_pos:]
+                    self.cursor_pos -= 1
+            elif event.key == pygame.K_DELETE:
+                if self.cursor_pos < len(self.text):
+                    self.text = self.text[:self.cursor_pos] + self.text[self.cursor_pos+1:]
+            elif event.key == pygame.K_LEFT:
+                if self.cursor_pos > 0:
+                    self.cursor_pos -= 1
+            elif event.key == pygame.K_RIGHT:
+                if self.cursor_pos < len(self.text):
+                    self.cursor_pos += 1
+            elif event.key == pygame.K_HOME:
+                self.cursor_pos = 0
+            elif event.key == pygame.K_END:
+                self.cursor_pos = len(self.text)
+            else:
                 # Basic filter
                 if len(event.unicode) > 0 and (event.unicode.isprintable()):
-                    self.text += event.unicode
+                    self.text = self.text[:self.cursor_pos] + event.unicode + self.text[self.cursor_pos:]
+                    self.cursor_pos += 1
             changed = True
             consumed = True # Consume keyboard events if active
-            
+
         if changed:
-            return True 
+            return True
         return consumed
 
     def get_value(self, default=0.0):
@@ -540,25 +584,181 @@ class InputField(UIElement):
     def set_value(self, val):
         if not self.active:
             self.text = f"{val:.2f}" if isinstance(val, float) else str(val)
+            self.cursor_pos = len(self.text)
 
     def draw(self, screen, font):
         if not self.visible: return
-        
+
         bg = config.COLOR_INPUT_ACTIVE if self.active else config.COLOR_INPUT_BG
         if self.hovered and not self.active:
             bg = (min(255, bg[0]+10), min(255, bg[1]+10), min(255, bg[2]+10))
-            
+
         pygame.draw.rect(screen, bg, self.rect, border_radius=4)
-        
+
         border = config.COLOR_ACCENT if self.active else config.PANEL_BORDER_COLOR
         pygame.draw.rect(screen, border, self.rect, 1, border_radius=4)
-        
+
         ts = font.render(self.text, True, self.text_color)
-        
+        text_x = self.rect.x + 5
+        text_y = self.rect.centery - ts.get_height() // 2
+
         # Clip text if too long
         screen.set_clip(self.rect.inflate(-4, -4))
-        screen.blit(ts, (self.rect.x+5, self.rect.centery - ts.get_height()//2))
+        screen.blit(ts, (text_x, text_y))
+
+        # Draw blinking cursor when active
+        if self.active and self.cursor_visible:
+            # Calculate cursor x position based on text before cursor
+            text_before_cursor = self.text[:self.cursor_pos]
+            cursor_x_offset = font.size(text_before_cursor)[0] if text_before_cursor else 0
+            cursor_x = text_x + cursor_x_offset
+            cursor_y1 = self.rect.centery - ts.get_height() // 2 + 2
+            cursor_y2 = self.rect.centery + ts.get_height() // 2 - 2
+            pygame.draw.line(screen, self.text_color, (cursor_x, cursor_y1), (cursor_x, cursor_y2), 1)
+
         screen.set_clip(None)
+
+
+class Dropdown(UIElement):
+    """A dropdown selector widget with a list of options."""
+
+    def __init__(self, x, y, w, h, options, selected_index=0, text_color=config.COLOR_TEXT):
+        super().__init__(x, y, w, h)
+        self.options = options  # List of string options
+        self.selected_index = selected_index
+        self.text_color = text_color
+        self.hovered = False
+        self.expanded = False  # Is the dropdown list showing?
+        self.hovered_option = -1  # Which option is being hovered
+        self.option_height = h  # Height of each option in the list
+        self.on_change = None  # Callback when selection changes
+
+    def get_selected(self):
+        """Get the currently selected option string."""
+        if 0 <= self.selected_index < len(self.options):
+            return self.options[self.selected_index]
+        return ""
+
+    def get_selected_index(self):
+        return self.selected_index
+
+    def set_options(self, options, selected_index=0):
+        """Update the list of options."""
+        self.options = options
+        self.selected_index = min(selected_index, len(options) - 1) if options else 0
+
+    def get_expanded_rect(self):
+        """Get the rectangle covering the expanded dropdown list."""
+        if not self.options:
+            return pygame.Rect(0, 0, 0, 0)
+        list_height = len(self.options) * self.option_height
+        return pygame.Rect(self.rect.x, self.rect.bottom, self.rect.width, list_height)
+
+    def handle_event(self, event):
+        if not self.visible:
+            return False
+
+        if event.type == pygame.MOUSEMOTION:
+            self.hovered = self.rect.collidepoint(event.pos)
+            if self.expanded:
+                expanded_rect = self.get_expanded_rect()
+                if expanded_rect.collidepoint(event.pos):
+                    # Determine which option is hovered
+                    rel_y = event.pos[1] - expanded_rect.y
+                    self.hovered_option = int(rel_y // self.option_height)
+                else:
+                    self.hovered_option = -1
+
+        elif event.type == pygame.MOUSEBUTTONDOWN:
+            if self.rect.collidepoint(event.pos):
+                # Toggle expanded state
+                self.expanded = not self.expanded
+                self.hovered_option = -1
+                SoundManager.get().play_sound('click')
+                return True
+            elif self.expanded:
+                expanded_rect = self.get_expanded_rect()
+                if expanded_rect.collidepoint(event.pos):
+                    # Select the clicked option
+                    rel_y = event.pos[1] - expanded_rect.y
+                    clicked_index = int(rel_y // self.option_height)
+                    if 0 <= clicked_index < len(self.options):
+                        old_index = self.selected_index
+                        self.selected_index = clicked_index
+                        self.expanded = False
+                        SoundManager.get().play_sound('snap')
+                        if self.on_change and old_index != clicked_index:
+                            self.on_change(clicked_index, self.options[clicked_index])
+                        return True
+                else:
+                    # Click outside - close dropdown
+                    self.expanded = False
+                    return True
+
+        return False
+
+    def draw(self, screen, font):
+        if not self.visible:
+            return
+
+        # Draw main button
+        bg = config.COLOR_INPUT_ACTIVE if self.expanded else config.COLOR_INPUT_BG
+        if self.hovered and not self.expanded:
+            bg = (min(255, bg[0] + 10), min(255, bg[1] + 10), min(255, bg[2] + 10))
+
+        pygame.draw.rect(screen, bg, self.rect, border_radius=4)
+        border = config.COLOR_ACCENT if self.expanded else config.PANEL_BORDER_COLOR
+        pygame.draw.rect(screen, border, self.rect, 1, border_radius=4)
+
+        # Draw selected text
+        selected_text = self.get_selected()
+        ts = font.render(selected_text, True, self.text_color)
+        text_x = self.rect.x + 5
+        text_y = self.rect.centery - ts.get_height() // 2
+        # Clip text area: leave room for arrow on right (20px), minimal padding on left (2px)
+        clip_rect = pygame.Rect(self.rect.x + 2, self.rect.y + 2, self.rect.width - 22, self.rect.height - 4)
+        screen.set_clip(clip_rect)
+        screen.blit(ts, (text_x, text_y))
+        screen.set_clip(None)
+
+        # Draw dropdown arrow
+        arrow_x = self.rect.right - 15
+        arrow_y = self.rect.centery
+        arrow_size = 4
+        if self.expanded:
+            # Up arrow
+            points = [(arrow_x, arrow_y + 2), (arrow_x - arrow_size, arrow_y + arrow_size + 2),
+                      (arrow_x + arrow_size, arrow_y + arrow_size + 2)]
+        else:
+            # Down arrow
+            points = [(arrow_x, arrow_y + arrow_size), (arrow_x - arrow_size, arrow_y),
+                      (arrow_x + arrow_size, arrow_y)]
+        pygame.draw.polygon(screen, self.text_color, points)
+
+        # Draw expanded list
+        if self.expanded and self.options:
+            expanded_rect = self.get_expanded_rect()
+            # Shadow
+            shadow_rect = expanded_rect.copy()
+            shadow_rect.x += 3
+            shadow_rect.y += 3
+            pygame.draw.rect(screen, (0, 0, 0, 80), shadow_rect, border_radius=4)
+            # Background
+            pygame.draw.rect(screen, config.PANEL_BG_COLOR, expanded_rect, border_radius=4)
+            pygame.draw.rect(screen, config.COLOR_ACCENT, expanded_rect, 1, border_radius=4)
+
+            for i, option in enumerate(self.options):
+                option_rect = pygame.Rect(expanded_rect.x, expanded_rect.y + i * self.option_height,
+                                          expanded_rect.width, self.option_height)
+                # Highlight hovered option
+                if i == self.hovered_option:
+                    pygame.draw.rect(screen, config.COLOR_ACCENT, option_rect)
+                elif i == self.selected_index:
+                    pygame.draw.rect(screen, (60, 60, 70), option_rect)
+
+                opt_surf = font.render(option, True, self.text_color)
+                screen.blit(opt_surf, (option_rect.x + 5, option_rect.centery - opt_surf.get_height() // 2))
+
 
 class SmartSlider(UIElement):
     def __init__(self, x, y, w, min_val, max_val, initial_val, label, hard_min=None, hard_max=None):
@@ -591,6 +791,8 @@ class SmartSlider(UIElement):
     def update(self, dt):
         self.anim_hover.target = 1.0 if self.hovered or self.dragging else 0.0
         self.anim_hover.update(dt)
+        # Update input field for cursor blinking
+        self.in_val.update(dt)
 
     def handle_event(self, event):
         if not self.visible: return False
@@ -859,69 +1061,135 @@ class ContextMenu(UIElement):
 # =============================================================================
 
 class MaterialDialog:
+    CREATE_NEW_OPTION = "[ Create New ]"
+
     def __init__(self, x, y, sketch, current_material_id):
-        self.rect = pygame.Rect(x, y, 300, 280)
+        self.rect = pygame.Rect(x, y, 300, 320)  # Taller to fit dropdown
         self.sketch = sketch
         self.done = False
         self.apply = False
         self.visible = True
-        
+
+        # Build dropdown options: "Create New" first, then existing materials
+        self.material_names = list(sketch.materials.keys())
+        dropdown_options = [self.CREATE_NEW_OPTION] + self.material_names
+
+        # Determine initial selection
+        if current_material_id in self.material_names:
+            selected_idx = self.material_names.index(current_material_id) + 1  # +1 for Create New
+        else:
+            selected_idx = 0  # Create New
+
         mat = sketch.get_material(current_material_id)
-        
-        self.in_id = InputField(x + 120, y + 45, 150, 25, mat.name)
-        self.in_sigma = InputField(x + 120, y + 80, 150, 25, str(mat.sigma))
-        self.in_epsilon = InputField(x + 120, y + 115, 150, 25, str(mat.epsilon))
-        self.in_spacing = InputField(x + 120, y + 150, 150, 25, str(mat.spacing))
-        
-        self.btn_phys = Button(x + 120, y + 185, 80, 25, "Solid" if mat.physical else "Ghost", 
+
+        # Dropdown for selecting existing materials or creating new
+        self.dropdown = Dropdown(x + 120, y + 45, 150, 25, dropdown_options, selected_idx)
+        self.dropdown.on_change = self._on_material_selected
+
+        # Material ID input (only visible when "Create New" is selected)
+        self.in_id = InputField(x + 120, y + 80, 150, 25, mat.name if selected_idx == 0 else "")
+        self.in_id.visible = (selected_idx == 0)
+
+        self.in_sigma = InputField(x + 120, y + 115, 150, 25, str(mat.sigma))
+        self.in_epsilon = InputField(x + 120, y + 150, 150, 25, str(mat.epsilon))
+        self.in_spacing = InputField(x + 120, y + 185, 150, 25, str(mat.spacing))
+
+        self.btn_phys = Button(x + 120, y + 220, 80, 25, "Solid" if mat.physical else "Guide",
                                active=mat.physical, toggle=True, color_active=config.COLOR_SUCCESS)
 
-        self.btn_apply = Button(x + 20, y + 230, 80, 30, "Apply", toggle=False)
-        self.btn_ok = Button(x + 180, y + 230, 80, 30, "OK", toggle=False)
+        self.btn_apply = Button(x + 20, y + 270, 80, 30, "Apply", toggle=False)
+        self.btn_ok = Button(x + 180, y + 270, 80, 30, "OK", toggle=False)
 
-    def handle_event(self, event):
-        if not self.visible: return False
-        
-        if self.in_id.handle_event(event):
-            name = self.in_id.get_text()
-            if name in self.sketch.materials:
-                m = self.sketch.materials[name]
+        # Track mode
+        self.is_create_new = (selected_idx == 0)
+
+    def _on_material_selected(self, index, option):
+        """Called when dropdown selection changes."""
+        if option == self.CREATE_NEW_OPTION:
+            # Create New mode - show editable name field
+            self.is_create_new = True
+            self.in_id.visible = True
+            self.in_id.text = ""
+            self.in_id.cursor_pos = 0
+            # Reset to defaults
+            self.in_sigma.set_value(1.0)
+            self.in_epsilon.set_value(1.0)
+            self.in_spacing.set_value(0.7)
+            self.btn_phys.active = True
+            self.btn_phys.text = "Solid"
+            self.btn_phys.cached_surf = None
+        else:
+            # Existing material selected
+            self.is_create_new = False
+            self.in_id.visible = False
+            m = self.sketch.materials.get(option)
+            if m:
                 self.in_sigma.set_value(m.sigma)
                 self.in_epsilon.set_value(m.epsilon)
                 self.in_spacing.set_value(m.spacing)
                 self.btn_phys.active = m.physical
-                self.btn_phys.text = "Solid" if m.physical else "Ghost"
+                self.btn_phys.text = "Solid" if m.physical else "Guide"
                 self.btn_phys.cached_surf = None
-            return True
-            
-        if self.in_sigma.handle_event(event): return True
-        if self.in_epsilon.handle_event(event): return True
-        if self.in_spacing.handle_event(event): return True
-        
-        if self.btn_phys.handle_event(event):
-            self.btn_phys.text = "Solid" if self.btn_phys.active else "Ghost"
-            self.btn_phys.cached_surf = None
+
+    def handle_event(self, event):
+        if not self.visible:
+            return False
+
+        # Handle dropdown first (it may be expanded and overlay other widgets)
+        if self.dropdown.handle_event(event):
             return True
 
-        if self.btn_apply.handle_event(event):
-            self.apply = True; return True
-        if self.btn_ok.handle_event(event):
-            self.apply = True; self.done = True; return True
-        
+        # Handle other inputs only if dropdown is not expanded
+        if not self.dropdown.expanded:
+            if self.in_id.visible and self.in_id.handle_event(event):
+                return True
+
+            if self.in_sigma.handle_event(event):
+                return True
+            if self.in_epsilon.handle_event(event):
+                return True
+            if self.in_spacing.handle_event(event):
+                return True
+
+            if self.btn_phys.handle_event(event):
+                self.btn_phys.text = "Solid" if self.btn_phys.active else "Guide"
+                self.btn_phys.cached_surf = None
+                return True
+
+            if self.btn_apply.handle_event(event):
+                self.apply = True
+                return True
+            if self.btn_ok.handle_event(event):
+                self.apply = True
+                self.done = True
+                return True
+
         # Absorb clicks inside dialog
         if event.type == pygame.MOUSEBUTTONDOWN and self.rect.collidepoint(event.pos):
             return True
-            
+
         return False
-        
+
     def update(self, dt):
+        # Update input fields for cursor blinking
+        self.in_id.update(dt)
+        self.in_sigma.update(dt)
+        self.in_epsilon.update(dt)
+        self.in_spacing.update(dt)
+        # Update buttons
         self.btn_phys.update(dt)
         self.btn_apply.update(dt)
         self.btn_ok.update(dt)
 
     def get_result(self):
-        name = self.in_id.get_text()
-        if not name: name = "Default"
+        if self.is_create_new:
+            name = self.in_id.get_text()
+            if not name:
+                name = "Default"
+        else:
+            # Use the selected material name from dropdown
+            name = self.dropdown.get_selected()
+
         m = Material(
             name,
             sigma=self.in_sigma.get_value(1.0),
@@ -932,31 +1200,44 @@ class MaterialDialog:
         return m
 
     def draw(self, screen, font):
-        if not self.visible: return
-        
-        shadow = self.rect.copy(); shadow.x += 5; shadow.y += 5
+        if not self.visible:
+            return
+
+        shadow = self.rect.copy()
+        shadow.x += 5
+        shadow.y += 5
         s_surf = pygame.Surface((shadow.width, shadow.height), pygame.SRCALPHA)
         pygame.draw.rect(s_surf, (0, 0, 0, 100), s_surf.get_rect(), border_radius=6)
         screen.blit(s_surf, shadow)
-        
+
         pygame.draw.rect(screen, config.PANEL_BG_COLOR, self.rect, border_radius=6)
         pygame.draw.rect(screen, config.COLOR_ACCENT, self.rect, 1, border_radius=6)
-        
+
         title = font.render("Material Editor", True, (255, 255, 255))
         screen.blit(title, (self.rect.x + 15, self.rect.y + 10))
-        
-        labels = ["Material ID:", "Sigma:", "Epsilon:", "Spacing:", "Physics:"]
-        ys = [50, 85, 120, 155, 190]
-        for l, y in zip(labels, ys):
-            screen.blit(font.render(l, True, config.COLOR_TEXT), (self.rect.x + 20, self.rect.y + y))
-        
-        self.in_id.draw(screen, font)
+
+        # Labels - adjust based on whether we're in create new mode
+        screen.blit(font.render("Material:", True, config.COLOR_TEXT), (self.rect.x + 20, self.rect.y + 50))
+
+        if self.is_create_new:
+            screen.blit(font.render("New Name:", True, config.COLOR_TEXT), (self.rect.x + 20, self.rect.y + 85))
+
+        labels_with_ys = [("Sigma:", 120), ("Epsilon:", 155), ("Spacing:", 190), ("Physics:", 225)]
+        for label, y in labels_with_ys:
+            screen.blit(font.render(label, True, config.COLOR_TEXT), (self.rect.x + 20, self.rect.y + y))
+
+        # Draw widgets (dropdown last so its expanded list appears on top)
+        if self.in_id.visible:
+            self.in_id.draw(screen, font)
         self.in_sigma.draw(screen, font)
         self.in_epsilon.draw(screen, font)
         self.in_spacing.draw(screen, font)
         self.btn_phys.draw(screen, font)
         self.btn_apply.draw(screen, font)
         self.btn_ok.draw(screen, font)
+
+        # Draw dropdown last so expanded list renders on top
+        self.dropdown.draw(screen, font)
 
 class RotationDialog:
     def __init__(self, x, y, anim_data):
@@ -1000,6 +1281,7 @@ class RotationDialog:
         return False
     
     def update(self, dt):
+        self.in_speed.update(dt)
         self.btn_pivot.update(dt)
         self.btn_apply.update(dt)
         self.btn_ok.update(dt)
@@ -1091,6 +1373,12 @@ class AnimationDialog:
         return False
     
     def update(self, dt):
+        # Update input fields for cursor blinking
+        self.in_amp.update(dt)
+        self.in_freq.update(dt)
+        self.in_phase.update(dt)
+        self.in_rate.update(dt)
+        # Update buttons
         self.btn_tab_sin.update(dt)
         self.btn_tab_lin.update(dt)
         self.btn_stop.update(dt)

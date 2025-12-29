@@ -10,7 +10,7 @@ class Material:
         # Auto-calculate spacing if not provided (0.7 * sigma is standard for fluid walls)
         self.spacing = float(spacing) if spacing is not None else (0.7 * self.sigma)
         self.color = tuple(color)
-        self.physical = physical  # True = Collidable, False = Ghost/Guide
+        self.physical = physical  # True = Collidable, False = Guide (non-atomized)
 
     def to_dict(self):
         return {

@@ -211,16 +211,21 @@ class InputHandler:
         if self.controller.actions.prop_dialog:
             dialog = self.controller.actions.prop_dialog
 
-            # Click-outside-to-dismiss
+            # Click-outside-to-dismiss (but not if dropdown is expanded)
             if event.type == pygame.MOUSEBUTTONDOWN:
-                if not dialog.rect.collidepoint(event.pos):
-                    self.controller.actions.prop_dialog = None
-                    return True
+                dropdown_expanded = hasattr(dialog, 'dropdown') and dialog.dropdown.expanded
+                if not dialog.rect.collidepoint(event.pos) and not dropdown_expanded:
+                    # Also check if click is in expanded dropdown area
+                    if not (dropdown_expanded and dialog.dropdown.get_expanded_rect().collidepoint(event.pos)):
+                        self.controller.actions.prop_dialog = None
+                        return True
 
             if dialog.handle_event(event):
+                # Check for apply (with or without closing)
+                if dialog.apply:
+                    self.controller.actions.apply_material_from_dialog(dialog)
+                    dialog.apply = False  # Reset so we don't re-apply
                 if dialog.done:
-                    if dialog.apply:
-                        self.controller.actions.apply_material_from_dialog(dialog)
                     self.controller.actions.prop_dialog = None
                 return True
 
