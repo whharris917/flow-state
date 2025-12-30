@@ -102,7 +102,6 @@ def integrate_n_steps(
     pos_x, pos_y, vel_x, vel_y, force_x, force_y,
     last_x, last_y,
     is_static,
-    kinematic_props,
     atom_sigma, atom_eps_sqrt, mass,
     pair_i, pair_j, pair_count,
     tether_entity_idx,  # For intra-entity force exclusion
@@ -153,27 +152,6 @@ def integrate_n_steps(
                 pos_y[i] = yi
                 vel_x[i] += force_x[i] * inv_mass * half_dt
                 vel_y[i] += force_y[i] * inv_mass * half_dt
-            
-            elif st == 2:
-                # Kinematic (Rotating) Particle Update
-                pivot_x = kinematic_props[i, 0]
-                pivot_y = kinematic_props[i, 1]
-                omega = kinematic_props[i, 2]
-
-                d_theta = omega * dt
-                c = math.cos(d_theta)
-                s = math.sin(d_theta)
-
-                rx = pos_x[i] - pivot_x
-                ry = pos_y[i] - pivot_y
-
-                pos_x[i] = pivot_x + rx * c - ry * s
-                pos_y[i] = pivot_y + rx * s + ry * c
-
-                rx = pos_x[i] - pivot_x
-                ry = pos_y[i] - pivot_y
-                vel_x[i] = -omega * ry
-                vel_y[i] =  omega * rx
 
             elif st == 3:
                 # Tethered Particle Integration (bound to geometry via spring)
@@ -211,7 +189,7 @@ def integrate_n_steps(
                 force_x[i] = 0.0
                 force_y[i] = mass * gravity
             else:
-                # Static/Kinematic/Tethered: reset to zero (no gravity)
+                # Static/Tethered: reset to zero (no gravity)
                 force_x[i] = 0.0
                 force_y[i] = 0.0
 
@@ -273,7 +251,7 @@ def integrate_n_steps(
     return steps_done
 
 @njit(fastmath=True)
-def spatial_sort(pos_x, pos_y, vel_x, vel_y, force_x, force_y, is_static, kinematic_props, atom_sigma, atom_eps_sqrt, world_size, cell_size):
+def spatial_sort(pos_x, pos_y, vel_x, vel_y, force_x, force_y, is_static, atom_sigma, atom_eps_sqrt, world_size, cell_size):
     # Sorting is usually fast enough in serial, and parallel sort is complex to implement.
     N = pos_x.shape[0]
     n_cells = int(world_size // cell_size) + 1
@@ -284,7 +262,7 @@ def spatial_sort(pos_x, pos_y, vel_x, vel_y, force_x, force_y, is_static, kinema
         cy = int(pos_y[i] * inv_cell)
         keys[i] = cy * n_cells + cx
     perm = np.argsort(keys)
-    
+
     pos_x[:] = pos_x[perm]
     pos_y[:] = pos_y[perm]
     vel_x[:] = vel_x[perm]
@@ -292,7 +270,6 @@ def spatial_sort(pos_x, pos_y, vel_x, vel_y, force_x, force_y, is_static, kinema
     force_x[:] = force_x[perm]
     force_y[:] = force_y[perm]
     is_static[:] = is_static[perm]
-    kinematic_props[:] = kinematic_props[perm]
     atom_sigma[:] = atom_sigma[perm]
     atom_eps_sqrt[:] = atom_eps_sqrt[perm]
 
@@ -362,7 +339,7 @@ def apply_tether_forces_pbd(
     Args:
         pos_x, pos_y: Particle positions
         force_x, force_y: Particle force accumulators (modified)
-        is_static: Particle types (0=dynamic, 1=static, 2=kinematic, 3=tethered)
+        is_static: Particle types (0=dynamic, 1=static, 3=tethered)
         tether_entity_idx: Entity index for each particle (-1 if not tethered)
         tether_local_pos: Local coordinates [t or theta, unused]
         tether_stiffness: Spring constant k for each particle

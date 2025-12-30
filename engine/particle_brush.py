@@ -112,8 +112,8 @@ class ParticleBrush:
     def erase(self, x: float, y: float, radius: float) -> int:
         """
         Remove dynamic particles within a circular brush area.
-        
-        Static and kinematic particles are preserved.
+
+        Static and tethered particles are preserved.
         
         Args:
             x: World X coordinate of brush center
@@ -129,7 +129,7 @@ class ParticleBrush:
         # Find particles to remove (dynamic only)
         indices_to_remove = []
         for i in range(sim.count):
-            # Skip static (1) and kinematic (2) particles
+            # Skip non-dynamic particles (static=1, tethered=3)
             if sim.is_static[i] != 0:
                 continue
             
@@ -174,7 +174,6 @@ class ParticleBrush:
         sim.vel_x[idx] = 0.0
         sim.vel_y[idx] = 0.0
         sim.is_static[idx] = 0  # Dynamic
-        sim.kinematic_props[idx, :] = 0.0
         sim.atom_sigma[idx] = sigma
         sim.atom_eps_sqrt[idx] = math.sqrt(epsilon)
         sim.atom_color[idx] = color

@@ -55,7 +55,6 @@ class Simulation:
         self.force_x = np.zeros(self.capacity, dtype=np.float32)
         self.force_y = np.zeros(self.capacity, dtype=np.float32)
         self.is_static = np.zeros(self.capacity, dtype=np.int32)
-        self.kinematic_props = np.zeros((self.capacity, 3), dtype=np.float32)
         self.atom_sigma = np.zeros(self.capacity, dtype=np.float32)
         self.atom_eps_sqrt = np.zeros(self.capacity, dtype=np.float32)
         self.atom_color = np.zeros((self.capacity, 3), dtype=np.uint8)  # RGB per particle
@@ -163,7 +162,7 @@ class Simulation:
             self.vel_x[:2], self.vel_y[:2],
             self.force_x[:2], self.force_y[:2],
             self.last_x[:2], self.last_y[:2],
-            self.is_static[:2], self.kinematic_props[:2],
+            self.is_static[:2],
             self.atom_sigma[:2], self.atom_eps_sqrt[:2],
             f32_vals[0], self.pair_i, self.pair_j, self.pair_count,
             self.tether_entity_idx[:2],  # For intra-entity exclusion
@@ -175,7 +174,7 @@ class Simulation:
         spatial_sort(
             self.pos_x[:2], self.pos_y[:2], self.vel_x[:2], self.vel_y[:2],
             self.force_x[:2], self.force_y[:2], self.is_static[:2],
-            self.kinematic_props[:2], self.atom_sigma[:2], self.atom_eps_sqrt[:2],
+            self.atom_sigma[:2], self.atom_eps_sqrt[:2],
             self.world_size, self.cell_size
         )
         
@@ -198,7 +197,6 @@ class Simulation:
             'vel_x': np.copy(self.vel_x[:self.count]),
             'vel_y': np.copy(self.vel_y[:self.count]),
             'is_static': np.copy(self.is_static[:self.count]),
-            'kinematic_props': np.copy(self.kinematic_props[:self.count]),
             'atom_sigma': np.copy(self.atom_sigma[:self.count]),
             'atom_eps_sqrt': np.copy(self.atom_eps_sqrt[:self.count]),
             'atom_color': np.copy(self.atom_color[:self.count]),
@@ -222,7 +220,6 @@ class Simulation:
         self.vel_x[:self.count] = state['vel_x']
         self.vel_y[:self.count] = state['vel_y']
         self.is_static[:self.count] = state['is_static']
-        self.kinematic_props[:self.count] = state['kinematic_props']
         self.atom_sigma[:self.count] = state['atom_sigma']
         self.atom_eps_sqrt[:self.count] = state['atom_eps_sqrt']
         if 'atom_color' in state:
@@ -258,7 +255,6 @@ class Simulation:
             'vel_x': np.copy(self.vel_x[:self.count]),
             'vel_y': np.copy(self.vel_y[:self.count]),
             'is_static': np.copy(self.is_static[:self.count]),
-            'kinematic_props': np.copy(self.kinematic_props[:self.count]),
             'atom_sigma': np.copy(self.atom_sigma[:self.count]),
             'atom_eps_sqrt': np.copy(self.atom_eps_sqrt[:self.count]),
             'atom_color': np.copy(self.atom_color[:self.count]),
@@ -289,7 +285,6 @@ class Simulation:
         self.vel_x.fill(0)
         self.vel_y.fill(0)
         self.is_static.fill(0)
-        self.kinematic_props.fill(0)
         self.rebuild_next = True
 
     def reset(self):
@@ -321,7 +316,6 @@ class Simulation:
             'vel_x': self.vel_x[:self.count].tolist(),
             'vel_y': self.vel_y[:self.count].tolist(),
             'is_static': self.is_static[:self.count].tolist(),
-            'kinematic_props': self.kinematic_props[:self.count].tolist(),
             'atom_sigma': self.atom_sigma[:self.count].tolist(),
             'atom_eps_sqrt': self.atom_eps_sqrt[:self.count].tolist(),
             'atom_color': self.atom_color[:self.count].tolist(),
@@ -347,8 +341,6 @@ class Simulation:
             self.vel_y[:self.count] = np.array(data['vel_y'], dtype=np.float32)
         if 'is_static' in data:
             self.is_static[:self.count] = np.array(data['is_static'], dtype=np.int32)
-        if 'kinematic_props' in data:
-            self.kinematic_props[:self.count] = np.array(data['kinematic_props'], dtype=np.float32)
         if 'atom_sigma' in data:
             self.atom_sigma[:self.count] = np.array(data['atom_sigma'], dtype=np.float32)
         if 'atom_eps_sqrt' in data:
@@ -590,7 +582,6 @@ class Simulation:
         self.vel_x[:new_count] = self.vel_x[indices]
         self.vel_y[:new_count] = self.vel_y[indices]
         self.is_static[:new_count] = self.is_static[indices]
-        self.kinematic_props[:new_count] = self.kinematic_props[indices]
         self.atom_sigma[:new_count] = self.atom_sigma[indices]
         self.atom_eps_sqrt[:new_count] = self.atom_eps_sqrt[indices]
         self.atom_color[:new_count] = self.atom_color[indices]
@@ -619,7 +610,7 @@ class Simulation:
         Args:
             x, y: Position
             vx, vy: Velocity (default 0)
-            is_static: 0=dynamic, 1=static, 2=kinematic
+            is_static: 0=dynamic, 1=static, 3=tethered
             sigma: Particle size (default: self.sigma)
             epsilon: LJ energy parameter (default: self.epsilon)
             
@@ -732,7 +723,7 @@ class Simulation:
                 self.vel_x[:self.count], self.vel_y[:self.count],
                 self.force_x[:self.count], self.force_y[:self.count],
                 self.last_x[:self.count], self.last_y[:self.count],
-                self.is_static[:self.count], self.kinematic_props[:self.count],
+                self.is_static[:self.count],
                 self.atom_sigma[:self.count], self.atom_eps_sqrt[:self.count],
                 np.float32(config.ATOM_MASS),
                 self.pair_i, self.pair_j, self.pair_count,
@@ -793,7 +784,6 @@ class Simulation:
         self.force_x = np.resize(self.force_x, self.capacity)
         self.force_y = np.resize(self.force_y, self.capacity)
         self.is_static = np.resize(self.is_static, self.capacity)
-        self.kinematic_props = np.resize(self.kinematic_props, (self.capacity, 3))
         self.atom_sigma = np.resize(self.atom_sigma, self.capacity)
         self.atom_eps_sqrt = np.resize(self.atom_eps_sqrt, self.capacity)
         old_color = self.atom_color

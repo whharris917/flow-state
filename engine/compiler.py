@@ -9,7 +9,6 @@ Data flow is ONE-WAY: Sketch → Simulation (never reverse)
 Particle Types (is_static):
 - 0: Dynamic particle (free-moving fluid)
 - 1: Static particle (immovable wall)
-- 2: Kinematic particle (scripted motion)
 - 3: Tethered particle (bound to geometry via spring)
 
 Handle System:
@@ -59,7 +58,6 @@ class Compiler:
 
         Atom types created:
         - Static (is_static=1): For non-dynamic entities
-        - Kinematic (is_static=2): For animated entities
         - Tethered (is_static=3): For dynamic entities (two-way coupling)
 
         Args:
@@ -139,22 +137,6 @@ class Compiler:
         # Get tether stiffness from material or use default
         tether_k = getattr(mat, 'tether_stiffness', config.DEFAULT_TETHER_STIFFNESS)
 
-        # Check for Kinematics (Drivers/Animation) - only for non-dynamic
-        anim = w.anim
-        is_rotating = False
-        pivot = np.zeros(2)
-        omega = 0.0
-
-        if not w.dynamic and anim and anim.get('type') == 'rotate':
-            is_rotating = True
-            omega = math.radians(anim['speed'])
-            if anim['pivot'] == 'start':
-                pivot = w.start
-            elif anim['pivot'] == 'end':
-                pivot = w.end
-            else:
-                pivot = (w.start + w.end) * 0.5
-
         # Generate Atoms
         for k in range(num_atoms):
             if self.sim.count >= self.sim.capacity:
@@ -172,9 +154,8 @@ class Compiler:
                 self._add_tethered_atom(pos, entity_idx, t, tether_k,
                                         mat.sigma, math.sqrt(mat.epsilon))
             else:
-                # Static or kinematic atom (with tether data for position sync)
+                # Static atom (with tether data for position sync)
                 self._add_static_atom(pos, mat.sigma, math.sqrt(mat.epsilon),
-                                      is_rotating, pivot, omega,
                                       entity_idx=entity_idx, local_t=t)
 
             # Track start (pt_idx=0) and end (pt_idx=1) atoms for coincident joints
@@ -214,7 +195,6 @@ class Compiler:
             else:
                 # Static atom (with tether data for position sync)
                 self._add_static_atom(pos, mat.sigma, math.sqrt(mat.epsilon),
-                                      False, np.zeros(2), 0.0,
                                       entity_idx=entity_idx, local_t=angle)
 
     def _add_tethered_atom(self, pos, entity_idx, local_t, stiffness, sig, eps_sqrt):
@@ -248,23 +228,16 @@ class Compiler:
         self.sim.tether_local_pos[idx, 1] = 0.0  # Reserved for future use
         self.sim.tether_stiffness[idx] = stiffness
 
-        # Clear kinematic props (not used for tethered)
-        self.sim.kinematic_props[idx, :] = 0.0
-
         self.sim.count += 1
 
-    def _add_static_atom(self, pos, sig, eps_sqrt, rotating, pivot, omega,
-                         entity_idx=-1, local_t=0.0):
+    def _add_static_atom(self, pos, sig, eps_sqrt, entity_idx=-1, local_t=0.0):
         """
-        Add a single static or kinematic atom to the simulation.
+        Add a single static atom to the simulation.
 
         Args:
             pos: World position [x, y]
             sig: LJ sigma parameter
             eps_sqrt: Square root of LJ epsilon
-            rotating: If True, this is a kinematic (rotating) atom
-            pivot: Rotation pivot point [x, y] (only used if rotating)
-            omega: Angular velocity (only used if rotating)
             entity_idx: Index of parent entity (-1 if none, used for static sync)
             local_t: Local coordinate on entity (t for lines, angle for circles)
         """
@@ -273,15 +246,7 @@ class Compiler:
         self.sim.pos_y[idx] = pos[1]
         self.sim.vel_x[idx] = 0.0
         self.sim.vel_y[idx] = 0.0
-
-        if rotating:
-            self.sim.is_static[idx] = 2  # Kinematic
-            self.sim.kinematic_props[idx, 0] = pivot[0]
-            self.sim.kinematic_props[idx, 1] = pivot[1]
-            self.sim.kinematic_props[idx, 2] = omega
-        else:
-            self.sim.is_static[idx] = 1  # Static
-            self.sim.kinematic_props[idx, :] = 0.0
+        self.sim.is_static[idx] = 1  # Static
 
         self.sim.atom_sigma[idx] = sig
         self.sim.atom_eps_sqrt[idx] = eps_sqrt

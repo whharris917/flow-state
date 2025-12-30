@@ -144,10 +144,7 @@ def load_file(scene, filepath):
         
         if 'is_static' in data:
             physics_data['is_static'] = np.array(data['is_static'], dtype=np.int32)
-        
-        if 'kinematic_props' in data:
-            physics_data['kinematic_props'] = np.array(data['kinematic_props'], dtype=np.float32)
-        
+
         simulation.restore(physics_data)
         
         # 5. Mark geometry dirty and rebuild
