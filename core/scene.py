@@ -74,12 +74,15 @@ class Scene:
         
         # Command Queue for CAD undo/redo
         self.commands = CommandQueue(max_history=50)
-        
+
         # ProcessObjects (Sources, Sinks, Heaters, Sensors)
         self.process_objects = []
-        
-        # Track geometry changes for rebuild optimization
-        self._geometry_dirty = False
+
+        # --- Dirty Flags for Rebuild Optimization ---
+        # topology_dirty: Entity count/material changed → requires full rebuild()
+        # geometry_moved: Positions changed → only requires sync_entity_arrays()
+        self._topology_dirty = False
+        self._geometry_dirty = False  # Legacy flag, kept for compatibility
     
     # =========================================================================
     # Convenience Aliases (for common access patterns)
@@ -169,59 +172,69 @@ class Scene:
     def execute(self, command):
         """
         Execute a command and add to history.
-        After execution, marks geometry dirty for rebuild.
-        
+
+        Sets appropriate dirty flags based on command type:
+        - changes_topology=True → _topology_dirty (requires full rebuild)
+        - changes_topology=False → _geometry_dirty (requires sync only)
+
         Args:
             command: A Command instance
-            
+
         Returns:
             True if command executed successfully
         """
         result = self.commands.execute(command)
         if result:
-            self._geometry_dirty = True
+            if getattr(command, 'changes_topology', False):
+                self._topology_dirty = True
+            else:
+                self._geometry_dirty = True
         return result
     
     def undo(self):
         """
         Undo the last CAD command.
-        
+
         Returns:
             True if undo was successful
         """
         result = self.commands.undo()
         if result:
-            self._geometry_dirty = True
+            # Conservative: undo always triggers full rebuild
+            # (we don't track what the undone command was)
+            self._topology_dirty = True
             self.rebuild()
         return result
-    
+
     def redo(self):
         """
         Redo the last undone CAD command.
-        
+
         Returns:
             True if redo was successful
         """
         result = self.commands.redo()
         if result:
-            self._geometry_dirty = True
+            # Conservative: redo always triggers full rebuild
+            self._topology_dirty = True
             self.rebuild()
         return result
     
     def discard(self):
         """
         Discard the last CAD command. Like undo but CANNOT be redone.
-        
+
         Use this for canceling preview operations where the user
         explicitly abandoned the operation (e.g., pressing Escape
         while drawing a line).
-        
+
         Returns:
             True if discard was successful
         """
         result = self.commands.discard()
         if result:
-            self._geometry_dirty = True
+            # Conservative: discard always triggers full rebuild
+            self._topology_dirty = True
             self.rebuild()
         return result
 
@@ -240,62 +253,151 @@ class Scene:
     def update(self, dt, geo_time, run_physics=True, physics_steps=1):
         """
         Main frame update - orchestrates the correct order of operations.
-        
-        This is the SINGLE ENTRY POINT for frame updates. It ensures:
-        1. Constraint drivers are updated (animations)
-        2. Constraints are solved (geometry moves)
-        3. Static atoms are rebuilt if geometry changed
-        4. ProcessObjects execute (particle spawning, etc.)
-        5. Physics step runs (if enabled)
-        
+
+        This is the SINGLE ENTRY POINT for frame updates. Implements the
+        new orchestration for two-way coupling:
+
+        1. TOPOLOGY CHECK: Full rebuild if entities added/removed
+        2. DRIVER UPDATE: Animate constraint values
+        3. SYNC ENTITY ARRAYS: Copy positions to physics arrays (fast path)
+        4. PHYSICS SUB-LOOP: (Future) Tether forces + entity integration
+        5. CONSTRAINT SOLVE: PBD solver corrects geometry
+        6. POST-CONSTRAINT SYNC: Update anchor positions after solve
+        7. PROCESS OBJECTS: Sources emit, drains absorb
+        8. PHYSICS STEP: Particle simulation
+
         Args:
             dt: Delta time since last frame (seconds)
             geo_time: Current geometry/animation time (seconds)
             run_physics: If True, run physics simulation step
             physics_steps: Number of physics sub-steps to run
-        
+
         Returns:
-            True if geometry was modified (rebuild occurred)
+            True if geometry was modified
         """
-        geometry_changed = False
-        
-        # 1. Update constraint drivers (animation)
+        geometry_moved = False
+
+        # 1. TOPOLOGY CHECK - Full rebuild if entity count/material changed
+        if self._topology_dirty:
+            self.rebuild()
+            self._topology_dirty = False
+            self._geometry_dirty = False  # Rebuild covers sync
+
+        # 2. DRIVER UPDATE - Animate constraint values
         if self.sketch.constraints:
             old_values = self._snapshot_constraint_values()
             self.sketch.update_drivers(geo_time)
             new_values = self._snapshot_constraint_values()
 
             if old_values != new_values:
-                geometry_changed = True
+                geometry_moved = True
 
-        # 2. Solve constraints (also run if interaction is active for User Servo)
+        # 3. SYNC ENTITY ARRAYS (Before Physics) - Fast path for position updates
+        # This copies current entity positions into flat arrays for physics kernel
+        if self._geometry_dirty or geometry_moved:
+            self.simulation.sync_entity_arrays(self.sketch.entities)
+            self._geometry_dirty = False
+
+        # 4. PHYSICS SUB-LOOP - Two-way coupling between entities and particles
+        # This is where tethered atoms and dynamic entities interact
+        if run_physics and not self.simulation.paused:
+            self._run_physics_coupling(dt)
+            geometry_moved = True  # Entities may have moved
+
+        # 5. CONSTRAINT SOLVE - PBD iterations
+        # Run if constraints exist OR if user is interacting (User Servo)
         if self.sketch.constraints or self.sketch.interaction_data:
             self.sketch.solve()
-            geometry_changed = True  # Conservative: assume solve moved something
-        
-        # 3. Rebuild static atoms if geometry changed
-        if geometry_changed or self._geometry_dirty:
-            self.rebuild()
-            self._geometry_dirty = False
-        
-        # 4. Execute ProcessObjects (BEFORE physics step)
+            geometry_moved = True  # Conservative: assume solve moved something
+
+        # 6. POST-CONSTRAINT SYNC - Update anchor positions after solver
+        # This ensures physics kernel sees the constrained positions
+        if geometry_moved:
+            self.simulation.sync_entity_arrays(self.sketch.entities)
+            # Teleport static atoms to follow their parent entities
+            self.simulation.sync_static_atoms_to_geometry()
+
+        # 7. PROCESS OBJECTS - Execute sources, drains, etc.
         if run_physics and not self.simulation.paused:
             for obj in self.process_objects:
                 if obj.enabled:
                     obj.execute(self.simulation, dt)
-        
-        # 5. Run physics step (if enabled)
+
+        # 8. PHYSICS STEP - Particle simulation
         if run_physics and not self.simulation.paused:
             self.simulation.step(physics_steps)
-        
-        return geometry_changed
+
+        return geometry_moved
     
     def _snapshot_constraint_values(self):
         """Capture current constraint values for change detection."""
         return tuple(
-            getattr(c, 'value', None) 
+            getattr(c, 'value', None)
             for c in self.sketch.constraints
         )
+
+    def _run_physics_coupling(self, dt):
+        """
+        Execute the two-way physics coupling between entities and tethered atoms.
+
+        This implements the core of dynamic rigid body interaction:
+        1. Clear entity force accumulators
+        2. Apply tether forces (atoms pull on entities, entities pull on atoms)
+        3. Retrieve accumulated forces from simulation
+        4. Apply forces to entity Python objects
+        5. Integrate entity velocities and positions
+        6. Sync updated entity positions back to simulation arrays
+
+        Args:
+            dt: Delta time for integration
+        """
+        entities = self.sketch.entities
+
+        # Skip if no entities
+        if not entities:
+            return
+
+        # Step A: Sync entity arrays (Sketch -> Sim)
+        # This was already done in step 3 of update(), but we may need it
+        # for sub-stepping in the future
+
+        # Step B: Clear entity force accumulators
+        self.simulation.clear_entity_forces()
+
+        # Also clear Python-side accumulators for dynamic entities
+        for entity in entities:
+            if entity.dynamic:
+                entity.clear_accumulators()
+
+        # Step C: Apply tether forces (Numba kernel)
+        # This computes spring forces between tethered atoms and their anchors
+        # and accumulates reaction forces on entities
+        self.simulation.apply_tether_forces()
+
+        # Step D: Retrieve forces from simulation and apply to entities
+        entity_forces = self.simulation.get_entity_forces()
+
+        for i, entity in enumerate(entities):
+            if not entity.dynamic:
+                continue
+
+            # Get accumulated force and torque from tethered atoms
+            fx = entity_forces[i, 0]
+            fy = entity_forces[i, 1]
+            torque = entity_forces[i, 2]
+
+            # Apply to entity
+            entity.apply_force(fx, fy)
+            entity.apply_torque(torque)
+
+        # Step E: Integrate entity dynamics
+        for entity in entities:
+            if entity.dynamic:
+                entity.integrate(dt)
+
+        # Step F: Sync updated entity positions back to simulation
+        # This updates anchor positions for the next physics step
+        self.simulation.sync_entity_arrays(entities)
     
     # =========================================================================
     # Compiler Interface
@@ -307,10 +409,26 @@ class Scene:
         Call this after geometry changes that should affect physics.
         """
         self.compiler.rebuild()
+        # Snap tethered atoms to exact anchor positions for cold start
+        # This prevents oscillation from floating-point precision differences
+        self.simulation.snap_tethered_atoms_to_anchors()
     
-    def mark_dirty(self):
-        """Mark geometry as needing rebuild on next update."""
-        self._geometry_dirty = True
+    def mark_dirty(self, topology=False):
+        """
+        Mark geometry as needing update on next frame.
+
+        Args:
+            topology: If True, marks for full rebuild (entity changes).
+                      If False (default), marks for sync only (position changes).
+        """
+        if topology:
+            self._topology_dirty = True
+        else:
+            self._geometry_dirty = True
+
+    def mark_topology_dirty(self):
+        """Mark for full rebuild (entity add/remove, material change)."""
+        self._topology_dirty = True
     
     # =========================================================================
     # Model I/O (.mdl) - Sketch Only
@@ -373,8 +491,8 @@ class Scene:
                 self._import_sketch_at_offset(sketch_data, offset_x, offset_y)
             else:
                 self._import_sketch_direct(sketch_data)
-            
-            self._geometry_dirty = True
+
+            self._topology_dirty = True  # Import adds entities
             return True, f"Model imported: {os.path.basename(path)}"
             
         except json.JSONDecodeError as e:
@@ -557,19 +675,21 @@ class Scene:
         # Remove all ProcessObjects first (unregisters handles)
         for obj in list(self.process_objects):
             self.remove_process_object(obj)
-        
+
         self.sketch.clear()
         self.simulation.clear(snapshot=False)
         self.commands.clear()
+        self._topology_dirty = False
         self._geometry_dirty = False
-    
+
     def new(self):
         """Resets the Scene to a fresh state."""
         # Remove all ProcessObjects first
         for obj in list(self.process_objects):
             self.remove_process_object(obj)
-        
+
         self.sketch.clear()
         self.simulation.reset()
         self.commands.clear()
+        self._topology_dirty = False
         self._geometry_dirty = False

@@ -48,22 +48,31 @@ import numpy as np
 class Command(ABC):
     """
     Base class for all undoable commands.
-    
+
     Each command must implement:
     - execute(): Perform the action, return True if successful
     - undo(): Reverse the action
-    
+
     Optionally:
     - redo(): Re-perform (defaults to calling execute())
     - merge(other): Combine with another command (for drag operations)
-    
+
+    Class Attributes:
+        changes_topology: If True, this command changes entity topology
+                          (add/delete entities, material changes).
+                          Scene uses this to determine if full rebuild is needed
+                          vs just syncing entity positions.
+
     Args:
         historize: If True (default), command is added to undo stack.
                    If False, command executes but is not recorded in history.
         supersede: If True, undo the previous command before executing.
                    Used for "live preview" during drag creation operations.
     """
-    
+
+    # Override in subclasses that change topology
+    changes_topology = False
+
     def __init__(self, historize=True, supersede=False):
         self.description = "Command"
         self.historize = historize
@@ -204,8 +213,10 @@ class CommandQueue:
 
 class AddLineCommand(Command):
     """Add a line to the sketch."""
-    
-    def __init__(self, sketch, start, end, is_ref=False, material_id="Default", 
+
+    changes_topology = True  # Adding entity requires rebuild
+
+    def __init__(self, sketch, start, end, is_ref=False, material_id="Default",
                  historize=True, supersede=False):
         super().__init__(historize, supersede)
         self.sketch = sketch
@@ -232,8 +243,10 @@ class AddLineCommand(Command):
 
 class AddCircleCommand(Command):
     """Add a circle to the sketch."""
-    
-    def __init__(self, sketch, center, radius, material_id="Default", 
+
+    changes_topology = True  # Adding entity requires rebuild
+
+    def __init__(self, sketch, center, radius, material_id="Default",
                  historize=True, supersede=False):
         super().__init__(historize, supersede)
         self.sketch = sketch
@@ -258,7 +271,9 @@ class AddCircleCommand(Command):
 
 class RemoveEntityCommand(Command):
     """Remove an entity from the sketch."""
-    
+
+    changes_topology = True  # Removing entity requires rebuild
+
     def __init__(self, sketch, entity_index, historize=True, supersede=False):
         super().__init__(historize, supersede)
         self.sketch = sketch
@@ -678,6 +693,8 @@ class ToggleInfiniteCommand(Command):
 class SetPhysicalCommand(Command):
     """Set the physical (atomize) state of an entity."""
 
+    changes_topology = True  # Physical flag affects atomization
+
     def __init__(self, sketch, entity_index, is_physical,
                  historize=True, supersede=False):
         super().__init__(historize, supersede)
@@ -701,8 +718,50 @@ class SetPhysicalCommand(Command):
                 self.sketch.update_entity(self.entity_index, physical=self.old_physical)
 
 
+class SetEntityDynamicCommand(Command):
+    """
+    Set the dynamic (two-way coupling) state of an entity.
+
+    When dynamic=True:
+    - Entity responds to physics forces from tethered atoms
+    - Atoms are tethered (is_static=3) instead of static (is_static=1)
+    - Entity has mass, velocity, and can rotate
+
+    When dynamic=False:
+    - Entity is immovable (infinite mass)
+    - Atoms are static walls
+    """
+
+    changes_topology = True  # Dynamic flag changes atom type (static vs tethered)
+
+    def __init__(self, sketch, entity_index, is_dynamic,
+                 historize=True, supersede=False):
+        super().__init__(historize, supersede)
+        self.sketch = sketch
+        self.entity_index = entity_index
+        self.is_dynamic = is_dynamic
+        self.old_dynamic = None
+        self.description = "Set Dynamic"
+
+    def execute(self) -> bool:
+        if 0 <= self.entity_index < len(self.sketch.entities):
+            entity = self.sketch.entities[self.entity_index]
+            self.old_dynamic = getattr(entity, 'dynamic', False)
+            entity.dynamic = self.is_dynamic
+            return True
+        return False
+
+    def undo(self):
+        if self.old_dynamic is not None:
+            if 0 <= self.entity_index < len(self.sketch.entities):
+                entity = self.sketch.entities[self.entity_index]
+                entity.dynamic = self.old_dynamic
+
+
 class SetMaterialCommand(Command):
     """Set the material of an entity."""
+
+    changes_topology = True  # Material affects atomization (spacing, properties)
 
     def __init__(self, sketch, entity_index, material_id,
                  historize=True, supersede=False):
@@ -782,14 +841,16 @@ class CompositeCommand(Command):
 class AddRectangleCommand(CompositeCommand):
     """
     Add a rectangle (4 lines + corner constraints).
-    
+
     Uses supersede pattern for live preview during drag.
-    
+
     Performance optimization: Constraints are added with solve=False,
     then solver runs once at the end.
     """
-    
-    def __init__(self, sketch, x1, y1, x2, y2, material_id="Default", 
+
+    changes_topology = True  # Adding entities requires rebuild
+
+    def __init__(self, sketch, x1, y1, x2, y2, material_id="Default",
                  historize=True, supersede=False):
         # Create 4 line commands (not historized individually - we're the unit)
         line_cmds = [

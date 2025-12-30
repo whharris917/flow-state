@@ -19,9 +19,14 @@ import time
 import core.config as config
 
 from engine.physics_core import (
-    integrate_n_steps, build_neighbor_list, check_displacement, 
-    apply_thermostat, spatial_sort
+    integrate_n_steps, build_neighbor_list, check_displacement,
+    apply_thermostat, spatial_sort, apply_tether_forces_pbd
 )
+
+# Entity type constants (must match physics kernel expectations)
+ENTITY_TYPE_LINE = 0
+ENTITY_TYPE_CIRCLE = 1
+ENTITY_TYPE_POINT = 2
 
 
 class Simulation:
@@ -53,7 +58,30 @@ class Simulation:
         self.kinematic_props = np.zeros((self.capacity, 3), dtype=np.float32)
         self.atom_sigma = np.zeros(self.capacity, dtype=np.float32)
         self.atom_eps_sqrt = np.zeros(self.capacity, dtype=np.float32)
-        
+
+        # --- Tether Arrays (for Dynamic Two-Way Coupling) ---
+        # is_static=3 means tethered atom
+        # tether_entity_idx: which entity this atom is tethered to (-1 = none)
+        # tether_local_pos: [t, 0] for lines (t=0..1), [theta, 0] for circles
+        # tether_stiffness: spring constant for tether
+        self.tether_entity_idx = np.full(self.capacity, -1, dtype=np.int32)
+        self.tether_local_pos = np.zeros((self.capacity, 2), dtype=np.float32)
+        self.tether_stiffness = np.zeros(self.capacity, dtype=np.float32)
+
+        # --- Entity State Arrays (for physics kernel to read/write) ---
+        # These are synced from Sketch entities before physics runs
+        # entity_positions: [N, 4] - Line: [start_x, start_y, end_x, end_y]
+        #                           Circle: [center_x, center_y, radius, 0]
+        # entity_forces: [N, 3] - [fx, fy, torque] accumulated from tethers
+        # entity_com: [N, 2] - center of mass [x, y]
+        # entity_types: [N] - 0=Line, 1=Circle, 2=Point
+        self.max_entities = 256
+        self.entity_positions = np.zeros((self.max_entities, 4), dtype=np.float32)
+        self.entity_forces = np.zeros((self.max_entities, 3), dtype=np.float32)
+        self.entity_com = np.zeros((self.max_entities, 2), dtype=np.float32)
+        self.entity_types = np.zeros(self.max_entities, dtype=np.int32)
+        self.entity_count = 0
+
         # --- Neighbor List & Optimization ---
         self.max_pairs = self.capacity * 100
         self.pair_i = np.zeros(self.max_pairs, dtype=np.int32)
@@ -317,6 +345,220 @@ class Simulation:
         self.pair_count = 0
 
     # =========================================================================
+    # Entity Sync Interface (Fast Path for Geometry Motion)
+    # =========================================================================
+
+    def sync_entity_arrays(self, entities):
+        """
+        Update entity position arrays WITHOUT rebuilding atoms.
+
+        This is the FAST PATH for geometry motion. Called when entities move
+        but topology is unchanged (no add/delete). Updates anchor positions
+        for tether force calculations.
+
+        Does NOT modify:
+        - Atom positions (pos_x, pos_y)
+        - Atom velocities (vel_x, vel_y)
+        - Atom count or tether relationships
+
+        Args:
+            entities: List of Entity objects from Sketch
+        """
+        from model.geometry import Line, Circle, Point
+
+        # Resize entity arrays if needed
+        if len(entities) > self.max_entities:
+            self.max_entities = len(entities) * 2
+            self.entity_positions = np.zeros((self.max_entities, 4), dtype=np.float32)
+            self.entity_forces = np.zeros((self.max_entities, 3), dtype=np.float32)
+            self.entity_com = np.zeros((self.max_entities, 2), dtype=np.float32)
+            self.entity_types = np.zeros(self.max_entities, dtype=np.int32)
+
+        self.entity_count = len(entities)
+
+        for i, entity in enumerate(entities):
+            if isinstance(entity, Line):
+                self.entity_types[i] = ENTITY_TYPE_LINE
+                self.entity_positions[i, 0] = entity.start[0]
+                self.entity_positions[i, 1] = entity.start[1]
+                self.entity_positions[i, 2] = entity.end[0]
+                self.entity_positions[i, 3] = entity.end[1]
+                com = entity.get_center_of_mass()
+                self.entity_com[i, 0] = com[0]
+                self.entity_com[i, 1] = com[1]
+            elif isinstance(entity, Circle):
+                self.entity_types[i] = ENTITY_TYPE_CIRCLE
+                self.entity_positions[i, 0] = entity.center[0]
+                self.entity_positions[i, 1] = entity.center[1]
+                self.entity_positions[i, 2] = entity.radius
+                self.entity_positions[i, 3] = 0.0  # Unused
+                self.entity_com[i, 0] = entity.center[0]
+                self.entity_com[i, 1] = entity.center[1]
+            elif isinstance(entity, Point):
+                self.entity_types[i] = ENTITY_TYPE_POINT
+                self.entity_positions[i, 0] = entity.pos[0]
+                self.entity_positions[i, 1] = entity.pos[1]
+                self.entity_positions[i, 2] = 0.0
+                self.entity_positions[i, 3] = 0.0
+                self.entity_com[i, 0] = entity.pos[0]
+                self.entity_com[i, 1] = entity.pos[1]
+
+    def clear_entity_forces(self):
+        """Zero out entity force accumulators before physics step."""
+        self.entity_forces[:self.entity_count] = 0
+
+    def get_entity_forces(self):
+        """
+        Retrieve accumulated forces and torques for all entities.
+
+        Returns:
+            numpy array of shape (entity_count, 3) containing [fx, fy, torque]
+            for each entity. This is a view into the internal array.
+        """
+        return self.entity_forces[:self.entity_count]
+
+    def apply_tether_forces(self):
+        """
+        Apply tether spring forces between atoms and entities.
+
+        This is the core of two-way coupling:
+        - Tethered atoms feel forces pulling them toward their anchors
+        - Entities accumulate reaction forces from their tethered atoms
+
+        Must call clear_entity_forces() before this to reset accumulators.
+        Must call sync_entity_arrays() before this to update anchor positions.
+        """
+        if self.count == 0 or self.entity_count == 0:
+            return
+
+        apply_tether_forces_pbd(
+            self.pos_x[:self.count],
+            self.pos_y[:self.count],
+            self.force_x[:self.count],
+            self.force_y[:self.count],
+            self.is_static[:self.count],
+            self.tether_entity_idx[:self.count],
+            self.tether_local_pos[:self.count],
+            self.tether_stiffness[:self.count],
+            self.entity_positions[:self.entity_count],
+            self.entity_forces[:self.entity_count],
+            self.entity_com[:self.entity_count],
+            self.entity_types[:self.entity_count]
+        )
+
+    def sync_static_atoms_to_geometry(self):
+        """
+        Teleport static atoms to match their parent entity's current position.
+
+        This fixes the "atoms left behind" bug: when a user drags a physical
+        but static entity, the atoms need to move with it instantly.
+
+        Only affects static atoms (is_static == 1) that have a valid
+        tether_entity_idx (>= 0). Recalculates world position from the
+        entity's current geometry using local coordinates.
+
+        Called by Scene.update() when geometry has moved but topology is unchanged.
+        """
+        if self.count == 0 or self.entity_count == 0:
+            return
+
+        for i in range(self.count):
+            # Only process static atoms with valid entity linkage
+            if self.is_static[i] != 1:
+                continue
+
+            ent_idx = self.tether_entity_idx[i]
+            if ent_idx < 0 or ent_idx >= self.entity_count:
+                continue
+
+            local_t = self.tether_local_pos[i, 0]
+            ent_type = self.entity_types[ent_idx]
+
+            if ent_type == ENTITY_TYPE_LINE:
+                # Line: lerp between start and end using t
+                start_x = self.entity_positions[ent_idx, 0]
+                start_y = self.entity_positions[ent_idx, 1]
+                end_x = self.entity_positions[ent_idx, 2]
+                end_y = self.entity_positions[ent_idx, 3]
+                self.pos_x[i] = start_x + local_t * (end_x - start_x)
+                self.pos_y[i] = start_y + local_t * (end_y - start_y)
+
+            elif ent_type == ENTITY_TYPE_CIRCLE:
+                # Circle: center + radius * (cos(theta), sin(theta))
+                center_x = self.entity_positions[ent_idx, 0]
+                center_y = self.entity_positions[ent_idx, 1]
+                radius = self.entity_positions[ent_idx, 2]
+                theta = local_t  # For circles, local_t stores the angle
+                self.pos_x[i] = center_x + radius * math.cos(theta)
+                self.pos_y[i] = center_y + radius * math.sin(theta)
+
+            elif ent_type == ENTITY_TYPE_POINT:
+                # Point: anchor is the point itself
+                self.pos_x[i] = self.entity_positions[ent_idx, 0]
+                self.pos_y[i] = self.entity_positions[ent_idx, 1]
+
+        # Mark neighbor list for rebuild since atoms moved
+        self.rebuild_next = True
+
+    def snap_tethered_atoms_to_anchors(self):
+        """
+        Snap tethered atoms to their anchor positions and zero velocities.
+
+        This ensures a "cold start" with zero initial energy when an entity
+        becomes dynamic. Without this, floating-point precision differences
+        between compile-time position calculation and runtime anchor calculation
+        can create small initial displacements that grow into oscillations.
+
+        Only affects tethered atoms (is_static == 3) with valid entity linkage.
+        Called after rebuild() when topology changes.
+        """
+        if self.count == 0 or self.entity_count == 0:
+            return
+
+        for i in range(self.count):
+            # Only process tethered atoms with valid entity linkage
+            if self.is_static[i] != 3:
+                continue
+
+            ent_idx = self.tether_entity_idx[i]
+            if ent_idx < 0 or ent_idx >= self.entity_count:
+                continue
+
+            local_t = self.tether_local_pos[i, 0]
+            ent_type = self.entity_types[ent_idx]
+
+            # Calculate anchor position using SAME math as tether kernel
+            if ent_type == ENTITY_TYPE_LINE:
+                start_x = self.entity_positions[ent_idx, 0]
+                start_y = self.entity_positions[ent_idx, 1]
+                end_x = self.entity_positions[ent_idx, 2]
+                end_y = self.entity_positions[ent_idx, 3]
+                self.pos_x[i] = start_x + local_t * (end_x - start_x)
+                self.pos_y[i] = start_y + local_t * (end_y - start_y)
+
+            elif ent_type == ENTITY_TYPE_CIRCLE:
+                center_x = self.entity_positions[ent_idx, 0]
+                center_y = self.entity_positions[ent_idx, 1]
+                radius = self.entity_positions[ent_idx, 2]
+                theta = local_t
+                self.pos_x[i] = center_x + radius * math.cos(theta)
+                self.pos_y[i] = center_y + radius * math.sin(theta)
+
+            elif ent_type == ENTITY_TYPE_POINT:
+                self.pos_x[i] = self.entity_positions[ent_idx, 0]
+                self.pos_y[i] = self.entity_positions[ent_idx, 1]
+
+            # Zero velocities for cold start
+            self.vel_x[i] = 0.0
+            self.vel_y[i] = 0.0
+
+            # Zero forces to prevent any residual acceleration
+            self.force_x[i] = 0.0
+            self.force_y[i] = 0.0
+
+        self.rebuild_next = True
+
+    # =========================================================================
     # Compiler Interface (Called by Scene/Compiler)
     # =========================================================================
 
@@ -327,7 +569,7 @@ class Simulation:
         """
         indices = np.array(keep_indices, dtype=np.int32)
         new_count = len(indices)
-        
+
         self.pos_x[:new_count] = self.pos_x[indices]
         self.pos_y[:new_count] = self.pos_y[indices]
         self.vel_x[:new_count] = self.vel_x[indices]
@@ -336,7 +578,12 @@ class Simulation:
         self.kinematic_props[:new_count] = self.kinematic_props[indices]
         self.atom_sigma[:new_count] = self.atom_sigma[indices]
         self.atom_eps_sqrt[:new_count] = self.atom_eps_sqrt[indices]
-        
+
+        # Tether arrays
+        self.tether_entity_idx[:new_count] = self.tether_entity_idx[indices]
+        self.tether_local_pos[:new_count] = self.tether_local_pos[indices]
+        self.tether_stiffness[:new_count] = self.tether_stiffness[indices]
+
         self.count = new_count
 
     # =========================================================================
@@ -517,7 +764,7 @@ class Simulation:
         """Double the capacity of all particle arrays."""
         self.capacity *= 2
         print(f"Resizing simulation capacity to {self.capacity}")
-        
+
         self.pos_x = np.resize(self.pos_x, self.capacity)
         self.pos_y = np.resize(self.pos_y, self.capacity)
         self.vel_x = np.resize(self.vel_x, self.capacity)
@@ -530,3 +777,14 @@ class Simulation:
         self.atom_eps_sqrt = np.resize(self.atom_eps_sqrt, self.capacity)
         self.last_x = np.resize(self.last_x, self.capacity)
         self.last_y = np.resize(self.last_y, self.capacity)
+
+        # Tether arrays
+        old_tether_idx = self.tether_entity_idx
+        self.tether_entity_idx = np.full(self.capacity, -1, dtype=np.int32)
+        self.tether_entity_idx[:len(old_tether_idx)] = old_tether_idx
+
+        old_tether_local = self.tether_local_pos
+        self.tether_local_pos = np.zeros((self.capacity, 2), dtype=np.float32)
+        self.tether_local_pos[:len(old_tether_local)] = old_tether_local
+
+        self.tether_stiffness = np.resize(self.tether_stiffness, self.capacity)

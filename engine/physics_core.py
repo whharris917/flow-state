@@ -149,29 +149,61 @@ def integrate_n_steps(
                 # Kinematic (Rotating) Particle Update
                 pivot_x = kinematic_props[i, 0]
                 pivot_y = kinematic_props[i, 1]
-                omega = kinematic_props[i, 2] 
-                
+                omega = kinematic_props[i, 2]
+
                 d_theta = omega * dt
                 c = math.cos(d_theta)
                 s = math.sin(d_theta)
-                
+
                 rx = pos_x[i] - pivot_x
                 ry = pos_y[i] - pivot_y
-                
+
                 pos_x[i] = pivot_x + rx * c - ry * s
                 pos_y[i] = pivot_y + rx * s + ry * c
-                
+
                 rx = pos_x[i] - pivot_x
                 ry = pos_y[i] - pivot_y
                 vel_x[i] = -omega * ry
                 vel_y[i] =  omega * rx
 
+            elif st == 3:
+                # Tethered Particle Integration (bound to geometry via spring)
+                # Integrates like dynamic but no gravity (follows geometry)
+                xi = pos_x[i] + vel_x[i] * dt + force_x[i] * dt2_2m
+                yi = pos_y[i] + vel_y[i] * dt + force_y[i] * dt2_2m
+
+                # Boundaries
+                if use_boundaries:
+                    if xi >= world_size:
+                        xi = 2.0 * world_size - xi
+                        vel_x[i] = -vel_x[i] * wall_damping
+                    elif xi < 0.0:
+                        xi = -xi
+                        vel_x[i] = -vel_x[i] * wall_damping
+                    if yi >= world_size:
+                        yi = 2.0 * world_size - yi
+                        vel_y[i] = -vel_y[i] * wall_damping
+                    elif yi < 0.0:
+                        yi = -yi
+                        vel_y[i] = -vel_y[i] * wall_damping
+
+                pos_x[i] = xi
+                pos_y[i] = yi
+                vel_x[i] += force_x[i] * inv_mass * half_dt
+                vel_y[i] += force_y[i] * inv_mass * half_dt
+
         # 2. Reset Forces - PARALLEL
+        # All forces reset here. Tether forces were already used in Section 1.
+        # Section 4 will only use LJ forces (if any) for tethered atoms.
         for i in prange(N):
-            force_x[i] = 0.0
-            if is_static[i] == 0:
+            st = is_static[i]
+            if st == 0:
+                # Dynamic: reset and apply gravity
+                force_x[i] = 0.0
                 force_y[i] = mass * gravity
             else:
+                # Static/Kinematic/Tethered: reset to zero (no gravity)
+                force_x[i] = 0.0
                 force_y[i] = 0.0
 
         # 3. Forces (Mixed Properties) - SERIAL
@@ -199,12 +231,21 @@ def integrate_n_steps(
                 force_x[j] -= fx
                 force_y[j] -= fy
 
-        # 4. Integration (Half Vel for Dynamic) - PARALLEL
+        # 4. Integration (Half Vel for Dynamic & Tethered) - PARALLEL
         for i in prange(N):
-            if is_static[i] == 0:
+            st = is_static[i]
+            if st == 0:
                 vel_x[i] += force_x[i] * inv_mass * half_dt
                 vel_y[i] += force_y[i] * inv_mass * half_dt
-        
+            elif st == 3:
+                # Tethered: complete velocity update then apply damping
+                # Damping prevents spring oscillation
+                TETHER_DAMPING = 0.90
+                vel_x[i] += force_x[i] * inv_mass * half_dt
+                vel_y[i] += force_y[i] * inv_mass * half_dt
+                vel_x[i] *= TETHER_DAMPING
+                vel_y[i] *= TETHER_DAMPING
+
         steps_done += 1
         
     return steps_done
@@ -238,21 +279,152 @@ def apply_thermostat(vel_x, vel_y, mass, is_static, target_temp, mix):
     ke = 0.0
     count = 0
     N = vel_x.shape[0]
-    
+
     # Parallel reduction for Kinetic Energy
     for i in prange(N):
         if is_static[i] == 0:
             ke += 0.5 * mass * (vel_x[i]**2 + vel_y[i]**2)
             count += 1
-            
+
     if count == 0: return
     current_T = ke / count
     if current_T <= 1e-6: return
     scale = math.sqrt(target_temp / current_T)
     eff_scale = 1.0 + mix * (scale - 1.0)
-    
+
     # Parallel update of velocities
     for i in prange(N):
         if is_static[i] == 0:
             vel_x[i] *= eff_scale
             vel_y[i] *= eff_scale
+
+
+# =============================================================================
+# Tether Force Kernel (Two-Way Coupling)
+# =============================================================================
+
+# Entity type constants (must match simulation.py)
+ENTITY_TYPE_LINE = 0
+ENTITY_TYPE_CIRCLE = 1
+ENTITY_TYPE_POINT = 2
+
+
+@njit(fastmath=True)
+def apply_tether_forces_pbd(
+    # Particle arrays
+    pos_x, pos_y,
+    force_x, force_y,
+    is_static,
+    tether_entity_idx,
+    tether_local_pos,
+    tether_stiffness,
+    # Entity arrays
+    entity_positions,   # [N_ent, 4] - position data
+    entity_forces,      # [N_ent, 3] - [fx, fy, torque] accumulator (OUTPUT)
+    entity_com,         # [N_ent, 2] - center of mass
+    entity_types        # [N_ent] - 0=Line, 1=Circle, 2=Point
+):
+    """
+    Apply tether spring forces between atoms and their parent entities.
+
+    For each tethered atom (is_static == 3):
+    1. Compute the anchor point on the entity using local coordinates
+    2. Calculate spring force: F = -k * (atom_pos - anchor_pos)
+    3. Apply +F to atom force accumulator
+    4. Apply -F to entity force accumulator (Newton's 3rd law)
+    5. Calculate torque: τ = (anchor - COM) × (-F)
+
+    This kernel is SERIAL because entity_forces writes could race.
+    For now, correctness over speed.
+
+    Args:
+        pos_x, pos_y: Particle positions
+        force_x, force_y: Particle force accumulators (modified)
+        is_static: Particle types (0=dynamic, 1=static, 2=kinematic, 3=tethered)
+        tether_entity_idx: Entity index for each particle (-1 if not tethered)
+        tether_local_pos: Local coordinates [t or theta, unused]
+        tether_stiffness: Spring constant k for each particle
+        entity_positions: Entity geometry data
+        entity_forces: Entity force accumulators [fx, fy, torque] (modified)
+        entity_com: Entity centers of mass
+        entity_types: Entity type codes
+    """
+    N = pos_x.shape[0]
+
+    for i in range(N):
+        # Only process tethered atoms
+        if is_static[i] != 3:
+            continue
+
+        ent_idx = tether_entity_idx[i]
+        if ent_idx < 0:
+            continue
+
+        local_t = tether_local_pos[i, 0]
+        k = tether_stiffness[i]
+        ent_type = entity_types[ent_idx]
+
+        # Compute anchor position based on entity type
+        anchor_x = 0.0
+        anchor_y = 0.0
+
+        if ent_type == ENTITY_TYPE_LINE:
+            # Line: lerp between start and end using t
+            start_x = entity_positions[ent_idx, 0]
+            start_y = entity_positions[ent_idx, 1]
+            end_x = entity_positions[ent_idx, 2]
+            end_y = entity_positions[ent_idx, 3]
+            anchor_x = start_x + local_t * (end_x - start_x)
+            anchor_y = start_y + local_t * (end_y - start_y)
+
+        elif ent_type == ENTITY_TYPE_CIRCLE:
+            # Circle: center + radius * (cos(theta), sin(theta))
+            center_x = entity_positions[ent_idx, 0]
+            center_y = entity_positions[ent_idx, 1]
+            radius = entity_positions[ent_idx, 2]
+            theta = local_t  # For circles, local_t stores the angle
+            anchor_x = center_x + radius * math.cos(theta)
+            anchor_y = center_y + radius * math.sin(theta)
+
+        elif ent_type == ENTITY_TYPE_POINT:
+            # Point: anchor is the point itself
+            anchor_x = entity_positions[ent_idx, 0]
+            anchor_y = entity_positions[ent_idx, 1]
+
+        # Calculate spring displacement (drift from anchor)
+        dx = pos_x[i] - anchor_x
+        dy = pos_y[i] - anchor_y
+
+        # Spring force: F = -k * displacement
+        fx = -k * dx
+        fy = -k * dy
+
+        # Clamp force magnitude to prevent explosions
+        MAX_FORCE = 10000.0
+        f_mag_sq = fx * fx + fy * fy
+        if f_mag_sq > MAX_FORCE * MAX_FORCE:
+            f_mag = math.sqrt(f_mag_sq)
+            scale = MAX_FORCE / f_mag
+            fx *= scale
+            fy *= scale
+
+        # Apply force to atom (pulls it toward anchor)
+        force_x[i] += fx
+        force_y[i] += fy
+
+        # Apply reaction force to entity (Newton's 3rd law)
+        # Entity feels -F (opposite direction)
+        entity_forces[ent_idx, 0] -= fx
+        entity_forces[ent_idx, 1] -= fy
+
+        # Calculate torque: τ = r × F (2D cross product)
+        # r = anchor position relative to center of mass
+        # F = force on entity = -[fx, fy]
+        com_x = entity_com[ent_idx, 0]
+        com_y = entity_com[ent_idx, 1]
+        rx = anchor_x - com_x
+        ry = anchor_y - com_y
+        # 2D cross product: r × F = rx * Fy - ry * Fx
+        # Force on entity is (-fx, -fy)
+        torque = rx * (-fy) - ry * (-fx)
+        entity_forces[ent_idx, 2] += torque

@@ -25,7 +25,7 @@ from core.sound_manager import SoundManager
 from core.commands import (
     RemoveEntityCommand, RemoveConstraintCommand, CompositeCommand,
     ToggleAnchorCommand, ToggleInfiniteCommand, SetPhysicalCommand,
-    SetMaterialCommand, SetDriverCommand
+    SetMaterialCommand, SetDriverCommand, SetEntityDynamicCommand
 )
 
 
@@ -306,7 +306,13 @@ class AppController:
     def get_context_options(self, target_type, idx1, idx2=None):
         options = []
         if target_type == 'wall':
-            options = ["Properties", "Atomize", "Delete"]
+            options = ["Properties", "Atomize"]
+            # Add dynamic toggle option based on current state
+            if idx1 < len(self.sketch.entities):
+                entity = self.sketch.entities[idx1]
+                is_dynamic = getattr(entity, 'dynamic', False)
+                options.append("Make Static" if is_dynamic else "Make Dynamic")
+            options.append("Delete")
         elif target_type == 'point':
             w_idx, pt_idx = idx1, idx2
             entities = self.sketch.entities
@@ -344,6 +350,18 @@ class AppController:
                 self.session.selection.walls.add(self.ctx_vars['wall'])
                 self.atomize_selected()
                 self.session.selection.walls.clear()
+        elif action == "Make Dynamic":
+            if self.ctx_vars['wall'] != -1:
+                cmd = SetEntityDynamicCommand(self.sketch, self.ctx_vars['wall'], True)
+                self.scene.execute(cmd)
+                self.sound_manager.play_sound('snap')
+                self.session.status.set("Entity set to Dynamic (two-way coupling)")
+        elif action == "Make Static":
+            if self.ctx_vars['wall'] != -1:
+                cmd = SetEntityDynamicCommand(self.sketch, self.ctx_vars['wall'], False)
+                self.scene.execute(cmd)
+                self.sound_manager.play_sound('snap')
+                self.session.status.set("Entity set to Static (immovable)")
         self.context_menu = None
 
     def spawn_context_menu(self, pos):
