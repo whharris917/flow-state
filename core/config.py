@@ -70,7 +70,7 @@ DEFAULT_GRAVITY = 9.81
 DEFAULT_DAMPING = 0.99
 DEFAULT_DT = 0.002
 DEFAULT_SKIN_DISTANCE = 0.3
-DEFAULT_DRAW_M = 10.0        # Default physics steps per frame
+DEFAULT_DRAW_M = 20.0        # Default physics steps per frame (higher for stiff tethers)
 
 # === LENNARD-JONES PARAMETERS ===
 ATOM_SIGMA = 1.0     # Particle Size

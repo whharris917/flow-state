@@ -29,7 +29,8 @@ from model.geometry import Line, Circle, Point
 import core.config as config
 
 # Default tether stiffness if not specified in material
-DEFAULT_TETHER_STIFFNESS = 1000.0
+# Higher values = tighter connection between atoms and geometry chassis
+DEFAULT_TETHER_STIFFNESS = 5000.0
 
 # Mass ratio: entity should be at least this many times heavier than its atoms
 # Prevents atoms from "bullying" the geometry (tail wagging the dog)

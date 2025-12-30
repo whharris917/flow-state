@@ -153,14 +153,15 @@ class Simulation:
         ]
         
         integrate_n_steps(
-            1, self.pos_x[:2], self.pos_y[:2], 
+            1, self.pos_x[:2], self.pos_y[:2],
             self.vel_x[:2], self.vel_y[:2],
-            self.force_x[:2], self.force_y[:2], 
+            self.force_x[:2], self.force_y[:2],
             self.last_x[:2], self.last_y[:2],
-            self.is_static[:2], self.kinematic_props[:2], 
+            self.is_static[:2], self.kinematic_props[:2],
             self.atom_sigma[:2], self.atom_eps_sqrt[:2],
             f32_vals[0], self.pair_i, self.pair_j, self.pair_count,
-            f32_vals[1], f32_vals[2], f32_vals[3], f32_vals[4], 
+            self.tether_entity_idx[:2],  # For intra-entity exclusion
+            f32_vals[1], f32_vals[2], f32_vals[3], f32_vals[4],
             f32_vals[5], self.use_boundaries, f32_vals[6]
         )
         
@@ -717,6 +718,7 @@ class Simulation:
                 self.atom_sigma[:self.count], self.atom_eps_sqrt[:self.count],
                 np.float32(config.ATOM_MASS),
                 self.pair_i, self.pair_j, self.pair_count,
+                self.tether_entity_idx[:self.count],  # For intra-entity exclusion
                 np.float32(self.dt), np.float32(self.gravity),
                 np.float32(self.r_cut_base**2), np.float32(self.r_skin_sq_limit),
                 np.float32(self.world_size), self.use_boundaries,

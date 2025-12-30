@@ -296,7 +296,10 @@ class Scene:
         # This copies current entity positions into flat arrays for physics kernel
         if self._geometry_dirty or geometry_moved:
             self.simulation.sync_entity_arrays(self.sketch.entities)
+            # Also sync static atoms immediately so they don't lag during drags
+            self.simulation.sync_static_atoms_to_geometry()
             self._geometry_dirty = False
+            geometry_moved = True  # Mark that geometry changed
 
         # 4. PHYSICS SUB-LOOP - Two-way coupling between entities and particles
         # This is where tethered atoms and dynamic entities interact

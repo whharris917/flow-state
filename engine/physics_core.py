@@ -98,6 +98,7 @@ def integrate_n_steps(
     kinematic_props,
     atom_sigma, atom_eps_sqrt, mass,
     pair_i, pair_j, pair_count,
+    tether_entity_idx,  # For intra-entity force exclusion
     dt, gravity, r_cut2_base,
     skin_limit_sq,
     world_size,
@@ -211,21 +212,29 @@ def integrate_n_steps(
         for k in range(pair_count):
             i = pair_i[k]
             j = pair_j[k]
-            
+
+            # Skip intra-entity forces: tethered atoms on the same rigid body
+            # should not exert LJ forces on each other
+            if is_static[i] == 3 and is_static[j] == 3:
+                ent_i = tether_entity_idx[i]
+                ent_j = tether_entity_idx[j]
+                if ent_i >= 0 and ent_i == ent_j:
+                    continue
+
             dx = pos_x[i] - pos_x[j]
             dy = pos_y[i] - pos_y[j]
             r2 = dx*dx + dy*dy
-            
+
             if r2 < r_cut2_base:
                 s_ij = 0.5 * (atom_sigma[i] + atom_sigma[j])
                 s_ij2 = s_ij * s_ij
                 e_ij = atom_eps_sqrt[i] * atom_eps_sqrt[j]
                 e_24 = 24.0 * e_ij
-                
+
                 f_scal = force_LJ_mixed(r2, s_ij2, e_24)
                 fx = f_scal * dx
                 fy = f_scal * dy
-                
+
                 force_x[i] += fx
                 force_y[i] += fy
                 force_x[j] -= fx
