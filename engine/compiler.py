@@ -298,32 +298,80 @@ class Compiler:
         """
         Assign shared joint IDs to atoms at coincident constraint vertices.
 
+        Uses Union-Find (Disjoint Set Union) for transitive grouping:
+        If A-B are coincident and B-C are coincident, then A, B, C all
+        receive the same joint_id, even without a direct A-C constraint.
+
         Atoms with the same non-zero joint_id will skip LJ force calculations
         between each other, preventing physics explosions at joints where
-        two entities share a vertex.
+        multiple entities share a vertex.
 
         Args:
             sketch: The Sketch containing constraints to process
         """
-        next_joint_id = 1  # Start at 1, since 0 means "no joint"
+        # Collect all atom indices involved in coincident constraints
+        coincident_atoms = set()
+        coincident_pairs = []
 
         for constraint in sketch.constraints:
             if constraint.type != 'COINCIDENT':
                 continue
 
-            # Coincident constraint indices: [(entity1, pt1), (entity2, pt2)]
             if len(constraint.indices) != 2:
                 continue
 
             idx1 = constraint.indices[0]  # (entity_idx, pt_idx)
             idx2 = constraint.indices[1]  # (entity_idx, pt_idx)
 
-            # Look up atom indices for both vertices
             atom1 = self._vertex_to_atom.get(tuple(idx1))
             atom2 = self._vertex_to_atom.get(tuple(idx2))
 
-            # Only assign if both atoms exist (both entities were atomized)
             if atom1 is not None and atom2 is not None:
-                self.sim.joint_ids[atom1] = next_joint_id
-                self.sim.joint_ids[atom2] = next_joint_id
+                coincident_atoms.add(atom1)
+                coincident_atoms.add(atom2)
+                coincident_pairs.append((atom1, atom2))
+
+        if not coincident_pairs:
+            return
+
+        # --- Union-Find (DSU) Implementation ---
+        # parent[i] = parent of atom i (initially itself)
+        # rank[i] = tree depth for union by rank optimization
+        parent = {atom: atom for atom in coincident_atoms}
+        rank = {atom: 0 for atom in coincident_atoms}
+
+        def find(x):
+            """Find root with path compression."""
+            if parent[x] != x:
+                parent[x] = find(parent[x])
+            return parent[x]
+
+        def union(x, y):
+            """Union by rank."""
+            rx, ry = find(x), find(y)
+            if rx == ry:
+                return
+            if rank[rx] < rank[ry]:
+                rx, ry = ry, rx
+            parent[ry] = rx
+            if rank[rx] == rank[ry]:
+                rank[rx] += 1
+
+        # Union all coincident atom pairs
+        for atom1, atom2 in coincident_pairs:
+            union(atom1, atom2)
+
+        # Map each unique root to a unique joint_id
+        root_to_joint_id = {}
+        next_joint_id = 1
+
+        for atom in coincident_atoms:
+            root = find(atom)
+            if root not in root_to_joint_id:
+                root_to_joint_id[root] = next_joint_id
                 next_joint_id += 1
+
+        # Assign joint_ids to atoms based on their root's joint_id
+        for atom in coincident_atoms:
+            root = find(atom)
+            self.sim.joint_ids[atom] = root_to_joint_id[root]
