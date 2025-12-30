@@ -58,6 +58,7 @@ class Simulation:
         self.kinematic_props = np.zeros((self.capacity, 3), dtype=np.float32)
         self.atom_sigma = np.zeros(self.capacity, dtype=np.float32)
         self.atom_eps_sqrt = np.zeros(self.capacity, dtype=np.float32)
+        self.atom_color = np.zeros((self.capacity, 3), dtype=np.uint8)  # RGB per particle
 
         # --- Tether Arrays (for Dynamic Two-Way Coupling) ---
         # is_static=3 means tethered atom
@@ -194,6 +195,7 @@ class Simulation:
             'kinematic_props': np.copy(self.kinematic_props[:self.count]),
             'atom_sigma': np.copy(self.atom_sigma[:self.count]),
             'atom_eps_sqrt': np.copy(self.atom_eps_sqrt[:self.count]),
+            'atom_color': np.copy(self.atom_color[:self.count]),
             'world_size': self.world_size
         }
         self.undo_stack.append(state)
@@ -217,6 +219,8 @@ class Simulation:
         self.kinematic_props[:self.count] = state['kinematic_props']
         self.atom_sigma[:self.count] = state['atom_sigma']
         self.atom_eps_sqrt[:self.count] = state['atom_eps_sqrt']
+        if 'atom_color' in state:
+            self.atom_color[:self.count] = state['atom_color']
         self.world_size = state['world_size']
         self.rebuild_next = True
         self.pair_count = 0
@@ -251,6 +255,7 @@ class Simulation:
             'kinematic_props': np.copy(self.kinematic_props[:self.count]),
             'atom_sigma': np.copy(self.atom_sigma[:self.count]),
             'atom_eps_sqrt': np.copy(self.atom_eps_sqrt[:self.count]),
+            'atom_color': np.copy(self.atom_color[:self.count]),
             'world_size': self.world_size
         }
         stack.append(state)
@@ -313,6 +318,7 @@ class Simulation:
             'kinematic_props': self.kinematic_props[:self.count].tolist(),
             'atom_sigma': self.atom_sigma[:self.count].tolist(),
             'atom_eps_sqrt': self.atom_eps_sqrt[:self.count].tolist(),
+            'atom_color': self.atom_color[:self.count].tolist(),
         }
 
     def restore(self, data):
@@ -341,7 +347,9 @@ class Simulation:
             self.atom_sigma[:self.count] = np.array(data['atom_sigma'], dtype=np.float32)
         if 'atom_eps_sqrt' in data:
             self.atom_eps_sqrt[:self.count] = np.array(data['atom_eps_sqrt'], dtype=np.float32)
-        
+        if 'atom_color' in data:
+            self.atom_color[:self.count] = np.array(data['atom_color'], dtype=np.uint8)
+
         self.rebuild_next = True
         self.pair_count = 0
 
@@ -579,6 +587,7 @@ class Simulation:
         self.kinematic_props[:new_count] = self.kinematic_props[indices]
         self.atom_sigma[:new_count] = self.atom_sigma[indices]
         self.atom_eps_sqrt[:new_count] = self.atom_eps_sqrt[indices]
+        self.atom_color[:new_count] = self.atom_color[indices]
 
         # Tether arrays
         self.tether_entity_idx[:new_count] = self.tether_entity_idx[indices]
@@ -777,6 +786,9 @@ class Simulation:
         self.kinematic_props = np.resize(self.kinematic_props, (self.capacity, 3))
         self.atom_sigma = np.resize(self.atom_sigma, self.capacity)
         self.atom_eps_sqrt = np.resize(self.atom_eps_sqrt, self.capacity)
+        old_color = self.atom_color
+        self.atom_color = np.zeros((self.capacity, 3), dtype=np.uint8)
+        self.atom_color[:len(old_color)] = old_color
         self.last_x = np.resize(self.last_x, self.capacity)
         self.last_y = np.resize(self.last_y, self.capacity)
 

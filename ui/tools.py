@@ -189,7 +189,10 @@ class BrushTool:
         
         # Paint or erase based on which button is held
         if pygame.mouse.get_pressed()[0]:  # Left button - paint
-            self.brush.paint(wx, wy, self.brush_radius)
+            mat = self.app.session.active_material
+            self.brush.paint(wx, wy, self.brush_radius,
+                           sigma=mat.sigma, epsilon=mat.epsilon,
+                           color=mat.color)
         elif pygame.mouse.get_pressed()[2]:  # Right button - erase
             self.brush.erase(wx, wy, self.brush_radius)
     

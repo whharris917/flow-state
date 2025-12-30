@@ -258,8 +258,6 @@ class FlowStateApp:
             self.sim.target_temp = self.ui.sliders['temp'].val
             self.sim.damping = self.ui.sliders['damping'].val
             self.sim.dt = self.ui.sliders['dt'].val
-            self.sim.sigma = self.ui.sliders['sigma'].val
-            self.sim.epsilon = self.ui.sliders['epsilon'].val
             self.sim.skin_distance = self.ui.sliders['skin'].val
             self.sim.use_thermostat = self.ui.buttons['thermostat'].active
             self.sim.use_boundaries = self.ui.buttons['boundaries'].active

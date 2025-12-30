@@ -1412,6 +1412,309 @@ class AnimationDialog:
         else:
             screen.blit(font.render("Rate (deg/s):", True, config.COLOR_TEXT), (self.rect.x + 20, self.rect.y + 95))
             self.in_rate.draw(screen, font)
-            
+
         self.btn_stop.draw(screen, font)
         self.btn_ok.draw(screen, font)
+
+
+# =============================================================================
+# MATERIAL PROPERTY WIDGET (Embedded Panel)
+# =============================================================================
+
+class MaterialPropertyWidget(UIContainer):
+    """
+    Embedded widget for viewing and editing material properties.
+
+    Features:
+    - Dropdown to select from material library
+    - Sliders for sigma, epsilon, mass
+    - Color swatch display
+    - Save button to add current settings as new preset
+
+    Usage:
+    - When nothing is selected: edits session.active_material
+    - When entity is selected: shows entity's material (read-only display)
+    """
+
+    def __init__(self, x, y, w, session):
+        # Calculate total height for all sub-widgets
+        s = config.scale
+        slider_h = s(50)  # Compact slider height
+        row_h = s(28)
+        total_h = row_h + slider_h * 3 + row_h + s(10)  # dropdown + 3 sliders + save row + padding
+
+        super().__init__(x, y, w, total_h, layout_type='vertical', padding=0, spacing=s(4))
+        self.session = session
+        self._width = w
+
+        # Material dropdown (from library)
+        self._build_dropdown()
+
+        # Property sliders (compact version)
+        self.slider_sigma = self._create_mini_slider("Sigma", 0.5, 2.0, 1.0)
+        self.slider_epsilon = self._create_mini_slider("Epsilon", 0.1, 3.0, 1.0)
+        self.slider_mass = self._create_mini_slider("Mass", 0.1, 20.0, 1.0)
+
+        self.add_child(self.slider_sigma)
+        self.add_child(self.slider_epsilon)
+        self.add_child(self.slider_mass)
+
+        # Save button row
+        self._build_save_row()
+
+        # Sync initial values
+        self._sync_from_material(session.active_material)
+
+    def _build_dropdown(self):
+        """Build the material library dropdown."""
+        s = config.scale
+        options = list(self.session.material_library.keys())
+        self.dropdown = Dropdown(0, 0, self._width, s(25), options, selected_index=0)
+        self.dropdown.on_change = self._on_material_selected
+        self.add_child(self.dropdown)
+
+    def _build_save_row(self):
+        """Build the save/color row."""
+        s = config.scale
+        row = UIContainer(0, 0, self._width, s(28), layout_type='horizontal', padding=0, spacing=s(6))
+
+        # Color swatch (simple colored rectangle)
+        self.color_swatch = ColorSwatch(0, 0, s(28), s(28), (50, 150, 255))
+        row.add_child(self.color_swatch)
+
+        # Save button
+        self.btn_save = Button(0, 0, self._width - s(34), s(28), "Save as Preset",
+                               toggle=False, color_inactive=config.COLOR_SUCCESS)
+        row.add_child(self.btn_save)
+
+        self.add_child(row)
+
+    def _create_mini_slider(self, label, min_v, max_v, init_v):
+        """Create a compact slider for material properties."""
+        s = config.scale
+        return MiniSlider(0, 0, self._width, min_v, max_v, init_v, label)
+
+    def _on_material_selected(self, index, name):
+        """Called when user selects a material from the dropdown."""
+        if name in self.session.material_library:
+            mat = self.session.material_library[name].copy()
+            self.session.active_material = mat
+            self._sync_from_material(mat)
+
+    def _sync_from_material(self, mat):
+        """Update sliders and swatch to match material."""
+        self.slider_sigma.set_value(mat.sigma)
+        self.slider_epsilon.set_value(mat.epsilon)
+        self.slider_mass.set_value(mat.mass)
+        self.color_swatch.color = mat.color
+
+    def _sync_to_material(self):
+        """Update active_material from slider values."""
+        mat = self.session.active_material
+        mat.sigma = self.slider_sigma.val
+        mat.epsilon = self.slider_epsilon.val
+        mat.mass = self.slider_mass.val
+
+    def handle_event(self, event):
+        """Handle events and sync material on slider changes."""
+        # Handle dropdown first (may be expanded)
+        if self.dropdown.handle_event(event):
+            return True
+
+        if self.dropdown.expanded:
+            return False  # Don't process other widgets when dropdown is open
+
+        # Handle sliders
+        for slider in [self.slider_sigma, self.slider_epsilon, self.slider_mass]:
+            if slider.handle_event(event):
+                self._sync_to_material()
+                return True
+
+        # Handle save button
+        if self.btn_save.handle_event(event):
+            self._save_as_preset()
+            return True
+
+        # Handle color swatch click (could open color picker in future)
+        if self.color_swatch.handle_event(event):
+            return True
+
+        return super().handle_event(event)
+
+    def _save_as_preset(self):
+        """Save current material as a new preset in the library."""
+        mat = self.session.active_material
+        # Use current name or generate a new one
+        name = mat.name
+        if name in self.session.material_library:
+            # Update existing
+            self.session.material_library[name] = mat.copy()
+        else:
+            # Add new
+            self.session.material_library[name] = mat.copy()
+            # Rebuild dropdown options
+            options = list(self.session.material_library.keys())
+            new_idx = options.index(name)
+            self.dropdown.set_options(options, new_idx)
+
+        SoundManager.get().play_sound('snap')
+
+    def update(self, dt):
+        """Update child widgets."""
+        self.dropdown.hovered = False  # Reset hover state
+        for child in self.children:
+            if hasattr(child, 'update'):
+                child.update(dt)
+
+    def draw(self, screen, font):
+        """Draw the widget."""
+        if not self.visible:
+            return
+
+        # Draw section header
+        header = font.render("Material", True, config.COLOR_TEXT_DIM)
+        screen.blit(header, (self.rect.x, self.rect.y - config.scale(18)))
+
+        # Draw children
+        super().draw(screen, font)
+
+
+class MiniSlider(UIElement):
+    """Compact slider for property editing (single row)."""
+
+    def __init__(self, x, y, w, min_val, max_val, initial_val, label):
+        s = config.scale
+        h = s(50)
+        super().__init__(x, y, w, h)
+        self.val = initial_val
+        self.label = label
+        self.min_val = min_val
+        self.max_val = max_val
+        self.dragging = False
+        self.hovered = False
+
+        # Input field for direct value entry
+        input_w = s(45)
+        input_h = s(20)
+        self.in_val = InputField(x + w - input_w, y, input_w, input_h, f"{initial_val:.2f}")
+
+        # Track rect (calculated in draw)
+        track_y = s(30)
+        self.rect_track = pygame.Rect(x + 5, y + track_y, w - 10, s(6))
+
+        self.anim_hover = AnimVar(0.0)
+
+    def set_value(self, val):
+        """Set the slider value programmatically."""
+        self.val = max(self.min_val, min(self.max_val, val))
+        self.in_val.set_value(self.val)
+
+    def set_position(self, x, y):
+        """Override to move internal widgets."""
+        super().set_position(x, y)
+        s = config.scale
+        input_w = self.in_val.rect.w
+        self.in_val.set_position(x + self.rect.w - input_w, y)
+        self.rect_track.x = x + 5
+        self.rect_track.y = y + s(30)
+
+    def update(self, dt):
+        self.anim_hover.target = 1.0 if self.hovered or self.dragging else 0.0
+        self.anim_hover.update(dt)
+        self.in_val.update(dt)
+
+    def handle_event(self, event):
+        if not self.visible:
+            return False
+
+        # Input field first
+        if self.in_val.handle_event(event):
+            self.val = self.in_val.get_value(self.val)
+            self.val = max(self.min_val, min(self.max_val, self.val))
+            return True
+
+        if event.type == pygame.MOUSEMOTION:
+            self.hovered = self.rect_track.inflate(0, 14).collidepoint(event.pos)
+            if self.dragging:
+                rel = (event.pos[0] - self.rect_track.x) / self.rect_track.w
+                self.val = self.min_val + max(0, min(1, rel)) * (self.max_val - self.min_val)
+                if not self.in_val.active:
+                    self.in_val.set_value(self.val)
+                return True
+
+        elif event.type == pygame.MOUSEBUTTONDOWN:
+            if self.hovered:
+                self.dragging = True
+                SoundManager.get().play_sound('click')
+                return True
+
+        elif event.type == pygame.MOUSEBUTTONUP:
+            if self.dragging:
+                self.dragging = False
+                return True
+
+        return False
+
+    def draw(self, screen, font):
+        if not self.visible:
+            return
+
+        # Label
+        label_surf = font.render(self.label, True, config.COLOR_TEXT_DIM)
+        screen.blit(label_surf, (self.rect.x, self.rect.y + 2))
+
+        # Input field
+        self.in_val.draw(screen, font)
+
+        # Track background
+        pygame.draw.rect(screen, (20, 20, 22), self.rect_track, border_radius=3)
+
+        # Filled part
+        if self.max_val > self.min_val:
+            pct = (self.val - self.min_val) / (self.max_val - self.min_val)
+        else:
+            pct = 0
+        pct = max(0, min(1, pct))
+
+        fill_rect = self.rect_track.copy()
+        fill_rect.width = max(6, fill_rect.width * pct)
+
+        fill_col = config.COLOR_ACCENT
+        if self.dragging:
+            fill_col = tuple(min(255, c + 40) for c in fill_col)
+
+        pygame.draw.rect(screen, fill_col, fill_rect, border_radius=3)
+
+        # Handle
+        handle_x = self.rect_track.x + self.rect_track.w * pct
+        h_rad = 5 + 2 * self.anim_hover.value
+        pygame.draw.circle(screen, (240, 240, 240), (int(handle_x), self.rect_track.centery), int(h_rad))
+
+
+class ColorSwatch(UIElement):
+    """Simple colored rectangle that displays a color."""
+
+    def __init__(self, x, y, w, h, color=(200, 200, 200)):
+        super().__init__(x, y, w, h)
+        self.color = color
+        self.hovered = False
+
+    def handle_event(self, event):
+        if event.type == pygame.MOUSEMOTION:
+            self.hovered = self.rect.collidepoint(event.pos)
+        elif event.type == pygame.MOUSEBUTTONDOWN:
+            if self.rect.collidepoint(event.pos):
+                # Could open color picker in future
+                return True
+        return False
+
+    def draw(self, screen, font):
+        if not self.visible:
+            return
+
+        # Draw color fill
+        pygame.draw.rect(screen, self.color, self.rect, border_radius=4)
+
+        # Draw border
+        border_col = config.COLOR_ACCENT if self.hovered else config.PANEL_BORDER_COLOR
+        pygame.draw.rect(screen, border_col, self.rect, 1, border_radius=4)

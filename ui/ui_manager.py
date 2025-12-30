@@ -7,7 +7,7 @@ Root -> [Menu Bar, Middle Region, Status Bar]
 
 import pygame
 import core.config as config
-from ui.ui_widgets import UIContainer, UIElement, Button, SmartSlider, InputField, MenuBar, StatusBar, ScrollableContainer
+from ui.ui_widgets import UIContainer, UIElement, Button, SmartSlider, InputField, MenuBar, StatusBar, ScrollableContainer, MaterialPropertyWidget
 from ui import icons
 from core.session import InteractionState
 
@@ -170,8 +170,6 @@ class UIManager:
             add_slider('damping', "Damping", 0.90, 1.0, config.DEFAULT_DAMPING, hard_min=0.0, hard_max=1.0)
             add_slider('dt', "Time Step (dt)", 0.0001, 0.01, config.DEFAULT_DT, hard_min=0.00001)
             add_slider('speed', "Speed (Steps/Frame)", 1.0, 100.0, float(config.DEFAULT_DRAW_M), hard_min=1.0)
-            add_slider('sigma', "Sigma (Size)", 0.5, 2.0, config.ATOM_SIGMA, hard_min=0.1)
-            add_slider('epsilon', "Epsilon (Strength)", 0.1, 5.0, config.ATOM_EPSILON, hard_min=0.0)
             add_slider('skin', "Skin Distance", 0.1, 2.0, config.DEFAULT_SKIN_DISTANCE, hard_min=0.05)
 
             row_container = UIContainer(0, 0, self.left_panel.rect.w - s(30), s(30), layout_type='horizontal', padding=0, spacing=s(10))
@@ -228,6 +226,11 @@ class UIManager:
         sld_brush = SmartSlider(0, 0, rp_w, 1.0, 10.0, 2.0, "Brush Radius", hard_min=0.5)
         rp.add_child(sld_brush)
         self.sliders['brush_size'] = sld_brush
+
+        # Material Property Widget (dropdown + sliders for sigma, epsilon, mass)
+        if self.controller:
+            self.material_widget = MaterialPropertyWidget(0, 0, rp_w, self.controller.session)
+            rp.add_child(self.material_widget)
 
         row_vis = UIContainer(0, 0, rp_w, btn_size, layout_type='horizontal', padding=0, spacing=spacing)
         rp.add_child(row_vis)
@@ -292,3 +295,42 @@ class UIManager:
         Draw the UI Tree.
         """
         self.root.draw(screen, font)
+
+        # Draw floating overlays (dropdown expanded lists) on top of everything
+        self._draw_overlays(screen, font)
+
+    def _draw_overlays(self, screen, font):
+        """Draw elements that should appear above everything else (dropdowns, etc.)."""
+        # Draw MaterialPropertyWidget's dropdown overlay if expanded
+        if hasattr(self, 'material_widget') and self.material_widget.dropdown.expanded:
+            dropdown = self.material_widget.dropdown
+            if dropdown.options:
+                # Draw the expanded list manually (bypasses parent clip)
+                expanded_rect = dropdown.get_expanded_rect()
+
+                # Shadow
+                shadow_rect = expanded_rect.copy()
+                shadow_rect.x += 3
+                shadow_rect.y += 3
+                pygame.draw.rect(screen, (0, 0, 0, 80), shadow_rect, border_radius=4)
+
+                # Background
+                pygame.draw.rect(screen, config.PANEL_BG_COLOR, expanded_rect, border_radius=4)
+                pygame.draw.rect(screen, config.COLOR_ACCENT, expanded_rect, 1, border_radius=4)
+
+                # Options
+                for i, option in enumerate(dropdown.options):
+                    option_rect = pygame.Rect(
+                        expanded_rect.x,
+                        expanded_rect.y + i * dropdown.option_height,
+                        expanded_rect.width,
+                        dropdown.option_height
+                    )
+                    # Highlight hovered option
+                    if i == dropdown.hovered_option:
+                        pygame.draw.rect(screen, config.COLOR_ACCENT, option_rect)
+                    elif i == dropdown.selected_index:
+                        pygame.draw.rect(screen, (60, 60, 70), option_rect)
+
+                    opt_surf = font.render(option, True, config.COLOR_TEXT)
+                    screen.blit(opt_surf, (option_rect.x + 5, option_rect.centery - opt_surf.get_height() // 2))

@@ -31,6 +31,7 @@ from core.camera import CameraController
 from core.selection import SelectionManager
 from core.constraint_builder import ConstraintBuilder
 from core.status_bar import StatusBar
+from model.properties import Material, PRESET_MATERIALS
 
 
 class InteractionState(Enum):
@@ -84,6 +85,12 @@ class Session:
         # =====================================================================
         self.show_wall_atoms = True
         self.show_constraints = True
+
+        # =====================================================================
+        # Active Material (for brush tool and new geometry atomization)
+        # =====================================================================
+        self.active_material = PRESET_MATERIALS['Water'].copy()
+        self.material_library = dict(PRESET_MATERIALS)  # User can add to this
         
         # =====================================================================
         # Playback State

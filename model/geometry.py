@@ -15,6 +15,7 @@ All entities support:
 """
 
 import numpy as np
+import core.config as config
 
 
 class Entity:
@@ -43,8 +44,8 @@ class Entity:
         self.angular_vel = 0.0  # Angular velocity (radians/sec)
         self.force_accum = np.zeros(2, dtype=np.float64)  # Accumulated force [fx, fy]
         self.torque_accum = 0.0  # Accumulated torque
-        self.damping = 0.90  # Linear velocity damping (per frame multiplier)
-        self.angular_damping = 0.90  # Angular velocity damping
+        self.damping = config.ENTITY_DAMPING  # Linear velocity damping (per frame)
+        self.angular_damping = config.ENTITY_ANGULAR_DAMPING  # Angular velocity damping
 
     @property
     def inv_mass(self):
@@ -270,14 +271,12 @@ class Line(Entity):
 
     # Minimum inertia to prevent division by zero / instability
     MIN_INERTIA = 1.0
-    # Stability factor to resist high-frequency rotational jitter from tethered atoms
-    INERTIA_STABILITY_FACTOR = 5.0
 
     @property
     def inertia(self):
         """Moment of inertia for a uniform rod about its center: I = (1/12) * m * L^2"""
         L = self.length()
-        calculated = (1.0 / 12.0) * self.mass * L * L * self.INERTIA_STABILITY_FACTOR
+        calculated = (1.0 / 12.0) * self.mass * L * L * config.INERTIA_STABILITY_FACTOR
         return max(calculated, self.MIN_INERTIA)
 
     def get_center_of_mass(self):
@@ -411,8 +410,6 @@ class Circle(Entity):
 
     # Minimum inertia to prevent division by zero / instability
     MIN_INERTIA = 1.0
-    # Stability factor to resist high-frequency rotational jitter from tethered atoms
-    INERTIA_STABILITY_FACTOR = 5.0
 
     def __init__(self, center, radius, material_id="Default"):
         super().__init__(material_id)
@@ -423,7 +420,7 @@ class Circle(Entity):
     @property
     def inertia(self):
         """Moment of inertia for a solid disk about its center: I = (1/2) * m * r^2"""
-        calculated = 0.5 * self.mass * self.radius * self.radius * self.INERTIA_STABILITY_FACTOR
+        calculated = 0.5 * self.mass * self.radius * self.radius * config.INERTIA_STABILITY_FACTOR
         return max(calculated, self.MIN_INERTIA)
 
     def get_center_of_mass(self):

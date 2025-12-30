@@ -195,18 +195,25 @@ class Renderer:
     def _draw_particles(self, session, sim, layout):
         for i in range(sim.count):
             if sim.is_static[i] and not getattr(session, 'show_wall_atoms', True):
-                continue 
-            
+                continue
+
             sx, sy = sim_to_screen(
-                sim.pos_x[i], sim.pos_y[i], 
-                session.camera.zoom, session.camera.pan_x, session.camera.pan_y, 
+                sim.pos_x[i], sim.pos_y[i],
+                session.camera.zoom, session.camera.pan_x, session.camera.pan_y,
                 sim.world_size, layout
             )
-            
+
             # Basic culling based on viewport approximation
             if layout['MID_X'] < sx < layout['RIGHT_X'] and config.TOP_MENU_H < sy < config.WINDOW_HEIGHT:
                 is_stat = sim.is_static[i]
-                col = config.COLOR_STATIC if is_stat else config.COLOR_DYNAMIC
+                if is_stat:
+                    col = config.COLOR_STATIC
+                else:
+                    # Use per-particle color for dynamic particles
+                    col = tuple(sim.atom_color[i])
+                    # Fall back to default if color is black (unset)
+                    if col == (0, 0, 0):
+                        col = config.COLOR_DYNAMIC
                 atom_sig = sim.atom_sigma[i]
                 rad = max(2, int(atom_sig * config.PARTICLE_RADIUS_SCALE * ((layout['MID_W']-50)/sim.world_size) * session.camera.zoom))
                 pygame.draw.circle(self.screen, col, (sx, sy), rad)

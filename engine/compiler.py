@@ -28,13 +28,7 @@ import math
 from model.geometry import Line, Circle, Point
 import core.config as config
 
-# Default tether stiffness if not specified in material
-# Higher values = tighter connection between atoms and geometry chassis
-DEFAULT_TETHER_STIFFNESS = 5000.0
-
-# Mass ratio: entity should be at least this many times heavier than its atoms
-# Prevents atoms from "bullying" the geometry (tail wagging the dog)
-ENTITY_MASS_MULTIPLIER = 5.0
+# Import constants from config (no more magic numbers here)
 
 
 class Compiler:
@@ -128,11 +122,11 @@ class Compiler:
         # Entity must be heavier than its atoms to prevent "tail wagging the dog"
         if w.dynamic:
             total_atom_mass = num_atoms * config.ATOM_MASS
-            min_entity_mass = total_atom_mass * ENTITY_MASS_MULTIPLIER
+            min_entity_mass = total_atom_mass * config.ENTITY_MASS_MULTIPLIER
             w.mass = max(w.mass, min_entity_mass)
 
         # Get tether stiffness from material or use default
-        tether_k = getattr(mat, 'tether_stiffness', DEFAULT_TETHER_STIFFNESS)
+        tether_k = getattr(mat, 'tether_stiffness', config.TETHER_STIFFNESS)
 
         # Check for Kinematics (Drivers/Animation) - only for non-dynamic
         anim = w.anim
@@ -178,11 +172,11 @@ class Compiler:
         # Entity must be heavier than its atoms to prevent "tail wagging the dog"
         if w.dynamic:
             total_atom_mass = num_atoms * config.ATOM_MASS
-            min_entity_mass = total_atom_mass * ENTITY_MASS_MULTIPLIER
+            min_entity_mass = total_atom_mass * config.ENTITY_MASS_MULTIPLIER
             w.mass = max(w.mass, min_entity_mass)
 
         # Get tether stiffness from material or use default
-        tether_k = getattr(mat, 'tether_stiffness', DEFAULT_TETHER_STIFFNESS)
+        tether_k = getattr(mat, 'tether_stiffness', config.TETHER_STIFFNESS)
 
         for k in range(num_atoms):
             if self.sim.count >= self.sim.capacity:

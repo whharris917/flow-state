@@ -77,6 +77,14 @@ ATOM_SIGMA = 1.0     # Particle Size
 ATOM_EPSILON = 1.0   # Interaction Strength
 ATOM_MASS = 1.0
 
+# === TWO-WAY COUPLING CONSTANTS ===
+# These control the dynamic rigid body behavior
+TETHER_STIFFNESS = 5000.0         # Spring constant for atom-geometry coupling
+ENTITY_DAMPING = 0.90             # Linear velocity damping (per frame)
+ENTITY_ANGULAR_DAMPING = 0.90     # Angular velocity damping (per frame)
+ENTITY_MASS_MULTIPLIER = 5.0      # Entity mass = num_atoms * ATOM_MASS * this
+INERTIA_STABILITY_FACTOR = 5.0    # Multiplier on rotational inertia for stability
+
 # === TOOL IDS ===
 TOOL_SELECT = 0
 TOOL_BRUSH = 1
