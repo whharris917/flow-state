@@ -79,11 +79,20 @@ ATOM_MASS = 1.0
 
 # === TWO-WAY COUPLING CONSTANTS ===
 # These control the dynamic rigid body behavior
-TETHER_STIFFNESS = 5000.0         # Spring constant for atom-geometry coupling
-ENTITY_DAMPING = 0.90             # Linear velocity damping (per frame)
-ENTITY_ANGULAR_DAMPING = 0.90     # Angular velocity damping (per frame)
-ENTITY_MASS_MULTIPLIER = 5.0      # Entity mass = num_atoms * ATOM_MASS * this
-INERTIA_STABILITY_FACTOR = 5.0    # Multiplier on rotational inertia for stability
+DEFAULT_TETHER_STIFFNESS = 10000.0  # Spring constant for atom-geometry coupling (doubled from 5000)
+TETHER_DAMPING = 0.90               # Tethered atom velocity damping
+MAX_TETHER_FORCE = 20000.0          # Force clamp to prevent explosions (doubled from 10000)
+ENTITY_DAMPING = 0.90               # Linear velocity damping (per frame)
+ENTITY_ANGULAR_DAMPING = 0.90       # Angular velocity damping (per frame)
+ENTITY_MASS_MULTIPLIER = 5.0        # Entity mass = num_atoms * ATOM_MASS * this
+INERTIA_STABILITY_FACTOR = 5.0      # Multiplier on rotational inertia for stability
+MIN_INERTIA = 1.0                   # Minimum inertia to prevent instability
+MAX_LINEAR_VELOCITY = 1000.0        # Velocity clamp to prevent physics explosions
+MAX_ANGULAR_VELOCITY = 50.0         # Angular velocity clamp (rad/s)
+
+# === PHYSICS KERNEL CONSTANTS ===
+LJ_HARD_CORE_FRACTION = 0.64        # Hard core limit as fraction of sigma^2
+SUBSTEP_SAFETY_CHECK_FREQ = 20      # Displacement check frequency in substeps
 
 # === TOOL IDS ===
 TOOL_SELECT = 0

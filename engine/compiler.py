@@ -126,7 +126,7 @@ class Compiler:
             w.mass = max(w.mass, min_entity_mass)
 
         # Get tether stiffness from material or use default
-        tether_k = getattr(mat, 'tether_stiffness', config.TETHER_STIFFNESS)
+        tether_k = getattr(mat, 'tether_stiffness', config.DEFAULT_TETHER_STIFFNESS)
 
         # Check for Kinematics (Drivers/Animation) - only for non-dynamic
         anim = w.anim
@@ -176,7 +176,7 @@ class Compiler:
             w.mass = max(w.mass, min_entity_mass)
 
         # Get tether stiffness from material or use default
-        tether_k = getattr(mat, 'tether_stiffness', config.TETHER_STIFFNESS)
+        tether_k = getattr(mat, 'tether_stiffness', config.DEFAULT_TETHER_STIFFNESS)
 
         for k in range(num_atoms):
             if self.sim.count >= self.sim.capacity:

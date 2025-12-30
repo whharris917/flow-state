@@ -89,10 +89,6 @@ class Entity:
         """Add torque to the accumulator."""
         self.torque_accum += torque
 
-    # Velocity clamp limits to prevent physics explosions
-    MAX_LINEAR_VELOCITY = 1000.0
-    MAX_ANGULAR_VELOCITY = 50.0
-
     def integrate(self, dt):
         """
         Integrate forces and torques into velocity, then apply velocity to geometry.
@@ -127,11 +123,11 @@ class Entity:
 
         # Clamp velocities to prevent physics explosions
         self.velocity[0] = np.clip(self.velocity[0],
-                                   -self.MAX_LINEAR_VELOCITY, self.MAX_LINEAR_VELOCITY)
+                                   -config.MAX_LINEAR_VELOCITY, config.MAX_LINEAR_VELOCITY)
         self.velocity[1] = np.clip(self.velocity[1],
-                                   -self.MAX_LINEAR_VELOCITY, self.MAX_LINEAR_VELOCITY)
+                                   -config.MAX_LINEAR_VELOCITY, config.MAX_LINEAR_VELOCITY)
         self.angular_vel = np.clip(self.angular_vel,
-                                   -self.MAX_ANGULAR_VELOCITY, self.MAX_ANGULAR_VELOCITY)
+                                   -config.MAX_ANGULAR_VELOCITY, config.MAX_ANGULAR_VELOCITY)
 
         # Apply velocity to geometry
         self.apply_velocity(dt)
@@ -269,15 +265,12 @@ class Line(Entity):
         """Calculate the length of the line segment."""
         return np.linalg.norm(self.end - self.start)
 
-    # Minimum inertia to prevent division by zero / instability
-    MIN_INERTIA = 1.0
-
     @property
     def inertia(self):
         """Moment of inertia for a uniform rod about its center: I = (1/12) * m * L^2"""
         L = self.length()
         calculated = (1.0 / 12.0) * self.mass * L * L * config.INERTIA_STABILITY_FACTOR
-        return max(calculated, self.MIN_INERTIA)
+        return max(calculated, config.MIN_INERTIA)
 
     def get_center_of_mass(self):
         """Center of mass is the midpoint of the line."""
@@ -408,9 +401,6 @@ class Circle(Entity):
         Inertia is computed as (1/2) * mass * radius^2 (solid disk formula).
     """
 
-    # Minimum inertia to prevent division by zero / instability
-    MIN_INERTIA = 1.0
-
     def __init__(self, center, radius, material_id="Default"):
         super().__init__(material_id)
         self.center = np.array(center, dtype=np.float64)
@@ -421,7 +411,7 @@ class Circle(Entity):
     def inertia(self):
         """Moment of inertia for a solid disk about its center: I = (1/2) * m * r^2"""
         calculated = 0.5 * self.mass * self.radius * self.radius * config.INERTIA_STABILITY_FACTOR
-        return max(calculated, self.MIN_INERTIA)
+        return max(calculated, config.MIN_INERTIA)
 
     def get_center_of_mass(self):
         """Center of mass is the center of the circle."""

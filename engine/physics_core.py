@@ -1,6 +1,13 @@
 import math
 import numpy as np
 from numba import njit, prange
+import core.config as config
+
+# Module-level constants for numba JIT functions (evaluated at import time)
+LJ_HARD_CORE_FRACTION = config.LJ_HARD_CORE_FRACTION
+SUBSTEP_SAFETY_CHECK_FREQ = config.SUBSTEP_SAFETY_CHECK_FREQ
+TETHER_DAMPING = config.TETHER_DAMPING
+MAX_TETHER_FORCE = config.MAX_TETHER_FORCE
 
 @njit(fastmath=True)
 def force_LJ_mixed(r2, s_ij2, e_24):
@@ -9,9 +16,9 @@ def force_LJ_mixed(r2, s_ij2, e_24):
     s_ij2: (sigma_i + sigma_j)/2 squared
     e_24: 24 * sqrt(eps_i * eps_j)
     """
-    # 1. Clamp r2 to avoid singularity. 
+    # 1. Clamp r2 to avoid singularity.
     # Use a fraction of s_ij2 as the hard core limit.
-    min_r2 = 0.64 * s_ij2
+    min_r2 = LJ_HARD_CORE_FRACTION * s_ij2
     eff_r2 = r2 if r2 > min_r2 else min_r2
 
     inv_r2 = 1.0 / eff_r2
@@ -114,7 +121,7 @@ def integrate_n_steps(
     
     for step in range(steps_to_run):
         # 0. Safety Check
-        if step > 0 and step % 20 == 0:
+        if step > 0 and step % SUBSTEP_SAFETY_CHECK_FREQ == 0:
             if check_displacement(pos_x, pos_y, last_x, last_y, skin_limit_sq):
                 return steps_done
 
@@ -249,7 +256,6 @@ def integrate_n_steps(
             elif st == 3:
                 # Tethered: complete velocity update then apply damping
                 # Damping prevents spring oscillation
-                TETHER_DAMPING = 0.90
                 vel_x[i] += force_x[i] * inv_mass * half_dt
                 vel_y[i] += force_y[i] * inv_mass * half_dt
                 vel_x[i] *= TETHER_DAMPING
@@ -409,11 +415,10 @@ def apply_tether_forces_pbd(
         fy = -k * dy
 
         # Clamp force magnitude to prevent explosions
-        MAX_FORCE = 10000.0
         f_mag_sq = fx * fx + fy * fy
-        if f_mag_sq > MAX_FORCE * MAX_FORCE:
+        if f_mag_sq > MAX_TETHER_FORCE * MAX_TETHER_FORCE:
             f_mag = math.sqrt(f_mag_sq)
-            scale = MAX_FORCE / f_mag
+            scale = MAX_TETHER_FORCE / f_mag
             fx *= scale
             fy *= scale
 
