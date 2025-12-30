@@ -256,6 +256,10 @@ class AppController:
         self.session.status.set(f"Material Applied: {mat.name}")
         self.sound_manager.play_sound('click')
 
+        # Sync the right-panel MaterialPropertyWidget to reflect changes
+        if hasattr(self.app, 'ui') and hasattr(self.app.ui, 'material_widget'):
+            self.app.ui.material_widget.refresh_from_selection()
+
     def apply_rotation_from_dialog(self, dialog):
         # Legacy rotation via entity.anim is deprecated
         # Animation should be done via constraint drivers instead
@@ -279,7 +283,7 @@ class AppController:
             target_idx = list(self.session.selection.walls)[0]
         elif self.ctx_vars['wall'] != -1:
             target_idx = self.ctx_vars['wall']
-        current_mat = "Default"
+        current_mat = "Wall"
         if target_idx != -1 and target_idx < len(self.sketch.entities):
             current_mat = self.sketch.entities[target_idx].material_id
         self.prop_dialog = MaterialDialog(mx, my, self.sketch, current_mat)

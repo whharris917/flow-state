@@ -1064,7 +1064,7 @@ class MaterialDialog:
     CREATE_NEW_OPTION = "[ Create New ]"
 
     def __init__(self, x, y, sketch, current_material_id):
-        self.rect = pygame.Rect(x, y, 300, 320)  # Taller to fit dropdown
+        self.rect = pygame.Rect(x, y, 300, 280)  # Slightly shorter without physics toggle
         self.sketch = sketch
         self.done = False
         self.apply = False
@@ -1094,11 +1094,8 @@ class MaterialDialog:
         self.in_epsilon = InputField(x + 120, y + 150, 150, 25, str(mat.epsilon))
         self.in_spacing = InputField(x + 120, y + 185, 150, 25, str(mat.spacing))
 
-        self.btn_phys = Button(x + 120, y + 220, 80, 25, "Solid" if mat.physical else "Guide",
-                               active=mat.physical, toggle=True, color_active=config.COLOR_SUCCESS)
-
-        self.btn_apply = Button(x + 20, y + 270, 80, 30, "Apply", toggle=False)
-        self.btn_ok = Button(x + 180, y + 270, 80, 30, "OK", toggle=False)
+        self.btn_apply = Button(x + 20, y + 230, 80, 30, "Apply", toggle=False)
+        self.btn_ok = Button(x + 180, y + 230, 80, 30, "OK", toggle=False)
 
         # Track mode
         self.is_create_new = (selected_idx == 0)
@@ -1115,9 +1112,6 @@ class MaterialDialog:
             self.in_sigma.set_value(1.0)
             self.in_epsilon.set_value(1.0)
             self.in_spacing.set_value(0.7)
-            self.btn_phys.active = True
-            self.btn_phys.text = "Solid"
-            self.btn_phys.cached_surf = None
         else:
             # Existing material selected
             self.is_create_new = False
@@ -1127,9 +1121,6 @@ class MaterialDialog:
                 self.in_sigma.set_value(m.sigma)
                 self.in_epsilon.set_value(m.epsilon)
                 self.in_spacing.set_value(m.spacing)
-                self.btn_phys.active = m.physical
-                self.btn_phys.text = "Solid" if m.physical else "Guide"
-                self.btn_phys.cached_surf = None
 
     def handle_event(self, event):
         if not self.visible:
@@ -1149,11 +1140,6 @@ class MaterialDialog:
             if self.in_epsilon.handle_event(event):
                 return True
             if self.in_spacing.handle_event(event):
-                return True
-
-            if self.btn_phys.handle_event(event):
-                self.btn_phys.text = "Solid" if self.btn_phys.active else "Guide"
-                self.btn_phys.cached_surf = None
                 return True
 
             if self.btn_apply.handle_event(event):
@@ -1177,7 +1163,6 @@ class MaterialDialog:
         self.in_epsilon.update(dt)
         self.in_spacing.update(dt)
         # Update buttons
-        self.btn_phys.update(dt)
         self.btn_apply.update(dt)
         self.btn_ok.update(dt)
 
@@ -1185,7 +1170,7 @@ class MaterialDialog:
         if self.is_create_new:
             name = self.in_id.get_text()
             if not name:
-                name = "Default"
+                name = "Custom"
         else:
             # Use the selected material name from dropdown
             name = self.dropdown.get_selected()
@@ -1195,7 +1180,7 @@ class MaterialDialog:
             sigma=self.in_sigma.get_value(1.0),
             epsilon=self.in_epsilon.get_value(1.0),
             spacing=self.in_spacing.get_value(0.7),
-            physical=self.btn_phys.active
+            physical=True  # All materials are now physical (collidable)
         )
         return m
 
@@ -1222,7 +1207,7 @@ class MaterialDialog:
         if self.is_create_new:
             screen.blit(font.render("New Name:", True, config.COLOR_TEXT), (self.rect.x + 20, self.rect.y + 85))
 
-        labels_with_ys = [("Sigma:", 120), ("Epsilon:", 155), ("Spacing:", 190), ("Physics:", 225)]
+        labels_with_ys = [("Sigma:", 120), ("Epsilon:", 155), ("Spacing:", 190)]
         for label, y in labels_with_ys:
             screen.blit(font.render(label, True, config.COLOR_TEXT), (self.rect.x + 20, self.rect.y + y))
 
@@ -1232,7 +1217,6 @@ class MaterialDialog:
         self.in_sigma.draw(screen, font)
         self.in_epsilon.draw(screen, font)
         self.in_spacing.draw(screen, font)
-        self.btn_phys.draw(screen, font)
         self.btn_apply.draw(screen, font)
         self.btn_ok.draw(screen, font)
 
@@ -1428,15 +1412,31 @@ class MaterialPropertyWidget(UIContainer):
     Features:
     - Dropdown to select from material library
     - Sliders for sigma, epsilon, mass
-    - Color swatch display
+    - Color swatch (clickable to cycle colors)
     - Save button to add current settings as new preset
 
-    Usage:
-    - When nothing is selected: edits session.active_material
-    - When entity is selected: shows entity's material (read-only display)
+    Context-Aware Behavior:
+    - When entity is selected: edits selected entity's material directly
+    - When nothing is selected: edits session.active_material (brush default)
+
+    Live Physics:
+    - Slider changes trigger immediate compiler.rebuild() for real-time updates
     """
 
-    def __init__(self, x, y, w, session):
+    # Color palette for cycling through on swatch click
+    COLOR_PALETTE = [
+        (50, 150, 255),   # Blue (Water)
+        (255, 100, 100),  # Red
+        (100, 255, 100),  # Green
+        (255, 200, 50),   # Yellow/Gold
+        (180, 100, 255),  # Purple
+        (255, 150, 50),   # Orange
+        (100, 200, 200),  # Cyan
+        (180, 180, 190),  # Silver
+        (100, 100, 120),  # Gray (Wall)
+    ]
+
+    def __init__(self, x, y, w, session, controller=None):
         # Calculate total height for all sub-widgets
         s = config.scale
         slider_h = s(50)  # Compact slider height
@@ -1445,7 +1445,11 @@ class MaterialPropertyWidget(UIContainer):
 
         super().__init__(x, y, w, total_h, layout_type='vertical', padding=0, spacing=s(4))
         self.session = session
+        self.controller = controller  # For accessing scene, sketch, compiler
         self._width = w
+        self._color_index = 0  # For cycling through palette
+        self._last_selection_hash = None  # Track selection changes
+        self._last_material_id = None  # Track material for revert on deselect
 
         # Material dropdown (from library)
         self._build_dropdown()
@@ -1459,7 +1463,7 @@ class MaterialPropertyWidget(UIContainer):
         self.add_child(self.slider_epsilon)
         self.add_child(self.slider_mass)
 
-        # Save button row
+        # Save buttons row
         self._build_save_row()
 
         # Sync initial values
@@ -1468,24 +1472,85 @@ class MaterialPropertyWidget(UIContainer):
     def _build_dropdown(self):
         """Build the material library dropdown."""
         s = config.scale
-        options = list(self.session.material_library.keys())
+        options = self._get_material_names()
         self.dropdown = Dropdown(0, 0, self._width, s(25), options, selected_index=0)
         self.dropdown.on_change = self._on_material_selected
         self.add_child(self.dropdown)
 
+    def _get_material_names(self):
+        """Get material names from sketch (if available) or session library."""
+        if self.controller and hasattr(self.controller, 'sketch'):
+            return list(self.controller.sketch.materials.keys())
+        return list(self.session.material_library.keys())
+
+    def _get_material_library(self):
+        """Get material library from sketch (if available) or session."""
+        if self.controller and hasattr(self.controller, 'sketch'):
+            return self.controller.sketch.materials
+        return self.session.material_library
+
+    def _get_material_manager(self):
+        """Get the MaterialManager from scene (if available)."""
+        if self.controller and hasattr(self.controller, 'scene'):
+            return getattr(self.controller.scene, 'material_manager', None)
+        return None
+
+    def _get_selected_entity(self):
+        """Get the first selected entity, or None if nothing selected."""
+        if not self.controller:
+            return None
+        selection = self.session.selection
+        if selection.has_entities:
+            entity_idx = next(iter(selection.entities))
+            sketch = self.controller.sketch
+            if 0 <= entity_idx < len(sketch.entities):
+                return sketch.entities[entity_idx]
+        return None
+
+    def _get_target_material(self):
+        """
+        Get the material to edit based on context.
+        Returns (material, is_entity_material) tuple.
+        """
+        entity = self._get_selected_entity()
+        if entity:
+            # Entity selected - edit its material
+            mat_id = getattr(entity, 'material_id', 'Wall')
+            library = self._get_material_library()
+            if mat_id in library:
+                return library[mat_id], True
+            # Fallback: create material from entity properties if needed
+            return self.session.active_material, False
+        # Nothing selected - edit brush default
+        return self.session.active_material, False
+
+    def _trigger_rebuild(self):
+        """Trigger physics recompilation for live updates."""
+        if self.controller and hasattr(self.controller, 'scene'):
+            self.controller.scene.rebuild()
+
     def _build_save_row(self):
-        """Build the save/color row."""
+        """Build the save/color row with Save and Save as New buttons."""
         s = config.scale
-        row = UIContainer(0, 0, self._width, s(28), layout_type='horizontal', padding=0, spacing=s(6))
+        row = UIContainer(0, 0, self._width, s(28), layout_type='horizontal', padding=0, spacing=s(4))
 
         # Color swatch (simple colored rectangle)
         self.color_swatch = ColorSwatch(0, 0, s(28), s(28), (50, 150, 255))
         row.add_child(self.color_swatch)
 
-        # Save button
-        self.btn_save = Button(0, 0, self._width - s(34), s(28), "Save as Preset",
+        # Calculate button widths (equal split of remaining space)
+        remaining_w = self._width - s(32) - s(4)  # swatch + spacing
+        btn_w = (remaining_w - s(4)) // 2  # Two buttons with spacing
+
+        # Save button - saves changes to current material
+        self.btn_save = Button(0, 0, btn_w, s(28), "Save",
                                toggle=False, color_inactive=config.COLOR_SUCCESS)
         row.add_child(self.btn_save)
+
+        # Save as New button - opens dialog to save with new name
+        self.btn_save_new = Button(0, 0, btn_w, s(28), "Save as",
+                                   toggle=False, color_inactive=(80, 80, 90))
+        row.add_child(self.btn_save_new)
 
         self.add_child(row)
 
@@ -1496,9 +1561,17 @@ class MaterialPropertyWidget(UIContainer):
 
     def _on_material_selected(self, index, name):
         """Called when user selects a material from the dropdown."""
-        if name in self.session.material_library:
-            mat = self.session.material_library[name].copy()
-            self.session.active_material = mat
+        library = self._get_material_library()
+        if name in library:
+            mat = library[name]
+            entity = self._get_selected_entity()
+            if entity:
+                # Apply to selected entity
+                entity.material_id = name
+                self._trigger_rebuild()
+            else:
+                # Apply to brush default
+                self.session.active_material = mat.copy()
             self._sync_from_material(mat)
 
     def _sync_from_material(self, mat):
@@ -1507,13 +1580,34 @@ class MaterialPropertyWidget(UIContainer):
         self.slider_epsilon.set_value(mat.epsilon)
         self.slider_mass.set_value(mat.mass)
         self.color_swatch.color = mat.color
+        # Update color index to match
+        if mat.color in self.COLOR_PALETTE:
+            self._color_index = self.COLOR_PALETTE.index(mat.color)
 
     def _sync_to_material(self):
-        """Update active_material from slider values."""
-        mat = self.session.active_material
+        """Update target material from slider values and trigger rebuild."""
+        entity = self._get_selected_entity()
+        mat, is_entity_mat = self._get_target_material()
         mat.sigma = self.slider_sigma.val
         mat.epsilon = self.slider_epsilon.val
         mat.mass = self.slider_mass.val
+        # Update spacing based on sigma (standard ratio)
+        mat.spacing = 0.7 * mat.sigma
+
+        if not is_entity_mat:
+            # Also update session active material for brush
+            self.session.active_material.sigma = mat.sigma
+            self.session.active_material.epsilon = mat.epsilon
+            self.session.active_material.mass = mat.mass
+            self.session.active_material.spacing = mat.spacing
+
+        # Trigger rebuild for live physics update if entity is selected
+        # (is_entity_mat indicates material was found in library, but we should
+        # rebuild even if it wasn't found, as long as an entity is selected)
+        if entity is not None:
+            self._trigger_rebuild()
+            # Update dropdown to show "(modified)" if values changed
+            self._update_dropdown_display()
 
     def handle_event(self, event):
         """Handle events and sync material on slider changes."""
@@ -1530,49 +1624,223 @@ class MaterialPropertyWidget(UIContainer):
                 self._sync_to_material()
                 return True
 
-        # Handle save button
+        # Handle save button - saves to current material
         if self.btn_save.handle_event(event):
-            self._save_as_preset()
+            self._save_material()
             return True
 
-        # Handle color swatch click (could open color picker in future)
+        # Handle save as new button - prompts for new name
+        if self.btn_save_new.handle_event(event):
+            self._save_as_new_material()
+            return True
+
+        # Handle color swatch click - cycle through colors
+        if event.type == pygame.MOUSEBUTTONDOWN and self.color_swatch.rect.collidepoint(event.pos):
+            self._cycle_color()
+            return True
+
         if self.color_swatch.handle_event(event):
             return True
 
         return super().handle_event(event)
 
-    def _save_as_preset(self):
-        """Save current material as a new preset in the library."""
-        mat = self.session.active_material
-        # Use current name or generate a new one
-        name = mat.name
-        if name in self.session.material_library:
-            # Update existing
-            self.session.material_library[name] = mat.copy()
-        else:
-            # Add new
-            self.session.material_library[name] = mat.copy()
-            # Rebuild dropdown options
-            options = list(self.session.material_library.keys())
-            new_idx = options.index(name)
-            self.dropdown.set_options(options, new_idx)
+    def _cycle_color(self):
+        """Cycle to the next color in the palette."""
+        self._color_index = (self._color_index + 1) % len(self.COLOR_PALETTE)
+        new_color = self.COLOR_PALETTE[self._color_index]
+        self.color_swatch.color = new_color
+
+        # Update the target material's color
+        entity = self._get_selected_entity()
+        mat, is_entity_mat = self._get_target_material()
+        mat.color = new_color
+
+        if not is_entity_mat:
+            self.session.active_material.color = new_color
+
+        # Trigger rebuild for visual update if entity is selected
+        if entity is not None:
+            self._trigger_rebuild()
+            # Update dropdown to show "(modified)" if values changed
+            self._update_dropdown_display()
 
         SoundManager.get().play_sound('snap')
 
+    def _save_material(self):
+        """Save current slider values to the selected material in the library."""
+        entity = self._get_selected_entity()
+        mat_id = getattr(entity, 'material_id', None) if entity else None
+
+        if not mat_id:
+            # No entity selected - save to session.active_material (already done by sliders)
+            SoundManager.get().play_sound('snap')
+            return
+
+        # Update the material in the library with current slider values
+        library = self._get_material_library()
+        if mat_id in library:
+            mat = library[mat_id]
+            mat.sigma = self.slider_sigma.val
+            mat.epsilon = self.slider_epsilon.val
+            mat.mass = self.slider_mass.val
+            mat.spacing = 0.7 * mat.sigma
+            mat.color = self.color_swatch.color
+
+            # Clear the original snapshot in MaterialManager (current values are now "saved")
+            mat_mgr = self._get_material_manager()
+            if mat_mgr:
+                mat_mgr.save(mat_id)
+
+            # Trigger rebuild so all entities with this material update
+            self._trigger_rebuild()
+
+            # Update dropdown to remove "(modified)" suffix
+            self._update_dropdown_display()
+
+        SoundManager.get().play_sound('snap')
+        self.session.status.set(f"Saved: {mat_id}")
+
+    def _save_as_new_material(self):
+        """Save current slider values as a new material with a new name."""
+        entity = self._get_selected_entity()
+        old_mat_id = getattr(entity, 'material_id', None) if entity else None
+
+        library = self._get_material_library()
+
+        # Generate a unique name
+        base_name = "Custom"
+        counter = 1
+        new_name = base_name
+        while new_name in library:
+            new_name = f"{base_name} {counter}"
+            counter += 1
+
+        # Create new material with current values
+        new_mat = Material(
+            new_name,
+            sigma=self.slider_sigma.val,
+            epsilon=self.slider_epsilon.val,
+            mass=self.slider_mass.val,
+            spacing=0.7 * self.slider_sigma.val,
+            color=self.color_swatch.color,
+            physical=True
+        )
+        library[new_name] = new_mat
+
+        # Revert the old material to its original values (if it was modified)
+        mat_mgr = self._get_material_manager()
+        if mat_mgr and old_mat_id:
+            mat_mgr.revert(old_mat_id)
+
+        # If an entity is selected, update its material_id to the new material
+        if entity:
+            entity.material_id = new_name
+            self._last_material_id = new_name  # Update tracking
+            self._trigger_rebuild()
+
+        # Update dropdown options
+        self._update_dropdown_display()
+
+        SoundManager.get().play_sound('snap')
+        self.session.status.set(f"Created: {new_name}")
+
     def update(self, dt):
-        """Update child widgets."""
+        """Update child widgets and check for selection changes."""
+        # Check if selection changed
+        self._check_selection_change()
+
         self.dropdown.hovered = False  # Reset hover state
         for child in self.children:
             if hasattr(child, 'update'):
                 child.update(dt)
+
+    def _check_selection_change(self):
+        """Check if selection changed and update widget accordingly."""
+        # Create a hash of current selection state
+        entity = self._get_selected_entity()
+        if entity:
+            current_hash = (id(entity), getattr(entity, 'material_id', None))
+            current_mat_id = getattr(entity, 'material_id', None)
+        else:
+            current_hash = None
+            current_mat_id = None
+
+        if current_hash != self._last_selection_hash:
+            # Selection changed - revert any pending changes on old material
+            if self._last_material_id:
+                mat_mgr = self._get_material_manager()
+                if mat_mgr and mat_mgr.has_pending_changes(self._last_material_id):
+                    mat_mgr.revert(self._last_material_id)
+                    self._trigger_rebuild()  # Rebuild to show reverted values
+
+            self._last_selection_hash = current_hash
+            self._last_material_id = current_mat_id
+            self._on_selection_changed()
+
+    def _on_selection_changed(self):
+        """Called when selection changes - sync widget to new target."""
+        entity = self._get_selected_entity()
+        mat, _ = self._get_target_material()
+        self._sync_from_material(mat)
+
+        # Begin editing in MaterialManager to track original values
+        if entity:
+            mat_id = getattr(entity, 'material_id', None)
+            mat_mgr = self._get_material_manager()
+            if mat_mgr and mat_id:
+                mat_mgr.begin_editing(mat_id)
+
+        # Update dropdown to show selected material
+        self._update_dropdown_display()
+
+    def _update_dropdown_display(self):
+        """Update dropdown options to show (modified) suffix where needed."""
+        mat_mgr = self._get_material_manager()
+        library = self._get_material_library()
+
+        # Get current material id
+        entity = self._get_selected_entity()
+        current_mat_id = getattr(entity, 'material_id', None) if entity else None
+
+        # Rebuild options with (modified) suffix where applicable
+        new_options = []
+        selected_idx = 0
+        for i, name in enumerate(library.keys()):
+            if mat_mgr and mat_mgr.has_pending_changes(name):
+                display_name = f"{name} (modified)"
+            else:
+                display_name = name
+            new_options.append(display_name)
+
+            # Track which index matches current material
+            if name == current_mat_id:
+                selected_idx = i
+
+        # Update dropdown
+        if hasattr(self.dropdown, 'options'):
+            self.dropdown.options = new_options
+            self.dropdown.selected_index = selected_idx
+            self.dropdown.cached_surf = None  # Force re-render
+
+    def refresh_from_selection(self):
+        """Public method to force refresh from current selection."""
+        self._on_selection_changed()
 
     def draw(self, screen, font):
         """Draw the widget."""
         if not self.visible:
             return
 
-        # Draw section header
-        header = font.render("Material", True, config.COLOR_TEXT_DIM)
+        # Draw section header (context-aware)
+        entity = self._get_selected_entity()
+        if entity:
+            header_text = "Selected Material"
+            header_color = config.COLOR_ACCENT
+        else:
+            header_text = "Brush Material"
+            header_color = config.COLOR_TEXT_DIM
+
+        header = font.render(header_text, True, header_color)
         screen.blit(header, (self.rect.x, self.rect.y - config.scale(18)))
 
         # Draw children

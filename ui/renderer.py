@@ -205,15 +205,12 @@ class Renderer:
 
             # Basic culling based on viewport approximation
             if layout['MID_X'] < sx < layout['RIGHT_X'] and config.TOP_MENU_H < sy < config.WINDOW_HEIGHT:
-                is_stat = sim.is_static[i]
-                if is_stat:
-                    col = config.COLOR_STATIC
-                else:
-                    # Use per-particle color for dynamic particles
-                    col = tuple(sim.atom_color[i])
-                    # Fall back to default if color is black (unset)
-                    if col == (0, 0, 0):
-                        col = config.COLOR_DYNAMIC
+                # Use per-particle color for all particles (dynamic, static, tethered)
+                col = tuple(sim.atom_color[i])
+                # Fall back to defaults if color is black (unset)
+                if col == (0, 0, 0):
+                    is_stat = sim.is_static[i]
+                    col = config.COLOR_STATIC if is_stat else config.COLOR_DYNAMIC
                 atom_sig = sim.atom_sigma[i]
                 rad = max(2, int(atom_sig * config.PARTICLE_RADIUS_SCALE * ((layout['MID_W']-50)/sim.world_size) * session.camera.zoom))
                 pygame.draw.circle(self.screen, col, (sx, sy), rad)

@@ -29,6 +29,7 @@ import os
 
 from model.sketch import Sketch
 from model.simulation_geometry import GeometryManager
+from model.properties import MaterialManager
 from engine.simulation import Simulation
 from engine.compiler import Compiler
 from core.commands import CommandQueue
@@ -62,7 +63,11 @@ class Scene:
         """
         # CAD Domain
         self.sketch = Sketch()
-        
+
+        # Material Manager (single source of truth for materials)
+        # Note: on_rebuild callback set after self.rebuild is defined
+        self.material_manager = MaterialManager(self.sketch)
+
         # CAD Import/Export Helper
         self.geo = GeometryManager(self.sketch)
         
@@ -83,6 +88,9 @@ class Scene:
         # geometry_moved: Positions changed → only requires sync_entity_arrays()
         self._topology_dirty = False
         self._geometry_dirty = False  # Legacy flag, kept for compatibility
+
+        # Connect material manager rebuild callback now that self.rebuild exists
+        self.material_manager.on_rebuild = self.rebuild
     
     # =========================================================================
     # Convenience Aliases (for common access patterns)
@@ -520,7 +528,7 @@ class Scene:
             if e['type'] == 'line':
                 start = (e['start'][0] + dx, e['start'][1] + dy)
                 end = (e['end'][0] + dx, e['end'][1] + dy)
-                line = Line(start, end, e.get('ref', False), e.get('material_id', 'Default'))
+                line = Line(start, end, e.get('ref', False), e.get('material_id', 'Wall'))
                 line.anchored = e.get('anchored', [False, False])
                 if 'anim' in e:
                     line.anim = e['anim'].copy()
@@ -530,14 +538,14 @@ class Scene:
                 
             elif e['type'] == 'circle':
                 center = (e['center'][0] + dx, e['center'][1] + dy)
-                circle = Circle(center, e['radius'], e.get('material_id', 'Default'))
+                circle = Circle(center, e['radius'], e.get('material_id', 'Wall'))
                 circle.anchored = e.get('anchored', [False])
                 if 'anim' in e:
                     circle.anim = e['anim'].copy()
                 self.sketch.entities.append(circle)
                 
             elif e['type'] == 'point':
-                point = Point(e['x'] + dx, e['y'] + dy, e.get('anchored', False), e.get('material_id', 'Default'))
+                point = Point(e['x'] + dx, e['y'] + dy, e.get('anchored', False), e.get('material_id', 'Wall'))
                 self.sketch.entities.append(point)
         
         for c_data in sketch_data.get('constraints', []):

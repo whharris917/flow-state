@@ -84,7 +84,7 @@ class GeometryManager:
             if w['type'] == 'line':
                 s = (w['start'][0] + dx, w['start'][1] + dy)
                 e = (w['end'][0] + dx, w['end'][1] + dy)
-                l = Line(s, e, w.get('ref', False), w.get('material_id', "Default"))
+                l = Line(s, e, w.get('ref', False), w.get('material_id', "Wall"))
                 l.anchored = w.get('anchored', [False, False])
                 if 'anim' in w:
                     l.anim = w['anim'].copy()
@@ -96,14 +96,14 @@ class GeometryManager:
                 
             elif w['type'] == 'circle':
                 c = (w['center'][0] + dx, w['center'][1] + dy)
-                circ = Circle(c, w['radius'], w.get('material_id', "Default"))
+                circ = Circle(c, w['radius'], w.get('material_id', "Wall"))
                 circ.anchored = w.get('anchored', [False])
                 if 'anim' in w:
                     circ.anim = w['anim'].copy()
                 self.sketch.entities.append(circ)
                 
             elif w['type'] == 'point':
-                p = Point(w['x'] + dx, w['y'] + dy, w.get('anchored', False), w.get('material_id', "Default"))
+                p = Point(w['x'] + dx, w['y'] + dy, w.get('anchored', False), w.get('material_id', "Wall"))
                 self.sketch.entities.append(p)
 
         # 3. Import Constraints (with remapped indices)

@@ -4,7 +4,7 @@ import math
 from model.geometry import Line, Circle, Point
 from model.constraints import create_constraint
 from model.solver import Solver
-from model.properties import Material
+from model.properties import Material, PRESET_MATERIALS
 
 class Sketch:
     """
@@ -16,11 +16,9 @@ class Sketch:
         self.constraints = []   # Constraint Data Objects
         self.drivers = []       # Animation Drivers
 
-        # Material Registry
-        self.materials = {
-            "Default": Material("Default", sigma=1.0, epsilon=1.0, color=(180, 180, 180), physical=True),
-            "Steel": Material("Steel", sigma=1.0, epsilon=2.0, color=(100, 150, 200), physical=True)
-        }
+        # Material Registry - use preset materials as the single source of truth
+        # Copy to avoid mutating the global presets
+        self.materials = {name: mat.copy() for name, mat in PRESET_MATERIALS.items()}
 
         # Solver Configuration (runtime toggles for benchmarking)
         self.use_numba = False          # Default to legacy OOP path for safety
@@ -82,14 +80,14 @@ class Sketch:
 
     # --- Geometry API ---
 
-    def add_line(self, start, end, is_ref=False, anchored=None, material_id="Default"):
+    def add_line(self, start, end, is_ref=False, anchored=None, material_id="Wall"):
         if anchored is None: anchored = [False, False]
         l = Line(start, end, is_ref, material_id)
         l.anchored = anchored
         self.entities.append(l)
         return len(self.entities) - 1
 
-    def add_circle(self, center, radius, anchored=None, material_id="Default"):
+    def add_circle(self, center, radius, anchored=None, material_id="Wall"):
         if anchored is None: anchored = [False]
         c = Circle(center, radius, material_id)
         c.anchored = anchored
@@ -171,7 +169,7 @@ class Sketch:
             self.materials[material.name] = material
 
     def get_material(self, material_id):
-        return self.materials.get(material_id, self.materials["Default"])
+        return self.materials.get(material_id, self.materials.get("Water", self.materials.get("Wall")))
 
     # --- Constraint API ---
 
@@ -365,8 +363,11 @@ class Sketch:
             self.materials = {}
             for k, v in data['materials'].items():
                 self.materials[k] = Material.from_dict(v)
-        if "Default" not in self.materials:
-             self.materials["Default"] = Material("Default")
+        # Ensure essential materials exist (Wall is commonly used for geometry)
+        if "Wall" not in self.materials:
+            self.materials["Wall"] = Material("Wall", sigma=1.0, epsilon=1.0, color=(100, 100, 120))
+        if "Water" not in self.materials:
+            self.materials["Water"] = Material("Water", sigma=1.0, epsilon=1.0, color=(50, 150, 255))
 
         self.entities = []
         for e_data in data.get('entities', []):

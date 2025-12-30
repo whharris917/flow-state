@@ -32,7 +32,7 @@ class Entity:
         angular_damping: Angular velocity damping factor
     """
 
-    def __init__(self, material_id="Default"):
+    def __init__(self, material_id="Wall"):
         self.material_id = material_id
         self.anim = None  # Animation data (for drivers)
         self.physical = False  # If True, entity is atomized by compiler
@@ -164,7 +164,7 @@ class Point(Entity):
                    (skip during atomization, special deletion behavior)
     """
 
-    def __init__(self, x, y, anchored=False, material_id="Default"):
+    def __init__(self, x, y, anchored=False, material_id="Wall"):
         super().__init__(material_id)
         self.pos = np.array([x, y], dtype=np.float64)
         self.anchored = anchored
@@ -226,7 +226,7 @@ class Point(Entity):
             data['x'],
             data['y'],
             data.get('anchored', False),
-            data.get('material_id', "Default")
+            data.get('material_id', "Wall")
         )
         p.physical = data.get('physical', False)
         p.dynamic = data.get('dynamic', False)
@@ -253,7 +253,7 @@ class Line(Entity):
         Inertia is computed as (1/12) * mass * length^2 (uniform rod formula).
     """
 
-    def __init__(self, start, end, is_ref=False, material_id="Default"):
+    def __init__(self, start, end, is_ref=False, material_id="Wall"):
         super().__init__(material_id)
         self.start = np.array(start, dtype=np.float64)
         self.end = np.array(end, dtype=np.float64)
@@ -372,7 +372,7 @@ class Line(Entity):
 
     @staticmethod
     def from_dict(data):
-        mat_id = data.get('material_id', "Default")
+        mat_id = data.get('material_id', "Wall")
         l = Line(data['start'], data['end'], data.get('ref', False), mat_id)
         l.anchored = data.get('anchored', [False, False])
         l.physical = data.get('physical', False)
@@ -401,7 +401,7 @@ class Circle(Entity):
         Inertia is computed as (1/2) * mass * radius^2 (solid disk formula).
     """
 
-    def __init__(self, center, radius, material_id="Default"):
+    def __init__(self, center, radius, material_id="Wall"):
         super().__init__(material_id)
         self.center = np.array(center, dtype=np.float64)
         self.radius = float(radius)
@@ -472,7 +472,7 @@ class Circle(Entity):
 
     @staticmethod
     def from_dict(data):
-        c = Circle(data['center'], data['radius'], data.get('material_id', "Default"))
+        c = Circle(data['center'], data['radius'], data.get('material_id', "Wall"))
         c.anchored = data.get('anchored', [False])
         c.physical = data.get('physical', False)
         c.anim = data.get('anim', None)

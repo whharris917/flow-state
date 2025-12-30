@@ -216,7 +216,7 @@ class AddLineCommand(Command):
 
     changes_topology = True  # Adding entity requires rebuild
 
-    def __init__(self, sketch, start, end, is_ref=False, material_id="Default",
+    def __init__(self, sketch, start, end, is_ref=False, material_id="Wall",
                  historize=True, supersede=False):
         super().__init__(historize, supersede)
         self.sketch = sketch
@@ -246,7 +246,7 @@ class AddCircleCommand(Command):
 
     changes_topology = True  # Adding entity requires rebuild
 
-    def __init__(self, sketch, center, radius, material_id="Default",
+    def __init__(self, sketch, center, radius, material_id="Wall",
                  historize=True, supersede=False):
         super().__init__(historize, supersede)
         self.sketch = sketch
@@ -775,7 +775,7 @@ class SetMaterialCommand(Command):
     def execute(self) -> bool:
         if 0 <= self.entity_index < len(self.sketch.entities):
             entity = self.sketch.entities[self.entity_index]
-            self.old_material_id = getattr(entity, 'material_id', 'Default')
+            self.old_material_id = getattr(entity, 'material_id', 'Wall')
             self.sketch.update_entity(self.entity_index, material_id=self.material_id)
             return True
         return False
@@ -850,7 +850,7 @@ class AddRectangleCommand(CompositeCommand):
 
     changes_topology = True  # Adding entities requires rebuild
 
-    def __init__(self, sketch, x1, y1, x2, y2, material_id="Default",
+    def __init__(self, sketch, x1, y1, x2, y2, material_id="Wall",
                  historize=True, supersede=False):
         # Create 4 line commands (not historized individually - we're the unit)
         line_cmds = [

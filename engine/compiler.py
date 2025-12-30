@@ -90,7 +90,7 @@ class Compiler:
                 continue
 
             # Look up material properties
-            mat = sketch.materials.get(w.material_id, sketch.materials["Default"])
+            mat = sketch.get_material(w.material_id)
 
             # Check Physical Flag from Material (non-physical materials are not atomized)
             if not mat.physical:
@@ -137,6 +137,9 @@ class Compiler:
         # Get tether stiffness from material or use default
         tether_k = getattr(mat, 'tether_stiffness', config.DEFAULT_TETHER_STIFFNESS)
 
+        # Get material color for atoms
+        atom_color = mat.color if mat.color else (100, 100, 120)
+
         # Generate Atoms
         for k in range(num_atoms):
             if self.sim.count >= self.sim.capacity:
@@ -152,11 +155,11 @@ class Compiler:
             if w.dynamic:
                 # Tethered atom for two-way coupling
                 self._add_tethered_atom(pos, entity_idx, t, tether_k,
-                                        mat.sigma, math.sqrt(mat.epsilon))
+                                        mat.sigma, math.sqrt(mat.epsilon), atom_color)
             else:
                 # Static atom (with tether data for position sync)
                 self._add_static_atom(pos, mat.sigma, math.sqrt(mat.epsilon),
-                                      entity_idx=entity_idx, local_t=t)
+                                      entity_idx=entity_idx, local_t=t, color=atom_color)
 
             # Track start (pt_idx=0) and end (pt_idx=1) atoms for coincident joints
             if k == 0:
@@ -179,6 +182,9 @@ class Compiler:
         # Get tether stiffness from material or use default
         tether_k = getattr(mat, 'tether_stiffness', config.DEFAULT_TETHER_STIFFNESS)
 
+        # Get material color for atoms
+        atom_color = mat.color if mat.color else (100, 100, 120)
+
         for k in range(num_atoms):
             if self.sim.count >= self.sim.capacity:
                 self.sim._resize_arrays()
@@ -191,13 +197,13 @@ class Compiler:
             if w.dynamic:
                 # Tethered atom - local_pos stores angle
                 self._add_tethered_atom(pos, entity_idx, angle, tether_k,
-                                        mat.sigma, math.sqrt(mat.epsilon))
+                                        mat.sigma, math.sqrt(mat.epsilon), atom_color)
             else:
                 # Static atom (with tether data for position sync)
                 self._add_static_atom(pos, mat.sigma, math.sqrt(mat.epsilon),
-                                      entity_idx=entity_idx, local_t=angle)
+                                      entity_idx=entity_idx, local_t=angle, color=atom_color)
 
-    def _add_tethered_atom(self, pos, entity_idx, local_t, stiffness, sig, eps_sqrt):
+    def _add_tethered_atom(self, pos, entity_idx, local_t, stiffness, sig, eps_sqrt, color):
         """
         Add a tethered atom for two-way coupling.
 
@@ -212,6 +218,7 @@ class Compiler:
             stiffness: Spring constant k for tether
             sig: LJ sigma parameter
             eps_sqrt: Square root of LJ epsilon
+            color: RGB tuple for atom color
         """
         idx = self.sim.count
         self.sim.pos_x[idx] = pos[0]
@@ -221,6 +228,7 @@ class Compiler:
         self.sim.is_static[idx] = 3  # Tethered type
         self.sim.atom_sigma[idx] = sig
         self.sim.atom_eps_sqrt[idx] = eps_sqrt
+        self.sim.atom_color[idx] = color
 
         # Tether data
         self.sim.tether_entity_idx[idx] = entity_idx
@@ -230,7 +238,7 @@ class Compiler:
 
         self.sim.count += 1
 
-    def _add_static_atom(self, pos, sig, eps_sqrt, entity_idx=-1, local_t=0.0):
+    def _add_static_atom(self, pos, sig, eps_sqrt, entity_idx=-1, local_t=0.0, color=(100, 100, 120)):
         """
         Add a single static atom to the simulation.
 
@@ -240,6 +248,7 @@ class Compiler:
             eps_sqrt: Square root of LJ epsilon
             entity_idx: Index of parent entity (-1 if none, used for static sync)
             local_t: Local coordinate on entity (t for lines, angle for circles)
+            color: RGB tuple for atom color
         """
         idx = self.sim.count
         self.sim.pos_x[idx] = pos[0]
@@ -250,6 +259,7 @@ class Compiler:
 
         self.sim.atom_sigma[idx] = sig
         self.sim.atom_eps_sqrt[idx] = eps_sqrt
+        self.sim.atom_color[idx] = color
 
         # Record tether data for static atom sync (used to teleport atoms when geometry moves)
         self.sim.tether_entity_idx[idx] = entity_idx

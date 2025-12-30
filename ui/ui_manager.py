@@ -229,7 +229,7 @@ class UIManager:
 
         # Material Property Widget (dropdown + sliders for sigma, epsilon, mass)
         if self.controller:
-            self.material_widget = MaterialPropertyWidget(0, 0, rp_w, self.controller.session)
+            self.material_widget = MaterialPropertyWidget(0, 0, rp_w, self.controller.session, self.controller)
             rp.add_child(self.material_widget)
 
         row_vis = UIContainer(0, 0, rp_w, btn_size, layout_type='horizontal', padding=0, spacing=spacing)

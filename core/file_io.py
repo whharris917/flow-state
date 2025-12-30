@@ -110,9 +110,11 @@ def load_file(scene, filepath):
             sketch.materials = {}
             for k, v in data['materials'].items():
                 sketch.materials[k] = Material.from_dict(v)
-            # Ensure default exists
-            if "Default" not in sketch.materials:
-                sketch.materials["Default"] = Material("Default")
+            # Ensure essential materials exist
+            if "Wall" not in sketch.materials:
+                sketch.materials["Wall"] = Material("Wall", sigma=1.0, epsilon=1.0, color=(100, 100, 120))
+            if "Water" not in sketch.materials:
+                sketch.materials["Water"] = Material("Water", sigma=1.0, epsilon=1.0, color=(50, 150, 255))
         
         # 2. Restore Geometry
         sketch.entities = []
