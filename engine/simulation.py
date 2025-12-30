@@ -69,6 +69,11 @@ class Simulation:
         self.tether_local_pos = np.zeros((self.capacity, 2), dtype=np.float32)
         self.tether_stiffness = np.zeros(self.capacity, dtype=np.float32)
 
+        # --- Joint Arrays (for Coincident Constraint LJ Exclusion) ---
+        # joint_ids: atoms with same non-zero ID skip LJ forces between each other
+        # This prevents physics explosions at coincident joints where atoms overlap
+        self.joint_ids = np.zeros(self.capacity, dtype=np.int32)
+
         # --- Entity State Arrays (for physics kernel to read/write) ---
         # These are synced from Sketch entities before physics runs
         # entity_positions: [N, 4] - Line: [start_x, start_y, end_x, end_y]
@@ -162,6 +167,7 @@ class Simulation:
             self.atom_sigma[:2], self.atom_eps_sqrt[:2],
             f32_vals[0], self.pair_i, self.pair_j, self.pair_count,
             self.tether_entity_idx[:2],  # For intra-entity exclusion
+            self.joint_ids[:2],  # For coincident constraint LJ exclusion
             f32_vals[1], f32_vals[2], f32_vals[3], f32_vals[4],
             f32_vals[5], self.use_boundaries, f32_vals[6]
         )
@@ -594,6 +600,9 @@ class Simulation:
         self.tether_local_pos[:new_count] = self.tether_local_pos[indices]
         self.tether_stiffness[:new_count] = self.tether_stiffness[indices]
 
+        # Joint arrays
+        self.joint_ids[:new_count] = self.joint_ids[indices]
+
         self.count = new_count
 
     # =========================================================================
@@ -728,6 +737,7 @@ class Simulation:
                 np.float32(config.ATOM_MASS),
                 self.pair_i, self.pair_j, self.pair_count,
                 self.tether_entity_idx[:self.count],  # For intra-entity exclusion
+                self.joint_ids[:self.count],  # For coincident constraint LJ exclusion
                 np.float32(self.dt), np.float32(self.gravity),
                 np.float32(self.r_cut_base**2), np.float32(self.r_skin_sq_limit),
                 np.float32(self.world_size), self.use_boundaries,
@@ -802,3 +812,8 @@ class Simulation:
         self.tether_local_pos[:len(old_tether_local)] = old_tether_local
 
         self.tether_stiffness = np.resize(self.tether_stiffness, self.capacity)
+
+        # Joint arrays
+        old_joint_ids = self.joint_ids
+        self.joint_ids = np.zeros(self.capacity, dtype=np.int32)
+        self.joint_ids[:len(old_joint_ids)] = old_joint_ids

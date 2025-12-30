@@ -106,6 +106,7 @@ def integrate_n_steps(
     atom_sigma, atom_eps_sqrt, mass,
     pair_i, pair_j, pair_count,
     tether_entity_idx,  # For intra-entity force exclusion
+    joint_ids,  # For coincident constraint LJ exclusion
     dt, gravity, r_cut2_base,
     skin_limit_sq,
     world_size,
@@ -227,6 +228,12 @@ def integrate_n_steps(
                 ent_j = tether_entity_idx[j]
                 if ent_i >= 0 and ent_i == ent_j:
                     continue
+
+            # Skip joint forces: atoms at coincident joints share the same
+            # non-zero joint_id and should not repel each other
+            jid_i = joint_ids[i]
+            if jid_i != 0 and jid_i == joint_ids[j]:
+                continue
 
             dx = pos_x[i] - pos_x[j]
             dy = pos_y[i] - pos_y[j]

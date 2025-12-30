@@ -73,6 +73,14 @@ class Compiler:
         fluid_indices = np.where(is_fluid)[0]
         self.sim.compact_arrays(fluid_indices)
 
+        # Clear joint_ids for geometry atoms (will be reassigned below)
+        # Fluid particles (is_static=0) already have joint_ids=0 from compaction
+        self.sim.joint_ids[:self.sim.count] = 0
+
+        # Vertex-to-atom mapping: {(entity_idx, pt_idx): atom_index}
+        # Used to assign joint IDs for coincident constraints
+        self._vertex_to_atom = {}
+
         # 2. Iterate Geometry with entity index tracking
         for entity_idx, w in enumerate(sketch.entities):
             # Skip ProcessObject handles - they don't become atoms
@@ -96,7 +104,10 @@ class Compiler:
                 self._compile_circle(entity_idx, w, mat)
             # Note: Regular Point entities could be atomized here if needed
 
-        # 3. Sync entity arrays for physics kernel
+        # 3. Assign joint IDs for coincident constraints
+        self._assign_joint_ids(sketch)
+
+        # 4. Sync entity arrays for physics kernel
         self.sim.sync_entity_arrays(sketch.entities)
 
         self.sim.rebuild_next = True
@@ -153,6 +164,9 @@ class Compiler:
             t = k / max(1, num_atoms - 1) if num_atoms > 1 else 0.5
             pos = p1 + vec * t
 
+            # Record atom index before adding (for vertex-to-atom mapping)
+            atom_idx = self.sim.count
+
             if w.dynamic:
                 # Tethered atom for two-way coupling
                 self._add_tethered_atom(pos, entity_idx, t, tether_k,
@@ -162,6 +176,12 @@ class Compiler:
                 self._add_static_atom(pos, mat.sigma, math.sqrt(mat.epsilon),
                                       is_rotating, pivot, omega,
                                       entity_idx=entity_idx, local_t=t)
+
+            # Track start (pt_idx=0) and end (pt_idx=1) atoms for coincident joints
+            if k == 0:
+                self._vertex_to_atom[(entity_idx, 0)] = atom_idx
+            if k == num_atoms - 1:
+                self._vertex_to_atom[(entity_idx, 1)] = atom_idx
 
     def _compile_circle(self, entity_idx, w, mat):
         """Compile a Circle entity into static or tethered atoms."""
@@ -273,3 +293,37 @@ class Compiler:
         self.sim.tether_stiffness[idx] = 0.0  # Not used for static atoms
 
         self.sim.count += 1
+
+    def _assign_joint_ids(self, sketch):
+        """
+        Assign shared joint IDs to atoms at coincident constraint vertices.
+
+        Atoms with the same non-zero joint_id will skip LJ force calculations
+        between each other, preventing physics explosions at joints where
+        two entities share a vertex.
+
+        Args:
+            sketch: The Sketch containing constraints to process
+        """
+        next_joint_id = 1  # Start at 1, since 0 means "no joint"
+
+        for constraint in sketch.constraints:
+            if constraint.type != 'COINCIDENT':
+                continue
+
+            # Coincident constraint indices: [(entity1, pt1), (entity2, pt2)]
+            if len(constraint.indices) != 2:
+                continue
+
+            idx1 = constraint.indices[0]  # (entity_idx, pt_idx)
+            idx2 = constraint.indices[1]  # (entity_idx, pt_idx)
+
+            # Look up atom indices for both vertices
+            atom1 = self._vertex_to_atom.get(tuple(idx1))
+            atom2 = self._vertex_to_atom.get(tuple(idx2))
+
+            # Only assign if both atoms exist (both entities were atomized)
+            if atom1 is not None and atom2 is not None:
+                self.sim.joint_ids[atom1] = next_joint_id
+                self.sim.joint_ids[atom2] = next_joint_id
+                next_joint_id += 1
