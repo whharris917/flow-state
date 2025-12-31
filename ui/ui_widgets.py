@@ -1063,8 +1063,21 @@ class ContextMenu(UIElement):
 class MaterialDialog:
     CREATE_NEW_OPTION = "[ Create New ]"
 
+    # Color palette for cycling (same as MaterialPropertyWidget)
+    COLOR_PALETTE = [
+        (50, 150, 255),   # Blue (Water)
+        (255, 100, 100),  # Red
+        (100, 255, 100),  # Green
+        (255, 200, 50),   # Yellow/Gold
+        (180, 100, 255),  # Purple
+        (255, 150, 50),   # Orange
+        (100, 200, 200),  # Cyan
+        (180, 180, 190),  # Silver
+        (100, 100, 120),  # Gray (Wall)
+    ]
+
     def __init__(self, x, y, sketch, current_material_id):
-        self.rect = pygame.Rect(x, y, 300, 280)  # Slightly shorter without physics toggle
+        self.rect = pygame.Rect(x, y, 300, 350)  # Taller to fit mass and color
         self.sketch = sketch
         self.done = False
         self.apply = False
@@ -1092,13 +1105,25 @@ class MaterialDialog:
 
         self.in_sigma = InputField(x + 120, y + 115, 150, 25, str(mat.sigma))
         self.in_epsilon = InputField(x + 120, y + 150, 150, 25, str(mat.epsilon))
-        self.in_spacing = InputField(x + 120, y + 185, 150, 25, str(mat.spacing))
+        self.in_mass = InputField(x + 120, y + 185, 150, 25, str(mat.mass))
+        self.in_spacing = InputField(x + 120, y + 220, 150, 25, str(mat.spacing))
 
-        self.btn_apply = Button(x + 20, y + 230, 80, 30, "Apply", toggle=False)
-        self.btn_ok = Button(x + 180, y + 230, 80, 30, "OK", toggle=False)
+        # Color swatch
+        self.color = mat.color
+        self.color_rect = pygame.Rect(x + 120, y + 255, 30, 25)
+        self._color_index = self._find_color_index(mat.color)
+
+        self.btn_apply = Button(x + 20, y + 300, 80, 30, "Apply", toggle=False)
+        self.btn_ok = Button(x + 180, y + 300, 80, 30, "OK", toggle=False)
 
         # Track mode
         self.is_create_new = (selected_idx == 0)
+
+    def _find_color_index(self, color):
+        """Find index of color in palette, or 0 if not found."""
+        if color in self.COLOR_PALETTE:
+            return self.COLOR_PALETTE.index(color)
+        return 0
 
     def _on_material_selected(self, index, option):
         """Called when dropdown selection changes."""
@@ -1111,7 +1136,10 @@ class MaterialDialog:
             # Reset to defaults
             self.in_sigma.set_value(1.0)
             self.in_epsilon.set_value(1.0)
+            self.in_mass.set_value(1.0)
             self.in_spacing.set_value(0.7)
+            self.color = (200, 200, 200)
+            self._color_index = 0
         else:
             # Existing material selected
             self.is_create_new = False
@@ -1120,7 +1148,10 @@ class MaterialDialog:
             if m:
                 self.in_sigma.set_value(m.sigma)
                 self.in_epsilon.set_value(m.epsilon)
+                self.in_mass.set_value(m.mass)
                 self.in_spacing.set_value(m.spacing)
+                self.color = m.color
+                self._color_index = self._find_color_index(m.color)
 
     def handle_event(self, event):
         if not self.visible:
@@ -1139,8 +1170,17 @@ class MaterialDialog:
                 return True
             if self.in_epsilon.handle_event(event):
                 return True
+            if self.in_mass.handle_event(event):
+                return True
             if self.in_spacing.handle_event(event):
                 return True
+
+            # Handle color swatch click
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                if self.color_rect.collidepoint(event.pos):
+                    self._color_index = (self._color_index + 1) % len(self.COLOR_PALETTE)
+                    self.color = self.COLOR_PALETTE[self._color_index]
+                    return True
 
             if self.btn_apply.handle_event(event):
                 self.apply = True
@@ -1161,6 +1201,7 @@ class MaterialDialog:
         self.in_id.update(dt)
         self.in_sigma.update(dt)
         self.in_epsilon.update(dt)
+        self.in_mass.update(dt)
         self.in_spacing.update(dt)
         # Update buttons
         self.btn_apply.update(dt)
@@ -1179,8 +1220,10 @@ class MaterialDialog:
             name,
             sigma=self.in_sigma.get_value(1.0),
             epsilon=self.in_epsilon.get_value(1.0),
+            mass=self.in_mass.get_value(1.0),
             spacing=self.in_spacing.get_value(0.7),
-            physical=True  # All materials are now physical (collidable)
+            color=self.color,
+            physical=True
         )
         return m
 
@@ -1207,7 +1250,7 @@ class MaterialDialog:
         if self.is_create_new:
             screen.blit(font.render("New Name:", True, config.COLOR_TEXT), (self.rect.x + 20, self.rect.y + 85))
 
-        labels_with_ys = [("Sigma:", 120), ("Epsilon:", 155), ("Spacing:", 190)]
+        labels_with_ys = [("Sigma:", 120), ("Epsilon:", 155), ("Mass:", 190), ("Spacing:", 225), ("Color:", 260)]
         for label, y in labels_with_ys:
             screen.blit(font.render(label, True, config.COLOR_TEXT), (self.rect.x + 20, self.rect.y + y))
 
@@ -1216,7 +1259,13 @@ class MaterialDialog:
             self.in_id.draw(screen, font)
         self.in_sigma.draw(screen, font)
         self.in_epsilon.draw(screen, font)
+        self.in_mass.draw(screen, font)
         self.in_spacing.draw(screen, font)
+
+        # Draw color swatch
+        pygame.draw.rect(screen, self.color, self.color_rect)
+        pygame.draw.rect(screen, config.COLOR_TEXT, self.color_rect, 1)
+
         self.btn_apply.draw(screen, font)
         self.btn_ok.draw(screen, font)
 
@@ -1578,7 +1627,7 @@ class MaterialPropertyWidget(UIContainer):
         s = config.scale
         slider_h = s(50)  # Compact slider height
         row_h = s(28)
-        total_h = row_h + slider_h * 3 + row_h + s(10)  # dropdown + 3 sliders + save row + padding
+        total_h = row_h + slider_h * 4 + row_h + s(10)  # dropdown + 4 sliders + save row + padding
 
         super().__init__(x, y, w, total_h, layout_type='vertical', padding=0, spacing=s(4))
         self.session = session
@@ -1606,10 +1655,12 @@ class MaterialPropertyWidget(UIContainer):
         self.slider_sigma = self._create_mini_slider("Sigma", 0.5, 2.0, 1.0)
         self.slider_epsilon = self._create_mini_slider("Epsilon", 0.1, 3.0, 1.0)
         self.slider_mass = self._create_mini_slider("Mass", 0.1, 20.0, 1.0)
+        self.slider_spacing = self._create_mini_slider("Spacing", 0.3, 2.0, 0.7)
 
         self.add_child(self.slider_sigma)
         self.add_child(self.slider_epsilon)
         self.add_child(self.slider_mass)
+        self.add_child(self.slider_spacing)
 
         # Save buttons row
         self._build_save_row()
@@ -1779,6 +1830,7 @@ class MaterialPropertyWidget(UIContainer):
         self.slider_sigma.set_value(mat.sigma)
         self.slider_epsilon.set_value(mat.epsilon)
         self.slider_mass.set_value(mat.mass)
+        self.slider_spacing.set_value(mat.spacing)
         self.color_swatch.color = mat.color
         # Update color index to match
         if mat.color in self.COLOR_PALETTE:
@@ -1810,6 +1862,7 @@ class MaterialPropertyWidget(UIContainer):
                 sigma=self.slider_sigma.val,
                 epsilon=self.slider_epsilon.val,
                 mass=self.slider_mass.val,
+                spacing=self.slider_spacing.val,
                 color=self.color_swatch.color
             )
 
@@ -1832,6 +1885,7 @@ class MaterialPropertyWidget(UIContainer):
                 sigma=self.slider_sigma.val,
                 epsilon=self.slider_epsilon.val,
                 mass=self.slider_mass.val,
+                spacing=self.slider_spacing.val,
                 color=self.color_swatch.color
             )
 
@@ -1854,7 +1908,7 @@ class MaterialPropertyWidget(UIContainer):
             return False  # Don't process other widgets when dropdown is open
 
         # Handle sliders
-        for slider in [self.slider_sigma, self.slider_epsilon, self.slider_mass]:
+        for slider in [self.slider_sigma, self.slider_epsilon, self.slider_mass, self.slider_spacing]:
             if slider.handle_event(event):
                 self._sync_to_material()
                 return True
@@ -1983,6 +2037,7 @@ class MaterialPropertyWidget(UIContainer):
             'sigma': self.slider_sigma.val,
             'epsilon': self.slider_epsilon.val,
             'mass': self.slider_mass.val,
+            'spacing': self.slider_spacing.val,
             'color': self.color_swatch.color,
             'suggested_name': suggested_name,
         }
@@ -2024,7 +2079,7 @@ class MaterialPropertyWidget(UIContainer):
             sigma=pending['sigma'],
             epsilon=pending['epsilon'],
             mass=pending['mass'],
-            spacing=0.7 * pending['sigma'],
+            spacing=pending['spacing'],
             color=pending['color'],
             physical=True
         )

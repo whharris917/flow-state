@@ -319,7 +319,7 @@ class MaterialManager:
 
         Args:
             entity_idx: Index of the entity being previewed
-            **kwargs: Material properties to update (sigma, epsilon, mass, color, etc.)
+            **kwargs: Material properties to update (sigma, epsilon, mass, spacing, color, etc.)
         """
         override = self._entity_overrides.get(entity_idx)
         if not override:
@@ -329,8 +329,8 @@ class MaterialManager:
             if hasattr(override, key):
                 setattr(override, key, value)
 
-        # Auto-update spacing based on sigma
-        if 'sigma' in kwargs:
+        # Auto-update spacing based on sigma only if spacing wasn't explicitly provided
+        if 'sigma' in kwargs and 'spacing' not in kwargs:
             override.spacing = 0.7 * override.sigma
 
     def get_entity_override(self, entity_idx):
@@ -530,7 +530,7 @@ class MaterialManager:
 
         Args:
             material_id: ID of the material being previewed
-            **kwargs: Material properties to update (sigma, epsilon, mass, color, etc.)
+            **kwargs: Material properties to update (sigma, epsilon, mass, spacing, color, etc.)
         """
         override = self._global_overrides.get(material_id)
         if not override:
@@ -540,8 +540,8 @@ class MaterialManager:
             if hasattr(override, key):
                 setattr(override, key, value)
 
-        # Auto-update spacing based on sigma
-        if 'sigma' in kwargs:
+        # Auto-update spacing based on sigma only if spacing wasn't explicitly provided
+        if 'sigma' in kwargs and 'spacing' not in kwargs:
             override.spacing = 0.7 * override.sigma
 
     def get_global_override(self, material_id):
