@@ -300,11 +300,13 @@ class ScrollableContainer(UIContainer):
                     self.recalculate_layout()
                     return True # Consume the wheel event
 
-        # 2. Clip interactions to the container rect
+        # 2. Clip MOUSEBUTTONDOWN to container rect
         # (Prevents clicking buttons that are scrolled out of view)
-        if event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP):
-             if not self.rect.collidepoint(event.pos):
-                 return False
+        # Note: MOUSEBUTTONUP must NOT be clipped - if user drags outside container
+        # and releases, children need to receive the event to end drag states.
+        if event.type == pygame.MOUSEBUTTONDOWN:
+            if not self.rect.collidepoint(event.pos):
+                return False
 
         return super().handle_event(event)
 
