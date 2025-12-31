@@ -859,11 +859,13 @@ class SelectTool(Tool):
             self._start_edit_drag(wall_idx, pt_idx, mouse_pos, layout)
             return True
 
-        # 2. Check for circle resize handle
-        resize_hit = self._hit_test_circle_resize(mx, my, entities, layout)
-        if resize_hit is not None:
-            self._start_resize_drag(resize_hit, mouse_pos)
-            return True
+        # 2. Check for circle resize handle (skip if shift held - prioritize selection)
+        shift_held = pygame.key.get_mods() & pygame.KMOD_SHIFT
+        if not shift_held:
+            resize_hit = self._hit_test_circle_resize(mx, my, entities, layout)
+            if resize_hit is not None:
+                self._start_resize_drag(resize_hit, mouse_pos)
+                return True
 
         # 3. Check for entity body hit
         sim_x, sim_y = utils.screen_to_sim(
