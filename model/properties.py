@@ -112,6 +112,9 @@ class MaterialManager:
         self._entity_overrides = {}
         # Track which entities are currently being previewed
         self._previewing_entities = set()
+        # Global preview overrides: material_id -> Material with preview values
+        # Used when no entity is selected - affects ALL entities with that material
+        self._global_overrides = {}
 
     @property
     def materials(self):
@@ -347,20 +350,27 @@ class MaterialManager:
         Get the effective material for an entity, considering preview overrides.
 
         This is the main method the Compiler should use to get material properties.
-        Returns the preview override if the entity is being previewed, otherwise
-        returns the library material.
+        Priority:
+        1. Per-entity preview override (entity selected)
+        2. Global preview override (no entity selected, affects all with same material)
+        3. Library material (baseline)
 
         Args:
             entity_idx: Index of the entity in sketch.entities
             material_id: The entity's material_id
 
         Returns:
-            Material object (either override or library material)
+            Material object (override or library material)
         """
         # Check for per-entity override first
         override = self._entity_overrides.get(entity_idx)
         if override:
             return override
+
+        # Check for global preview override
+        global_override = self._global_overrides.get(material_id)
+        if global_override:
+            return global_override
 
         # Fall back to library material
         return self.sketch.materials.get(material_id)
@@ -484,3 +494,143 @@ class MaterialManager:
             del self._originals[old_material_id]
 
         return new_name
+
+    # =========================================================================
+    # Global Preview Override System (No Entity Selected)
+    # =========================================================================
+
+    def begin_global_preview(self, material_id):
+        """
+        Begin previewing material changes globally (no entity selected).
+
+        Creates a preview override with a copy of the current material values.
+        Changes to this override will affect ALL entities with this material
+        during preview, but won't modify the library until committed.
+
+        Args:
+            material_id: The material_id to preview
+        """
+        if material_id in self._global_overrides:
+            return  # Already previewing this material
+
+        mat = self.sketch.materials.get(material_id)
+        if not mat:
+            return
+
+        # Create override with current library values
+        self._global_overrides[material_id] = mat.copy()
+
+        # Also store original for modified detection (if not already stored)
+        if material_id not in self._originals:
+            self._originals[material_id] = mat.copy()
+
+    def update_global_preview(self, material_id, **kwargs):
+        """
+        Update global preview values for a material.
+
+        Args:
+            material_id: ID of the material being previewed
+            **kwargs: Material properties to update (sigma, epsilon, mass, color, etc.)
+        """
+        override = self._global_overrides.get(material_id)
+        if not override:
+            return
+
+        for key, value in kwargs.items():
+            if hasattr(override, key):
+                setattr(override, key, value)
+
+        # Auto-update spacing based on sigma
+        if 'sigma' in kwargs:
+            override.spacing = 0.7 * override.sigma
+
+    def get_global_override(self, material_id):
+        """
+        Get the global preview override for a material, if any.
+
+        Args:
+            material_id: ID of the material
+
+        Returns:
+            Material override or None if not previewing
+        """
+        return self._global_overrides.get(material_id)
+
+    def has_global_override(self, material_id):
+        """Check if a material has a global preview override."""
+        return material_id in self._global_overrides
+
+    def is_global_modified(self, material_id):
+        """
+        Check if a material's global preview differs from the library.
+
+        Args:
+            material_id: ID of the material
+
+        Returns:
+            True if global override exists and differs from library
+        """
+        override = self._global_overrides.get(material_id)
+        if not override:
+            return False
+
+        library_mat = self.sketch.materials.get(material_id)
+        if not library_mat:
+            return False
+
+        # Compare key properties
+        return (
+            abs(override.sigma - library_mat.sigma) > 0.001 or
+            abs(override.epsilon - library_mat.epsilon) > 0.001 or
+            abs(override.mass - library_mat.mass) > 0.001 or
+            override.color != library_mat.color
+        )
+
+    def clear_global_preview(self, material_id):
+        """
+        Clear global preview override for a material (discard changes).
+
+        Args:
+            material_id: ID of the material
+        """
+        if material_id in self._global_overrides:
+            del self._global_overrides[material_id]
+        # Also clear the original snapshot
+        if material_id in self._originals:
+            del self._originals[material_id]
+
+    def clear_all_global_previews(self):
+        """Clear all global preview overrides."""
+        self._global_overrides.clear()
+
+    def commit_global_preview(self, material_id):
+        """
+        Commit global preview to the library material (Save).
+
+        Copies the preview values to the library material and clears the override.
+
+        Args:
+            material_id: The material_id to commit
+
+        Returns:
+            True if committed, False if no override exists
+        """
+        override = self._global_overrides.get(material_id)
+        if not override:
+            return False
+
+        library_mat = self.sketch.materials.get(material_id)
+        if not library_mat:
+            return False
+
+        # Copy preview values to library material
+        library_mat.sigma = override.sigma
+        library_mat.epsilon = override.epsilon
+        library_mat.mass = override.mass
+        library_mat.spacing = override.spacing
+        library_mat.color = override.color
+
+        # Clear the override and original snapshot
+        self.clear_global_preview(material_id)
+
+        return True

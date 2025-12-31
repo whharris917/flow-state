@@ -1590,6 +1590,8 @@ class MaterialPropertyWidget(UIContainer):
         self._last_entity_idx = None  # Track entity index for clearing previews
         # Track which library material is selected in dropdown (for no-entity-selected mode)
         self._dropdown_material_id = None
+        # Track if current material has unsaved modifications (for display only)
+        self._is_current_modified = False
         # Callback for requesting "Save as New" dialog (set by controller)
         self.on_save_as_new_request = None
         # Pending save data (stored while dialog is open)
@@ -1740,13 +1742,21 @@ class MaterialPropertyWidget(UIContainer):
 
     def _on_material_selected(self, index, name):
         """Called when user selects a material from the dropdown."""
-        # Strip "(modified)" suffix if present
+        # Strip "(modified)" suffix if present (for display names)
         clean_name = self._strip_modified_suffix(name)
         library = self._get_material_library()
+        mat_mgr = self._get_material_manager()
 
         if clean_name in library:
             mat = library[clean_name]
             entity = self._get_selected_entity()
+
+            # Clear any pending global preview for the OLD material
+            old_mat_id = self._dropdown_material_id
+            if mat_mgr and old_mat_id and old_mat_id != clean_name:
+                if mat_mgr.has_global_override(old_mat_id):
+                    mat_mgr.clear_global_preview(old_mat_id)
+                    self._trigger_rebuild()
 
             # Track which material is selected in dropdown
             self._dropdown_material_id = clean_name
@@ -1760,6 +1770,7 @@ class MaterialPropertyWidget(UIContainer):
                 self.session.active_material = mat.copy()
 
             self._sync_from_material(mat)
+            self._update_dropdown_display()
 
     def _sync_from_material(self, mat):
         """Update sliders and swatch to match material."""
@@ -1777,7 +1788,7 @@ class MaterialPropertyWidget(UIContainer):
 
         Selection-aware behavior:
         - Entity selected: Update per-entity preview override (only affects selected entity)
-        - No entity selected: Update library material directly (affects all entities with that material)
+        - No entity selected: Update global preview override (affects all entities with that material)
         """
         entity = self._get_selected_entity()
         entity_idx = self._get_selected_entity_index()
@@ -1805,17 +1816,27 @@ class MaterialPropertyWidget(UIContainer):
             # Update dropdown to show "(modified)"
             self._update_dropdown_display()
 
-        else:
-            # No entity selected: Update library material directly (global preview)
-            mat, _ = self._get_target_material()
-            mat.sigma = self.slider_sigma.val
-            mat.epsilon = self.slider_epsilon.val
-            mat.mass = self.slider_mass.val
-            mat.spacing = 0.7 * mat.sigma
-            mat.color = self.color_swatch.color
+        elif mat_mgr and self._dropdown_material_id:
+            # No entity selected: Use global preview override
+            material_id = self._dropdown_material_id
+
+            # Ensure global preview is started
+            if not mat_mgr.has_global_override(material_id):
+                mat_mgr.begin_global_preview(material_id)
+
+            # Update global preview values
+            mat_mgr.update_global_preview(
+                material_id,
+                sigma=self.slider_sigma.val,
+                epsilon=self.slider_epsilon.val,
+                mass=self.slider_mass.val,
+                color=self.color_swatch.color
+            )
 
             # Also update session active material for brush (as a convenience copy)
-            self.session.active_material = mat.copy()
+            override = mat_mgr.get_global_override(material_id)
+            if override:
+                self.session.active_material = override.copy()
 
             # Trigger rebuild for global preview
             self._trigger_rebuild()
@@ -1876,13 +1897,19 @@ class MaterialPropertyWidget(UIContainer):
             mat_mgr.update_entity_preview(entity_idx, color=new_color)
             self._trigger_rebuild()
             self._update_dropdown_display()
-        else:
-            # No entity selected: Update library material directly
-            mat, _ = self._get_target_material()
-            mat.color = new_color
+        elif mat_mgr and self._dropdown_material_id:
+            # No entity selected: Use global preview override
+            material_id = self._dropdown_material_id
+
+            if not mat_mgr.has_global_override(material_id):
+                mat_mgr.begin_global_preview(material_id)
+
+            mat_mgr.update_global_preview(material_id, color=new_color)
 
             # Update session active material for brush
-            self.session.active_material.color = new_color
+            override = mat_mgr.get_global_override(material_id)
+            if override:
+                self.session.active_material.color = new_color
 
             self._trigger_rebuild()
             self._update_dropdown_display()
@@ -1895,7 +1922,7 @@ class MaterialPropertyWidget(UIContainer):
 
         Selection-aware behavior:
         - Entity selected: Commit per-entity preview to library (affects all entities with that material)
-        - No entity selected: Library was already modified during global preview, just clear tracking
+        - No entity selected: Commit global preview to library (affects all entities with that material)
         """
         entity = self._get_selected_entity()
         entity_idx = self._get_selected_entity_index()
@@ -1916,18 +1943,17 @@ class MaterialPropertyWidget(UIContainer):
             else:
                 # No changes to commit
                 SoundManager.get().play_sound('snap')
-        else:
-            # No entity selected - library was modified during global preview
-            # Just clear the original snapshot to mark as saved
+        elif mat_mgr and self._dropdown_material_id:
+            # No entity selected: Commit global preview to library
             mat_id = self._dropdown_material_id
 
-            if mat_mgr and mat_id:
-                mat_mgr.save(mat_id)
+            if mat_mgr.has_global_override(mat_id):
+                mat_mgr.commit_global_preview(mat_id)
+                self._trigger_rebuild()
 
             self._update_dropdown_display()
             SoundManager.get().play_sound('snap')
-            if mat_id:
-                self.session.status.set(f"Saved: {mat_id}")
+            self.session.status.set(f"Saved: {mat_id}")
 
     def _save_as_new_material(self):
         """
@@ -2019,14 +2045,14 @@ class MaterialPropertyWidget(UIContainer):
             SoundManager.get().play_sound('snap')
             self.session.status.set(f"Created: {new_name}")
         else:
-            # No entity selected: Create as preset, revert library to baseline
+            # No entity selected: Create as preset, clear global preview
             if mat_mgr and old_mat_id:
-                mat_mgr.revert(old_mat_id)
+                mat_mgr.clear_global_preview(old_mat_id)
 
             self._trigger_rebuild()
             self._update_dropdown_display()
 
-            # Sync sliders to show the reverted library values
+            # Sync sliders to show the library values (global preview was cleared)
             if old_mat_id and old_mat_id in library:
                 self._sync_from_material(library[old_mat_id])
 
@@ -2054,10 +2080,11 @@ class MaterialPropertyWidget(UIContainer):
             current_mat_id = getattr(entity, 'material_id', None)
         else:
             current_hash = None
-            current_mat_id = None
+            # Track dropdown material for no-entity case
+            current_mat_id = self._dropdown_material_id
 
         if current_hash != self._last_selection_hash:
-            # Selection changed - clear any pending entity preview
+            # Selection changed - clear any pending previews
             mat_mgr = self._get_material_manager()
 
             if mat_mgr and self._last_entity_idx is not None:
@@ -2066,10 +2093,10 @@ class MaterialPropertyWidget(UIContainer):
                     mat_mgr.clear_entity_preview(self._last_entity_idx)
                     self._trigger_rebuild()  # Rebuild to show reverted values
 
-            # Also revert global preview if we were editing without selection
+            # Also clear global preview if we were editing without selection
             if mat_mgr and self._last_material_id and self._last_entity_idx is None:
-                if mat_mgr.has_pending_changes(self._last_material_id):
-                    mat_mgr.revert(self._last_material_id)
+                if mat_mgr.has_global_override(self._last_material_id):
+                    mat_mgr.clear_global_preview(self._last_material_id)
                     self._trigger_rebuild()
 
             self._last_selection_hash = current_hash
@@ -2080,8 +2107,6 @@ class MaterialPropertyWidget(UIContainer):
     def _on_selection_changed(self):
         """Called when selection changes - sync widget to new target."""
         entity = self._get_selected_entity()
-        entity_idx = self._get_selected_entity_index()
-        mat_mgr = self._get_material_manager()
         library = self._get_material_library()
 
         if entity:
@@ -2094,16 +2119,15 @@ class MaterialPropertyWidget(UIContainer):
         mat, _ = self._get_target_material()
         self._sync_from_material(mat)
 
-        # Begin tracking in MaterialManager for global preview mode
-        # (Entity preview is started lazily when slider changes)
-        if entity is None and mat_mgr and self._dropdown_material_id:
-            mat_mgr.begin_editing(self._dropdown_material_id)
-
         # Update dropdown to show selected material
         self._update_dropdown_display()
 
     def _update_dropdown_display(self):
-        """Update dropdown options to show (modified) suffix where needed."""
+        """Update dropdown options and track modification state.
+
+        Dropdown options always contain clean material IDs (never with suffix).
+        The "(modified)" indicator is tracked separately and displayed in draw().
+        """
         mat_mgr = self._get_material_manager()
         library = self._get_material_library()
 
@@ -2117,31 +2141,27 @@ class MaterialPropertyWidget(UIContainer):
         else:
             target_mat_id = self._dropdown_material_id
 
-        # Rebuild options with (modified) suffix where applicable
-        new_options = []
+        # Build clean options list (no suffix!)
+        new_options = list(library.keys())
         selected_idx = 0
-        for i, name in enumerate(library.keys()):
-            is_modified = False
 
-            if mat_mgr:
-                # Check for entity-specific modification
-                if entity_idx is not None and name == target_mat_id:
-                    is_modified = mat_mgr.is_entity_modified(entity_idx, name)
-                # Check for global modification (when no entity is selected)
-                elif entity_idx is None and name == target_mat_id:
-                    is_modified = mat_mgr.has_pending_changes(name)
-
-            if is_modified:
-                display_name = f"{name} (modified)"
-            else:
-                display_name = name
-            new_options.append(display_name)
-
-            # Track which index matches target material
+        # Find selected index
+        for i, name in enumerate(new_options):
             if name == target_mat_id:
                 selected_idx = i
+                break
 
-        # Update dropdown
+        # Check if current material is modified (for display purposes)
+        self._is_current_modified = False
+        if mat_mgr and target_mat_id:
+            if entity_idx is not None:
+                # Entity selected: Check entity-specific modification
+                self._is_current_modified = mat_mgr.is_entity_modified(entity_idx, target_mat_id)
+            else:
+                # No entity selected: Check global override modification
+                self._is_current_modified = mat_mgr.is_global_modified(target_mat_id)
+
+        # Update dropdown with clean options
         if hasattr(self.dropdown, 'options'):
             self.dropdown.options = new_options
             self.dropdown.selected_index = selected_idx
@@ -2164,6 +2184,10 @@ class MaterialPropertyWidget(UIContainer):
         else:
             header_text = "Brush Material"
             header_color = config.COLOR_TEXT_DIM
+
+        # Add "(modified)" to header if material has unsaved changes
+        if self._is_current_modified:
+            header_text += " (modified)"
 
         header = font.render(header_text, True, header_color)
         screen.blit(header, (self.rect.x, self.rect.y - config.scale(18)))
