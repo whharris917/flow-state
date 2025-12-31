@@ -108,17 +108,18 @@ class InputHandler:
         """The Main 4-Layer Explicit Chain."""
         # Update layout reference in case of resize
         self.layout = self.controller.layout
-        
+
         for event in pygame.event.get():
             # Layer 1: System
             if self._attempt_handle_system(event): continue
-            
-            # Layer 2: Global Hotkeys
-            if self._attempt_handle_global(event): continue
-            
-            # Layer 3: Modals (Context, Dialogs)
+
+            # Layer 2: Modals (Context, Dialogs) - BEFORE global hotkeys!
+            # Dialogs need to capture keyboard input before hotkeys trigger
             if self._attempt_handle_modals(event): continue
-            
+
+            # Layer 3: Global Hotkeys
+            if self._attempt_handle_global(event): continue
+
             # Layer 4: HUD (UI Tree - Now includes SceneViewport)
             if self._attempt_handle_hud(event): continue
 
@@ -283,7 +284,22 @@ class InputHandler:
                         self.controller.actions.apply_animation_from_dialog(dialog)
                     self.controller.actions.anim_dialog = None
                 return True
-                
+
+        # Save As New Dialog
+        if self.controller.actions.save_as_new_dialog:
+            dialog = self.controller.actions.save_as_new_dialog
+
+            # Click-outside-to-dismiss (cancels the dialog)
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                if not dialog.rect.collidepoint(event.pos):
+                    dialog.cancelled = True
+                    dialog.done = True
+                    return True
+
+            if dialog.handle_event(event):
+                # Dialog completion is handled in controller.update()
+                return True
+
         return False
 
     def _attempt_handle_hud(self, event):

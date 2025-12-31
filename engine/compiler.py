@@ -34,18 +34,23 @@ class Compiler:
     """
     The Bridge between the Sketch (CAD) and the Simulation (Physics).
     Reads geometry and materials, writes to static particle arrays.
+
+    Now supports per-entity material overrides via MaterialManager for
+    selection-aware preview editing.
     """
-    
-    def __init__(self, sketch, simulation):
+
+    def __init__(self, sketch, simulation, material_manager=None):
         """
         Initialize the Compiler with references to both domains.
-        
+
         Args:
             sketch: The Sketch instance (CAD domain - geometry, materials)
             simulation: The Simulation instance (Physics domain - particle arrays)
+            material_manager: Optional MaterialManager for per-entity overrides
         """
         self.sketch = sketch
         self.sim = simulation
+        self.material_manager = material_manager
 
     def rebuild(self, sketch=None):
         """
@@ -89,8 +94,11 @@ class Compiler:
             if not getattr(w, 'physical', False):
                 continue
 
-            # Look up material properties
-            mat = sketch.get_material(w.material_id)
+            # Look up material properties (use MaterialManager for per-entity overrides)
+            if self.material_manager:
+                mat = self.material_manager.get_effective_material(entity_idx, w.material_id)
+            else:
+                mat = sketch.get_material(w.material_id)
 
             # Check Physical Flag from Material (non-physical materials are not atomized)
             if not mat.physical:

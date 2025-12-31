@@ -82,13 +82,18 @@ class MaterialManager:
     - Provides "(modified)" indicator when current values differ from saved
     - Handles save/revert operations
     - Triggers rebuild callbacks when reverting
+    - Manages per-entity preview overrides for selection-aware editing
 
     Design:
-    - Live edits modify sketch.materials directly (for immediate visual feedback)
-    - Original snapshots are stored when editing begins
-    - has_pending_changes() compares current vs original
-    - revert() restores from original snapshot
-    - save() clears the original snapshot (current becomes new "saved" state)
+    - When NO entity is selected: Live edits modify sketch.materials directly
+    - When entity IS selected: Edits go to per-entity preview overrides
+    - Compiler uses get_effective_material() to get the right values per entity
+    - Original snapshots track baseline for revert/modified detection
+    - Preview overrides are cleared on save/revert/deselect
+
+    Preview Modes:
+    - Global preview (no selection): Modifies library, affects all entities with that material
+    - Local preview (entity selected): Creates override, affects only selected entity
     """
 
     def __init__(self, sketch, on_rebuild=None):
@@ -103,6 +108,10 @@ class MaterialManager:
         self.on_rebuild = on_rebuild
         # Original snapshots: material_id -> Material snapshot before editing
         self._originals = {}
+        # Per-entity preview overrides: entity_idx -> Material with preview values
+        self._entity_overrides = {}
+        # Track which entities are currently being previewed
+        self._previewing_entities = set()
 
     @property
     def materials(self):
@@ -269,3 +278,209 @@ class MaterialManager:
     def name_exists(self, name):
         """Check if a material name already exists."""
         return name in self.sketch.materials
+
+    # =========================================================================
+    # Per-Entity Preview Override System
+    # =========================================================================
+
+    def begin_entity_preview(self, entity_idx, material_id):
+        """
+        Begin previewing material changes for a specific entity.
+
+        Creates a preview override with a copy of the current material values.
+        Changes to this override will only affect this entity during preview.
+
+        Args:
+            entity_idx: Index of the entity in sketch.entities
+            material_id: The material_id of the entity
+        """
+        if entity_idx in self._entity_overrides:
+            return  # Already previewing this entity
+
+        # Get the library material to copy
+        mat = self.sketch.materials.get(material_id)
+        if not mat:
+            return
+
+        # Create override with current library values
+        self._entity_overrides[entity_idx] = mat.copy()
+        self._previewing_entities.add(entity_idx)
+
+        # Also store original for modified detection (if not already stored)
+        if material_id not in self._originals:
+            self._originals[material_id] = mat.copy()
+
+    def update_entity_preview(self, entity_idx, **kwargs):
+        """
+        Update preview values for a specific entity.
+
+        Args:
+            entity_idx: Index of the entity being previewed
+            **kwargs: Material properties to update (sigma, epsilon, mass, color, etc.)
+        """
+        override = self._entity_overrides.get(entity_idx)
+        if not override:
+            return
+
+        for key, value in kwargs.items():
+            if hasattr(override, key):
+                setattr(override, key, value)
+
+        # Auto-update spacing based on sigma
+        if 'sigma' in kwargs:
+            override.spacing = 0.7 * override.sigma
+
+    def get_entity_override(self, entity_idx):
+        """
+        Get the preview override for an entity, if any.
+
+        Args:
+            entity_idx: Index of the entity
+
+        Returns:
+            Material override or None if not previewing
+        """
+        return self._entity_overrides.get(entity_idx)
+
+    def get_effective_material(self, entity_idx, material_id):
+        """
+        Get the effective material for an entity, considering preview overrides.
+
+        This is the main method the Compiler should use to get material properties.
+        Returns the preview override if the entity is being previewed, otherwise
+        returns the library material.
+
+        Args:
+            entity_idx: Index of the entity in sketch.entities
+            material_id: The entity's material_id
+
+        Returns:
+            Material object (either override or library material)
+        """
+        # Check for per-entity override first
+        override = self._entity_overrides.get(entity_idx)
+        if override:
+            return override
+
+        # Fall back to library material
+        return self.sketch.materials.get(material_id)
+
+    def has_entity_override(self, entity_idx):
+        """Check if an entity has a preview override."""
+        return entity_idx in self._entity_overrides
+
+    def is_entity_modified(self, entity_idx, material_id):
+        """
+        Check if an entity's preview values differ from the library material.
+
+        Args:
+            entity_idx: Index of the entity
+            material_id: The entity's material_id
+
+        Returns:
+            True if override exists and differs from library
+        """
+        override = self._entity_overrides.get(entity_idx)
+        if not override:
+            return False
+
+        library_mat = self.sketch.materials.get(material_id)
+        if not library_mat:
+            return False
+
+        # Compare key properties
+        return (
+            abs(override.sigma - library_mat.sigma) > 0.001 or
+            abs(override.epsilon - library_mat.epsilon) > 0.001 or
+            abs(override.mass - library_mat.mass) > 0.001 or
+            override.color != library_mat.color
+        )
+
+    def clear_entity_preview(self, entity_idx):
+        """
+        Clear preview override for an entity (discard changes).
+
+        Args:
+            entity_idx: Index of the entity
+        """
+        if entity_idx in self._entity_overrides:
+            del self._entity_overrides[entity_idx]
+        self._previewing_entities.discard(entity_idx)
+
+    def clear_all_entity_previews(self):
+        """Clear all per-entity preview overrides."""
+        self._entity_overrides.clear()
+        self._previewing_entities.clear()
+
+    def commit_entity_preview(self, entity_idx, material_id):
+        """
+        Commit entity preview to the library material (Save).
+
+        Copies the preview values to the library material and clears the override.
+        This affects all entities using that material.
+
+        Args:
+            entity_idx: Index of the entity
+            material_id: The material_id to update in the library
+
+        Returns:
+            True if committed, False if no override exists
+        """
+        override = self._entity_overrides.get(entity_idx)
+        if not override:
+            return False
+
+        library_mat = self.sketch.materials.get(material_id)
+        if not library_mat:
+            return False
+
+        # Copy preview values to library material
+        library_mat.sigma = override.sigma
+        library_mat.epsilon = override.epsilon
+        library_mat.mass = override.mass
+        library_mat.spacing = override.spacing
+        library_mat.color = override.color
+
+        # Clear the override and original snapshot
+        self.clear_entity_preview(entity_idx)
+        if material_id in self._originals:
+            del self._originals[material_id]
+
+        return True
+
+    def save_entity_preview_as_new(self, entity_idx, old_material_id, new_name):
+        """
+        Save entity preview as a new material and assign it to the entity.
+
+        Creates a new material from the preview values, adds it to the library,
+        and clears the preview override. The entity's material_id should be
+        updated by the caller.
+
+        Args:
+            entity_idx: Index of the entity
+            old_material_id: The original material_id (for reverting)
+            new_name: Name for the new material
+
+        Returns:
+            The new material name if successful, None if failed
+        """
+        if not new_name or new_name in self.sketch.materials:
+            return None  # Invalid or duplicate name
+
+        override = self._entity_overrides.get(entity_idx)
+        if not override:
+            return None
+
+        # Create new material from override values
+        new_mat = override.copy()
+        new_mat.name = new_name
+        self.sketch.materials[new_name] = new_mat
+
+        # Clear the entity preview (values are now in new material)
+        self.clear_entity_preview(entity_idx)
+
+        # Clear the original snapshot for old material (it wasn't actually modified)
+        if old_material_id in self._originals:
+            del self._originals[old_material_id]
+
+        return new_name

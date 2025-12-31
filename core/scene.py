@@ -70,12 +70,12 @@ class Scene:
 
         # CAD Import/Export Helper
         self.geo = GeometryManager(self.sketch)
-        
+
         # Physics Domain (pure - no CAD knowledge)
         self.simulation = Simulation(skip_warmup=skip_warmup)
-        
-        # Bridge (knows both domains)
-        self.compiler = Compiler(self.sketch, self.simulation)
+
+        # Bridge (knows both domains, uses MaterialManager for per-entity overrides)
+        self.compiler = Compiler(self.sketch, self.simulation, self.material_manager)
         
         # Command Queue for CAD undo/redo
         self.commands = CommandQueue(max_history=50)

@@ -1296,6 +1296,143 @@ class RotationDialog:
         self.btn_apply.draw(screen, font)
         self.btn_ok.draw(screen, font)
 
+class SaveAsNewDialog:
+    """Simple dialog for naming a new material when using 'Save as New'."""
+
+    def __init__(self, x, y, suggested_name="Custom", existing_names=None):
+        self.rect = pygame.Rect(x, y, 280, 150)
+        self.done = False
+        self.cancelled = False
+        self.visible = True
+        self.existing_names = existing_names or set()
+
+        # Input field for material name (positioned after "Name:" label)
+        # Dialog is 280 wide, label ~50px + padding, input ~190 wide
+        self.in_name = InputField(x + 70, y + 45, 190, 28, suggested_name)
+        self.in_name.active = True  # Start with input focused
+        self.in_name.cursor_pos = len(suggested_name)
+
+        # Buttons (positioned at bottom of dialog)
+        btn_w = 100
+        self.btn_cancel = Button(x + 20, y + 105, btn_w, 30, "Cancel",
+                                 toggle=False, color_inactive=(80, 80, 90))
+        self.btn_ok = Button(x + 160, y + 105, btn_w, 30, "OK",
+                             toggle=False, color_inactive=config.COLOR_SUCCESS)
+
+        self.error_message = None
+
+    def has_active_input(self):
+        """Check if any input field in this dialog is active (for hotkey blocking)."""
+        return self.in_name.active
+
+    def handle_event(self, event):
+        if not self.visible:
+            return False
+
+        # Handle mouse clicks - check buttons FIRST so they work even when input is focused
+        if event.type == pygame.MOUSEBUTTONDOWN:
+            # Check Cancel button
+            if self.btn_cancel.rect.collidepoint(event.pos):
+                self.btn_cancel.handle_event(event)
+                self.cancelled = True
+                self.done = True
+                return True
+
+            # Check OK button
+            if self.btn_ok.rect.collidepoint(event.pos):
+                self.btn_ok.handle_event(event)
+                return self._try_accept()
+
+        # Handle keyboard BEFORE input field so Enter/Escape work correctly
+        if event.type == pygame.KEYDOWN:
+            # Enter to accept (intercept before InputField consumes it)
+            if event.key == pygame.K_RETURN:
+                return self._try_accept()
+            # Escape to cancel
+            elif event.key == pygame.K_ESCAPE:
+                self.cancelled = True
+                self.done = True
+                return True
+
+        # Handle input field for text editing and focus changes
+        if self.in_name.handle_event(event):
+            self.error_message = None  # Clear error on edit
+            return True
+
+        # Block ALL other keyboard events from reaching global hotkeys
+        if event.type == pygame.KEYDOWN:
+            return True
+
+        # Absorb clicks inside dialog
+        if event.type == pygame.MOUSEBUTTONDOWN and self.rect.collidepoint(event.pos):
+            return True
+
+        return False
+
+    def _try_accept(self):
+        """Validate and accept the name."""
+        name = self.in_name.get_text().strip()
+
+        if not name:
+            self.error_message = "Name cannot be empty"
+            return True
+
+        if name in self.existing_names:
+            self.error_message = "Name already exists"
+            return True
+
+        self.error_message = None
+        self.done = True
+        return True
+
+    def update(self, dt):
+        self.in_name.update(dt)
+        self.btn_cancel.update(dt)
+        self.btn_ok.update(dt)
+
+    def get_name(self):
+        """Get the entered name (only valid if done and not cancelled)."""
+        if self.cancelled:
+            return None
+        return self.in_name.get_text().strip()
+
+    def draw(self, screen, font):
+        if not self.visible:
+            return
+
+        # Shadow
+        shadow = self.rect.copy()
+        shadow.x += 5
+        shadow.y += 5
+        s_surf = pygame.Surface((shadow.width, shadow.height), pygame.SRCALPHA)
+        pygame.draw.rect(s_surf, (0, 0, 0, 100), s_surf.get_rect(), border_radius=6)
+        screen.blit(s_surf, shadow)
+
+        # Background
+        pygame.draw.rect(screen, config.PANEL_BG_COLOR, self.rect, border_radius=6)
+        pygame.draw.rect(screen, config.COLOR_ACCENT, self.rect, 1, border_radius=6)
+
+        # Title
+        title = font.render("Save as New Material", True, (255, 255, 255))
+        screen.blit(title, (self.rect.x + 15, self.rect.y + 12))
+
+        # Label
+        label = font.render("Name:", True, config.COLOR_TEXT)
+        screen.blit(label, (self.rect.x + 20, self.rect.y + 50))
+
+        # Input field (position is set in __init__, just draw it)
+        self.in_name.draw(screen, font)
+
+        # Error message (below input field)
+        if self.error_message:
+            err_surf = font.render(self.error_message, True, config.COLOR_DANGER)
+            screen.blit(err_surf, (self.rect.x + 70, self.rect.y + 78))
+
+        # Buttons
+        self.btn_cancel.draw(screen, font)
+        self.btn_ok.draw(screen, font)
+
+
 class AnimationDialog:
     def __init__(self, x, y, driver_data):
         self.rect = pygame.Rect(x, y, 300, 280)
@@ -1450,6 +1587,13 @@ class MaterialPropertyWidget(UIContainer):
         self._color_index = 0  # For cycling through palette
         self._last_selection_hash = None  # Track selection changes
         self._last_material_id = None  # Track material for revert on deselect
+        self._last_entity_idx = None  # Track entity index for clearing previews
+        # Track which library material is selected in dropdown (for no-entity-selected mode)
+        self._dropdown_material_id = None
+        # Callback for requesting "Save as New" dialog (set by controller)
+        self.on_save_as_new_request = None
+        # Pending save data (stored while dialog is open)
+        self._pending_save_as_new = None
 
         # Material dropdown (from library)
         self._build_dropdown()
@@ -1476,12 +1620,21 @@ class MaterialPropertyWidget(UIContainer):
         self.dropdown = Dropdown(0, 0, self._width, s(25), options, selected_index=0)
         self.dropdown.on_change = self._on_material_selected
         self.add_child(self.dropdown)
+        # Initialize dropdown material ID to first material
+        if options:
+            self._dropdown_material_id = self._strip_modified_suffix(options[0])
 
     def _get_material_names(self):
         """Get material names from sketch (if available) or session library."""
         if self.controller and hasattr(self.controller, 'sketch'):
             return list(self.controller.sketch.materials.keys())
         return list(self.session.material_library.keys())
+
+    def _strip_modified_suffix(self, name):
+        """Strip ' (modified)' suffix from material name if present."""
+        if name and name.endswith(' (modified)'):
+            return name[:-11]  # len(' (modified)') == 11
+        return name
 
     def _get_material_library(self):
         """Get material library from sketch (if available) or session."""
@@ -1507,21 +1660,47 @@ class MaterialPropertyWidget(UIContainer):
                 return sketch.entities[entity_idx]
         return None
 
+    def _get_selected_entity_index(self):
+        """Get the index of the first selected entity, or None if nothing selected."""
+        if not self.controller:
+            return None
+        selection = self.session.selection
+        if selection.has_entities:
+            entity_idx = next(iter(selection.entities))
+            sketch = self.controller.sketch
+            if 0 <= entity_idx < len(sketch.entities):
+                return entity_idx
+        return None
+
     def _get_target_material(self):
         """
         Get the material to edit based on context.
         Returns (material, is_entity_material) tuple.
+
+        When entity is selected: Returns entity's library material
+        When no entity selected: Returns library material selected in dropdown
         """
         entity = self._get_selected_entity()
+        library = self._get_material_library()
+
         if entity:
-            # Entity selected - edit its material
+            # Entity selected - edit its material from library
             mat_id = getattr(entity, 'material_id', 'Wall')
-            library = self._get_material_library()
             if mat_id in library:
                 return library[mat_id], True
-            # Fallback: create material from entity properties if needed
+            # Fallback
             return self.session.active_material, False
-        # Nothing selected - edit brush default
+
+        # No entity selected - edit the library material selected in dropdown
+        if self._dropdown_material_id and self._dropdown_material_id in library:
+            return library[self._dropdown_material_id], False
+
+        # Fallback to first material in library or session active
+        if library:
+            first_mat_id = next(iter(library.keys()))
+            self._dropdown_material_id = first_mat_id
+            return library[first_mat_id], False
+
         return self.session.active_material, False
 
     def _trigger_rebuild(self):
@@ -1561,17 +1740,25 @@ class MaterialPropertyWidget(UIContainer):
 
     def _on_material_selected(self, index, name):
         """Called when user selects a material from the dropdown."""
+        # Strip "(modified)" suffix if present
+        clean_name = self._strip_modified_suffix(name)
         library = self._get_material_library()
-        if name in library:
-            mat = library[name]
+
+        if clean_name in library:
+            mat = library[clean_name]
             entity = self._get_selected_entity()
+
+            # Track which material is selected in dropdown
+            self._dropdown_material_id = clean_name
+
             if entity:
                 # Apply to selected entity
-                entity.material_id = name
+                entity.material_id = clean_name
                 self._trigger_rebuild()
             else:
-                # Apply to brush default
+                # No entity selected - also update brush default
                 self.session.active_material = mat.copy()
+
             self._sync_from_material(mat)
 
     def _sync_from_material(self, mat):
@@ -1585,28 +1772,53 @@ class MaterialPropertyWidget(UIContainer):
             self._color_index = self.COLOR_PALETTE.index(mat.color)
 
     def _sync_to_material(self):
-        """Update target material from slider values and trigger rebuild."""
+        """
+        Update target material from slider values and trigger rebuild.
+
+        Selection-aware behavior:
+        - Entity selected: Update per-entity preview override (only affects selected entity)
+        - No entity selected: Update library material directly (affects all entities with that material)
+        """
         entity = self._get_selected_entity()
-        mat, is_entity_mat = self._get_target_material()
-        mat.sigma = self.slider_sigma.val
-        mat.epsilon = self.slider_epsilon.val
-        mat.mass = self.slider_mass.val
-        # Update spacing based on sigma (standard ratio)
-        mat.spacing = 0.7 * mat.sigma
+        entity_idx = self._get_selected_entity_index()
+        mat_mgr = self._get_material_manager()
 
-        if not is_entity_mat:
-            # Also update session active material for brush
-            self.session.active_material.sigma = mat.sigma
-            self.session.active_material.epsilon = mat.epsilon
-            self.session.active_material.mass = mat.mass
-            self.session.active_material.spacing = mat.spacing
+        if entity is not None and entity_idx is not None and mat_mgr:
+            # Entity selected: Use per-entity preview override
+            material_id = getattr(entity, 'material_id', 'Wall')
 
-        # Trigger rebuild for live physics update if entity is selected
-        # (is_entity_mat indicates material was found in library, but we should
-        # rebuild even if it wasn't found, as long as an entity is selected)
-        if entity is not None:
+            # Ensure preview is started
+            if not mat_mgr.has_entity_override(entity_idx):
+                mat_mgr.begin_entity_preview(entity_idx, material_id)
+
+            # Update preview values
+            mat_mgr.update_entity_preview(
+                entity_idx,
+                sigma=self.slider_sigma.val,
+                epsilon=self.slider_epsilon.val,
+                mass=self.slider_mass.val,
+                color=self.color_swatch.color
+            )
+
+            # Trigger rebuild to show preview (only affects this entity)
             self._trigger_rebuild()
-            # Update dropdown to show "(modified)" if values changed
+            # Update dropdown to show "(modified)"
+            self._update_dropdown_display()
+
+        else:
+            # No entity selected: Update library material directly (global preview)
+            mat, _ = self._get_target_material()
+            mat.sigma = self.slider_sigma.val
+            mat.epsilon = self.slider_epsilon.val
+            mat.mass = self.slider_mass.val
+            mat.spacing = 0.7 * mat.sigma
+            mat.color = self.color_swatch.color
+
+            # Also update session active material for brush (as a convenience copy)
+            self.session.active_material = mat.copy()
+
+            # Trigger rebuild for global preview
+            self._trigger_rebuild()
             self._update_dropdown_display()
 
     def handle_event(self, event):
@@ -1650,99 +1862,176 @@ class MaterialPropertyWidget(UIContainer):
         new_color = self.COLOR_PALETTE[self._color_index]
         self.color_swatch.color = new_color
 
-        # Update the target material's color
         entity = self._get_selected_entity()
-        mat, is_entity_mat = self._get_target_material()
-        mat.color = new_color
+        entity_idx = self._get_selected_entity_index()
+        mat_mgr = self._get_material_manager()
 
-        if not is_entity_mat:
+        if entity is not None and entity_idx is not None and mat_mgr:
+            # Entity selected: Update per-entity preview override
+            material_id = getattr(entity, 'material_id', 'Wall')
+
+            if not mat_mgr.has_entity_override(entity_idx):
+                mat_mgr.begin_entity_preview(entity_idx, material_id)
+
+            mat_mgr.update_entity_preview(entity_idx, color=new_color)
+            self._trigger_rebuild()
+            self._update_dropdown_display()
+        else:
+            # No entity selected: Update library material directly
+            mat, _ = self._get_target_material()
+            mat.color = new_color
+
+            # Update session active material for brush
             self.session.active_material.color = new_color
 
-        # Trigger rebuild for visual update if entity is selected
-        if entity is not None:
             self._trigger_rebuild()
-            # Update dropdown to show "(modified)" if values changed
             self._update_dropdown_display()
 
         SoundManager.get().play_sound('snap')
 
     def _save_material(self):
-        """Save current slider values to the selected material in the library."""
+        """
+        Save current slider values to the selected material in the library.
+
+        Selection-aware behavior:
+        - Entity selected: Commit per-entity preview to library (affects all entities with that material)
+        - No entity selected: Library was already modified during global preview, just clear tracking
+        """
         entity = self._get_selected_entity()
-        mat_id = getattr(entity, 'material_id', None) if entity else None
+        entity_idx = self._get_selected_entity_index()
+        mat_mgr = self._get_material_manager()
 
-        if not mat_id:
-            # No entity selected - save to session.active_material (already done by sliders)
-            SoundManager.get().play_sound('snap')
-            return
+        if entity is not None and entity_idx is not None and mat_mgr:
+            # Entity selected: Commit the per-entity preview to the library
+            material_id = getattr(entity, 'material_id', 'Wall')
 
-        # Update the material in the library with current slider values
-        library = self._get_material_library()
-        if mat_id in library:
-            mat = library[mat_id]
-            mat.sigma = self.slider_sigma.val
-            mat.epsilon = self.slider_epsilon.val
-            mat.mass = self.slider_mass.val
-            mat.spacing = 0.7 * mat.sigma
-            mat.color = self.color_swatch.color
+            if mat_mgr.has_entity_override(entity_idx):
+                # Commit preview values to library material
+                mat_mgr.commit_entity_preview(entity_idx, material_id)
+                # Trigger rebuild so all entities with this material update
+                self._trigger_rebuild()
+                self._update_dropdown_display()
+                SoundManager.get().play_sound('snap')
+                self.session.status.set(f"Saved: {material_id}")
+            else:
+                # No changes to commit
+                SoundManager.get().play_sound('snap')
+        else:
+            # No entity selected - library was modified during global preview
+            # Just clear the original snapshot to mark as saved
+            mat_id = self._dropdown_material_id
 
-            # Clear the original snapshot in MaterialManager (current values are now "saved")
-            mat_mgr = self._get_material_manager()
-            if mat_mgr:
+            if mat_mgr and mat_id:
                 mat_mgr.save(mat_id)
 
-            # Trigger rebuild so all entities with this material update
-            self._trigger_rebuild()
-
-            # Update dropdown to remove "(modified)" suffix
             self._update_dropdown_display()
-
-        SoundManager.get().play_sound('snap')
-        self.session.status.set(f"Saved: {mat_id}")
+            SoundManager.get().play_sound('snap')
+            if mat_id:
+                self.session.status.set(f"Saved: {mat_id}")
 
     def _save_as_new_material(self):
-        """Save current slider values as a new material with a new name."""
-        entity = self._get_selected_entity()
-        old_mat_id = getattr(entity, 'material_id', None) if entity else None
+        """
+        Request the Save as New dialog to get a name for the new material.
 
+        Stores pending save data and calls the on_save_as_new_request callback
+        to show the dialog. Actual save is done in complete_save_as_new().
+        """
+        entity = self._get_selected_entity()
+        entity_idx = self._get_selected_entity_index()
         library = self._get_material_library()
 
-        # Generate a unique name
+        # Generate a suggested name
         base_name = "Custom"
         counter = 1
-        new_name = base_name
-        while new_name in library:
-            new_name = f"{base_name} {counter}"
+        suggested_name = base_name
+        while suggested_name in library:
+            suggested_name = f"{base_name} {counter}"
             counter += 1
 
-        # Create new material with current values
+        # Store pending save data
+        self._pending_save_as_new = {
+            'entity_idx': entity_idx,
+            'old_mat_id': getattr(entity, 'material_id', 'Wall') if entity else self._dropdown_material_id,
+            'sigma': self.slider_sigma.val,
+            'epsilon': self.slider_epsilon.val,
+            'mass': self.slider_mass.val,
+            'color': self.color_swatch.color,
+            'suggested_name': suggested_name,
+        }
+
+        # Request dialog via callback
+        if self.on_save_as_new_request:
+            self.on_save_as_new_request(suggested_name, set(library.keys()))
+        else:
+            # Fallback if no callback set - use suggested name directly
+            self.complete_save_as_new(suggested_name)
+
+    def complete_save_as_new(self, new_name):
+        """
+        Complete the Save as New operation with the provided name.
+
+        Called by the controller after the dialog is completed.
+
+        Args:
+            new_name: The name for the new material (None if cancelled)
+        """
+        if not self._pending_save_as_new:
+            return
+
+        pending = self._pending_save_as_new
+        self._pending_save_as_new = None
+
+        if not new_name:
+            # Cancelled - do nothing
+            return
+
+        entity_idx = pending['entity_idx']
+        old_mat_id = pending['old_mat_id']
+        mat_mgr = self._get_material_manager()
+        library = self._get_material_library()
+
+        # Create new material with pending values
         new_mat = Material(
             new_name,
-            sigma=self.slider_sigma.val,
-            epsilon=self.slider_epsilon.val,
-            mass=self.slider_mass.val,
-            spacing=0.7 * self.slider_sigma.val,
-            color=self.color_swatch.color,
+            sigma=pending['sigma'],
+            epsilon=pending['epsilon'],
+            mass=pending['mass'],
+            spacing=0.7 * pending['sigma'],
+            color=pending['color'],
             physical=True
         )
         library[new_name] = new_mat
 
-        # Revert the old material to its original values (if it was modified)
-        mat_mgr = self._get_material_manager()
-        if mat_mgr and old_mat_id:
-            mat_mgr.revert(old_mat_id)
+        if entity_idx is not None:
+            # Entity was selected: Assign new material to entity
+            entity = self._get_selected_entity()
+            if entity:
+                entity.material_id = new_name
+                self._dropdown_material_id = new_name
+                self._last_material_id = new_name
 
-        # If an entity is selected, update its material_id to the new material
-        if entity:
-            entity.material_id = new_name
-            self._last_material_id = new_name  # Update tracking
+            # Clear any entity preview
+            if mat_mgr and mat_mgr.has_entity_override(entity_idx):
+                mat_mgr.clear_entity_preview(entity_idx)
+
             self._trigger_rebuild()
+            self._update_dropdown_display()
+            SoundManager.get().play_sound('snap')
+            self.session.status.set(f"Created: {new_name}")
+        else:
+            # No entity selected: Create as preset, revert library to baseline
+            if mat_mgr and old_mat_id:
+                mat_mgr.revert(old_mat_id)
 
-        # Update dropdown options
-        self._update_dropdown_display()
+            self._trigger_rebuild()
+            self._update_dropdown_display()
 
-        SoundManager.get().play_sound('snap')
-        self.session.status.set(f"Created: {new_name}")
+            # Sync sliders to show the reverted library values
+            if old_mat_id and old_mat_id in library:
+                self._sync_from_material(library[old_mat_id])
+
+            SoundManager.get().play_sound('snap')
+            self.session.status.set(f"Created preset: {new_name}")
 
     def update(self, dt):
         """Update child widgets and check for selection changes."""
@@ -1758,6 +2047,8 @@ class MaterialPropertyWidget(UIContainer):
         """Check if selection changed and update widget accordingly."""
         # Create a hash of current selection state
         entity = self._get_selected_entity()
+        entity_idx = self._get_selected_entity_index()
+
         if entity:
             current_hash = (id(entity), getattr(entity, 'material_id', None))
             current_mat_id = getattr(entity, 'material_id', None)
@@ -1766,29 +2057,47 @@ class MaterialPropertyWidget(UIContainer):
             current_mat_id = None
 
         if current_hash != self._last_selection_hash:
-            # Selection changed - revert any pending changes on old material
-            if self._last_material_id:
-                mat_mgr = self._get_material_manager()
-                if mat_mgr and mat_mgr.has_pending_changes(self._last_material_id):
-                    mat_mgr.revert(self._last_material_id)
+            # Selection changed - clear any pending entity preview
+            mat_mgr = self._get_material_manager()
+
+            if mat_mgr and self._last_entity_idx is not None:
+                # Clear the entity preview for the previously selected entity
+                if mat_mgr.has_entity_override(self._last_entity_idx):
+                    mat_mgr.clear_entity_preview(self._last_entity_idx)
                     self._trigger_rebuild()  # Rebuild to show reverted values
+
+            # Also revert global preview if we were editing without selection
+            if mat_mgr and self._last_material_id and self._last_entity_idx is None:
+                if mat_mgr.has_pending_changes(self._last_material_id):
+                    mat_mgr.revert(self._last_material_id)
+                    self._trigger_rebuild()
 
             self._last_selection_hash = current_hash
             self._last_material_id = current_mat_id
+            self._last_entity_idx = entity_idx
             self._on_selection_changed()
 
     def _on_selection_changed(self):
         """Called when selection changes - sync widget to new target."""
         entity = self._get_selected_entity()
+        entity_idx = self._get_selected_entity_index()
+        mat_mgr = self._get_material_manager()
+        library = self._get_material_library()
+
+        if entity:
+            # Entity selected - sync dropdown to entity's material
+            mat_id = getattr(entity, 'material_id', 'Wall')
+            self._dropdown_material_id = mat_id
+        # else: Keep current dropdown selection when deselecting
+
+        # Get the material to display (library material, not any override)
         mat, _ = self._get_target_material()
         self._sync_from_material(mat)
 
-        # Begin editing in MaterialManager to track original values
-        if entity:
-            mat_id = getattr(entity, 'material_id', None)
-            mat_mgr = self._get_material_manager()
-            if mat_mgr and mat_id:
-                mat_mgr.begin_editing(mat_id)
+        # Begin tracking in MaterialManager for global preview mode
+        # (Entity preview is started lazily when slider changes)
+        if entity is None and mat_mgr and self._dropdown_material_id:
+            mat_mgr.begin_editing(self._dropdown_material_id)
 
         # Update dropdown to show selected material
         self._update_dropdown_display()
@@ -1798,22 +2107,38 @@ class MaterialPropertyWidget(UIContainer):
         mat_mgr = self._get_material_manager()
         library = self._get_material_library()
 
-        # Get current material id
+        # Get current entity and material id
         entity = self._get_selected_entity()
-        current_mat_id = getattr(entity, 'material_id', None) if entity else None
+        entity_idx = self._get_selected_entity_index()
+
+        # Determine which material should be selected in dropdown
+        if entity:
+            target_mat_id = getattr(entity, 'material_id', None)
+        else:
+            target_mat_id = self._dropdown_material_id
 
         # Rebuild options with (modified) suffix where applicable
         new_options = []
         selected_idx = 0
         for i, name in enumerate(library.keys()):
-            if mat_mgr and mat_mgr.has_pending_changes(name):
+            is_modified = False
+
+            if mat_mgr:
+                # Check for entity-specific modification
+                if entity_idx is not None and name == target_mat_id:
+                    is_modified = mat_mgr.is_entity_modified(entity_idx, name)
+                # Check for global modification (when no entity is selected)
+                elif entity_idx is None and name == target_mat_id:
+                    is_modified = mat_mgr.has_pending_changes(name)
+
+            if is_modified:
                 display_name = f"{name} (modified)"
             else:
                 display_name = name
             new_options.append(display_name)
 
-            # Track which index matches current material
-            if name == current_mat_id:
+            # Track which index matches target material
+            if name == target_mat_id:
                 selected_idx = i
 
         # Update dropdown

@@ -15,7 +15,7 @@ import math
 import core.config as config
 import core.utils as utils
 
-from ui.ui_widgets import MaterialDialog, RotationDialog, AnimationDialog, ContextMenu
+from ui.ui_widgets import MaterialDialog, RotationDialog, AnimationDialog, ContextMenu, SaveAsNewDialog
 from ui import icons
 from model.geometry import Line, Circle, Point
 from core.definitions import CONSTRAINT_DEFS
@@ -42,6 +42,7 @@ class AppController:
         self.prop_dialog = None
         self.rot_dialog = None
         self.anim_dialog = None
+        self.save_as_new_dialog = None
         self.ctx_vars = {'wall': -1, 'pt': None, 'const': -1}
 
     # =========================================================================
@@ -298,10 +299,27 @@ class AppController:
             c = self.sketch.constraints[self.ctx_vars['const']]
             driver = getattr(c, 'driver', None)
             self.anim_dialog = AnimationDialog(
-                self.app.layout['W'] // 2, 
-                self.app.layout['H'] // 2, 
+                self.app.layout['W'] // 2,
+                self.app.layout['H'] // 2,
                 driver
             )
+
+    def open_save_as_new_dialog(self, suggested_name, existing_names):
+        """Open the Save as New Material dialog."""
+        # Center the dialog
+        mx = self.app.layout['W'] // 2 - 140
+        my = self.app.layout['H'] // 2 - 70
+        self.save_as_new_dialog = SaveAsNewDialog(mx, my, suggested_name, existing_names)
+
+    def apply_save_as_new_from_dialog(self, dialog):
+        """Apply the result from Save as New dialog."""
+        new_name = dialog.get_name()
+        # Find the material property widget and complete the save
+        # Note: app uses self.ui, not self.ui_manager
+        if hasattr(self.app, 'ui') and hasattr(self.app.ui, 'material_widget'):
+            mat_widget = self.app.ui.material_widget
+            if mat_widget:
+                mat_widget.complete_save_as_new(new_name)
 
     # =========================================================================
     # Context Menus
@@ -503,6 +521,12 @@ class AppController:
             self.rot_dialog.update(dt)
         if self.anim_dialog:
             self.anim_dialog.update(dt)
+        if self.save_as_new_dialog:
+            self.save_as_new_dialog.update(dt)
+            # Check if dialog is done
+            if self.save_as_new_dialog.done:
+                self.apply_save_as_new_from_dialog(self.save_as_new_dialog)
+                self.save_as_new_dialog = None
 
     def draw_overlays(self, screen, font):
         if self.context_menu:
@@ -513,3 +537,5 @@ class AppController:
             self.rot_dialog.draw(screen, font)
         if self.anim_dialog:
             self.anim_dialog.draw(screen, font)
+        if self.save_as_new_dialog:
+            self.save_as_new_dialog.draw(screen, font)
