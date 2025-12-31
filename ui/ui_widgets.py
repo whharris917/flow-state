@@ -2078,6 +2078,11 @@ class MaterialPropertyWidget(UIContainer):
         """Clear global preview if user clicks outside the material inspector."""
         import pygame
 
+        # Don't clear preview while a modal dialog is open (borrowed focus)
+        # Focus returns to material inspector when dialog closes
+        if self._is_modal_open():
+            return
+
         # Get current mouse state
         mouse_pressed = pygame.mouse.get_pressed()[0]  # Left button
         mouse_pos = pygame.mouse.get_pos()
@@ -2114,6 +2119,25 @@ class MaterialPropertyWidget(UIContainer):
                 library = self._get_material_library()
                 if self._dropdown_material_id in library:
                     self._sync_from_material(library[self._dropdown_material_id])
+
+    def _is_modal_open(self):
+        """Check if any modal dialog is currently open (borrowing focus)."""
+        if not self.controller:
+            return False
+
+        # Access AppController through the app
+        actions = getattr(self.controller, 'actions', None)
+        if not actions:
+            return False
+
+        # Check all modal dialog types
+        return (
+            getattr(actions, 'context_menu', None) is not None or
+            getattr(actions, 'prop_dialog', None) is not None or
+            getattr(actions, 'rot_dialog', None) is not None or
+            getattr(actions, 'anim_dialog', None) is not None or
+            getattr(actions, 'save_as_new_dialog', None) is not None
+        )
 
     def _check_selection_change(self):
         """Check if selection changed and update widget accordingly."""
