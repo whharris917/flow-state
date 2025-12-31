@@ -217,22 +217,26 @@ class AddLineCommand(Command):
     changes_topology = True  # Adding entity requires rebuild
 
     def __init__(self, sketch, start, end, is_ref=False, material_id="Wall",
-                 historize=True, supersede=False):
+                 historize=True, supersede=False, physical=False):
         super().__init__(historize, supersede)
         self.sketch = sketch
         self.start = tuple(start)
         self.end = tuple(end)
         self.is_ref = is_ref
         self.material_id = material_id
+        self.physical = physical
         self.created_index = None
         self.description = "Add Line"
-    
+
     def execute(self) -> bool:
         self.created_index = self.sketch.add_line(
-            self.start, self.end, 
-            is_ref=self.is_ref, 
+            self.start, self.end,
+            is_ref=self.is_ref,
             material_id=self.material_id
         )
+        # Only atomize non-reference lines (ref lines are never physical)
+        if self.created_index is not None and self.physical and not self.is_ref:
+            self.sketch.entities[self.created_index].physical = True
         return self.created_index is not None
     
     def undo(self):
@@ -247,20 +251,23 @@ class AddCircleCommand(Command):
     changes_topology = True  # Adding entity requires rebuild
 
     def __init__(self, sketch, center, radius, material_id="Wall",
-                 historize=True, supersede=False):
+                 historize=True, supersede=False, physical=False):
         super().__init__(historize, supersede)
         self.sketch = sketch
         self.center = tuple(center)
         self.radius = radius
         self.material_id = material_id
+        self.physical = physical
         self.created_index = None
         self.description = "Add Circle"
-    
+
     def execute(self) -> bool:
         self.created_index = self.sketch.add_circle(
             self.center, self.radius,
             material_id=self.material_id
         )
+        if self.created_index is not None and self.physical:
+            self.sketch.entities[self.created_index].physical = True
         return self.created_index is not None
     
     def undo(self):
@@ -851,13 +858,13 @@ class AddRectangleCommand(CompositeCommand):
     changes_topology = True  # Adding entities requires rebuild
 
     def __init__(self, sketch, x1, y1, x2, y2, material_id="Wall",
-                 historize=True, supersede=False):
+                 historize=True, supersede=False, physical=False):
         # Create 4 line commands (not historized individually - we're the unit)
         line_cmds = [
-            AddLineCommand(sketch, (x1, y1), (x2, y1), material_id=material_id, historize=False),
-            AddLineCommand(sketch, (x2, y1), (x2, y2), material_id=material_id, historize=False),
-            AddLineCommand(sketch, (x2, y2), (x1, y2), material_id=material_id, historize=False),
-            AddLineCommand(sketch, (x1, y2), (x1, y1), material_id=material_id, historize=False),
+            AddLineCommand(sketch, (x1, y1), (x2, y1), material_id=material_id, historize=False, physical=physical),
+            AddLineCommand(sketch, (x2, y1), (x2, y2), material_id=material_id, historize=False, physical=physical),
+            AddLineCommand(sketch, (x2, y2), (x1, y2), material_id=material_id, historize=False, physical=physical),
+            AddLineCommand(sketch, (x1, y2), (x1, y1), material_id=material_id, historize=False, physical=physical),
         ]
         
         super().__init__(line_cmds, "Add Rectangle", historize, supersede)

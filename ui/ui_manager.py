@@ -209,6 +209,10 @@ class UIManager:
         rp.add_child(btn_atom)
         self.buttons['atomize'] = btn_atom
 
+        btn_auto_atom = Button(0, 0, rp_w, s(35), "Auto Atomize", active=False, toggle=True, tooltip="Auto-atomize new geometry")
+        rp.add_child(btn_auto_atom)
+        self.buttons['auto_atomize'] = btn_auto_atom
+
         btn_size = s(38)
         spacing = s(6)
         

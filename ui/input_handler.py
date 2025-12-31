@@ -73,6 +73,7 @@ class InputHandler:
         bind_action('redo', self.controller.actions.action_redo)
         
         bind_action('atomize', self.controller.actions.atomize_selected)
+        bind_action('auto_atomize', lambda: setattr(self.session, 'auto_atomize', self.ui.buttons['auto_atomize'].active))
         bind_action('mode_ghost', self.controller.actions.toggle_ghost_mode)
         bind_action('extend', self.controller.actions.toggle_extend)
         bind_action('editor_play', self.controller.actions.toggle_editor_play)

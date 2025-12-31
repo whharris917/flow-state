@@ -355,7 +355,7 @@ class LineTool(GeometryTool):
 
             # Create initial degenerate line (zero length)
             is_ref = (self.name == "Ref Line")
-            cmd = AddLineCommand(self.sketch, (sx, sy), (sx, sy), is_ref=is_ref)
+            cmd = AddLineCommand(self.sketch, (sx, sy), (sx, sy), is_ref=is_ref, physical=self.app.session.auto_atomize)
             self.scene.execute(cmd)
 
             self.dragging = True
@@ -375,7 +375,7 @@ class LineTool(GeometryTool):
                 is_ref = (self.name == "Ref Line")
                 cmd = AddLineCommand(
                     self.sketch, self.start_pos, (sx, sy),
-                    is_ref=is_ref, supersede=True
+                    is_ref=is_ref, supersede=True, physical=self.app.session.auto_atomize
                 )
                 self.scene.execute(cmd)
 
@@ -415,7 +415,7 @@ class LineTool(GeometryTool):
         is_ref = (self.name == "Ref Line")
         cmd = AddLineCommand(
             self.sketch, self.start_pos, (sx, sy),
-            is_ref=is_ref, supersede=True
+            is_ref=is_ref, supersede=True, physical=self.app.session.auto_atomize
         )
         self.scene.execute(cmd)
         wall_idx = cmd.created_index
@@ -475,7 +475,7 @@ class RectTool(GeometryTool):
                 self.start_pos = (sx, sy)
                 
                 # Create initial degenerate rectangle (zero size)
-                cmd = AddRectangleCommand(self.sketch, sx, sy, sx, sy)
+                cmd = AddRectangleCommand(self.sketch, sx, sy, sx, sy, physical=self.app.session.auto_atomize)
                 self.scene.execute(cmd)
                 
                 self.dragging = True
@@ -491,7 +491,7 @@ class RectTool(GeometryTool):
                 # Supersede with updated rectangle
                 cmd = AddRectangleCommand(
                     self.sketch, sx, sy, cx, cy,
-                    supersede=True
+                    supersede=True, physical=self.app.session.auto_atomize
                 )
                 self.scene.execute(cmd)
                 return True
@@ -507,7 +507,7 @@ class RectTool(GeometryTool):
             # Final supersede - stays in undo stack
             cmd = AddRectangleCommand(
                 self.sketch, sx, sy, cx, cy,
-                supersede=True
+                supersede=True, physical=self.app.session.auto_atomize
             )
             self.scene.execute(cmd)
             
@@ -563,7 +563,7 @@ class CircleTool(GeometryTool):
             self.click_click_mode = False
 
             # Create initial circle with minimal radius
-            cmd = AddCircleCommand(self.sketch, (sx, sy), 0.1)
+            cmd = AddCircleCommand(self.sketch, (sx, sy), 0.1, physical=self.app.session.auto_atomize)
             self.scene.execute(cmd)
 
             self.dragging = True
@@ -580,7 +580,7 @@ class CircleTool(GeometryTool):
                 # Supersede with updated circle
                 cmd = AddCircleCommand(
                     self.sketch, center, radius,
-                    supersede=True
+                    supersede=True, physical=self.app.session.auto_atomize
                 )
                 self.scene.execute(cmd)
 
@@ -616,7 +616,7 @@ class CircleTool(GeometryTool):
         # Final supersede - stays in undo stack
         cmd = AddCircleCommand(
             self.sketch, center, radius,
-            supersede=True
+            supersede=True, physical=self.app.session.auto_atomize
         )
         self.scene.execute(cmd)
         circle_idx = cmd.created_index
@@ -676,7 +676,7 @@ class PointTool(GeometryTool):
                 sx, sy, snap = self.get_snapped(mx, my, layout)
                 
                 # Create point as degenerate line via command
-                cmd = AddLineCommand(self.sketch, (sx, sy), (sx, sy), is_ref=False)
+                cmd = AddLineCommand(self.sketch, (sx, sy), (sx, sy), is_ref=False, physical=self.app.session.auto_atomize)
                 self.scene.execute(cmd)
                 wall_idx = cmd.created_index
                 

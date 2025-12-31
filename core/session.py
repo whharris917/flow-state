@@ -85,6 +85,7 @@ class Session:
         # =====================================================================
         self.show_wall_atoms = True
         self.show_constraints = True
+        self.auto_atomize = False  # When True, new geometry is automatically atomized
 
         # =====================================================================
         # Focus Management (for widgets that need focus-loss detection)
