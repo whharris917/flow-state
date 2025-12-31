@@ -87,6 +87,11 @@ class Session:
         self.show_constraints = True
 
         # =====================================================================
+        # Focus Management (for widgets that need focus-loss detection)
+        # =====================================================================
+        self.focused_element = None
+
+        # =====================================================================
         # Active Material (for brush tool and new geometry atomization)
         # =====================================================================
         self.active_material = PRESET_MATERIALS['Water'].copy()

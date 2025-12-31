@@ -120,6 +120,10 @@ class InputHandler:
             # Layer 3: Global Hotkeys
             if self._attempt_handle_global(event): continue
 
+            # Focus Management: Check for focus loss before HUD handling
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                self._check_focus_loss(event.pos)
+
             # Layer 4: HUD (UI Tree - Now includes SceneViewport)
             if self._attempt_handle_hud(event): continue
 
@@ -212,95 +216,96 @@ class InputHandler:
 
     def _attempt_handle_modals(self, event):
         """Layer 3: Modals (Context Menu, Dialogs)."""
-        # Context Menu
-        if self.controller.actions.context_menu:
-            menu = self.controller.actions.context_menu
+        actions = self.controller.actions
 
-            # Click-outside-to-dismiss: Check BEFORE delegating to menu
-            if event.type == pygame.MOUSEBUTTONDOWN:
-                if not menu.rect.collidepoint(event.pos):
-                    # Click outside menu - dismiss and consume event
-                    self.controller.actions.context_menu = None
-                    return True
+        # Get active modal from stack
+        modal = actions.get_active_modal()
+        if not modal:
+            return False
 
-            # Let menu handle the event (clicks inside, motion, etc.)
-            if menu.handle_event(event):
-                action = menu.action
-                self.controller.actions.context_menu = None
+        modal_type = actions.get_active_modal_type()
+
+        # Click-outside-to-dismiss logic
+        if event.type == pygame.MOUSEBUTTONDOWN:
+            # Check if click is inside modal
+            click_inside = modal.rect.collidepoint(event.pos)
+
+            # Special case: Check if dropdown is expanded (for dialogs with dropdowns)
+            dropdown_expanded = hasattr(modal, 'dropdown') and modal.dropdown.expanded
+            if dropdown_expanded:
+                expanded_rect = modal.dropdown.get_expanded_rect()
+                if expanded_rect.collidepoint(event.pos):
+                    click_inside = True
+
+            if not click_inside:
+                # Click outside - dismiss modal
+                if modal_type == 'save_as_new_dialog':
+                    modal.cancelled = True
+                    modal.done = True
+                else:
+                    actions.close_modal()
+                return True
+
+        # Let modal handle the event
+        if modal.handle_event(event):
+            # Handle modal-specific completion logic
+            if modal_type == 'context_menu':
+                action = getattr(modal, 'action', None)
+                actions.close_modal()
                 if action and action != "CLOSE":
-                    self.controller.actions.handle_context_menu_action(action)
-                return True
-        
-        # Property Dialog (MaterialDialog)
-        if self.controller.actions.prop_dialog:
-            dialog = self.controller.actions.prop_dialog
+                    actions.handle_context_menu_action(action)
 
-            # Click-outside-to-dismiss (but not if dropdown is expanded)
-            if event.type == pygame.MOUSEBUTTONDOWN:
-                dropdown_expanded = hasattr(dialog, 'dropdown') and dialog.dropdown.expanded
-                if not dialog.rect.collidepoint(event.pos) and not dropdown_expanded:
-                    # Also check if click is in expanded dropdown area
-                    if not (dropdown_expanded and dialog.dropdown.get_expanded_rect().collidepoint(event.pos)):
-                        self.controller.actions.prop_dialog = None
-                        return True
+            elif modal_type == 'prop_dialog':
+                if getattr(modal, 'apply', False):
+                    actions.apply_material_from_dialog(modal)
+                    modal.apply = False
+                if getattr(modal, 'done', False):
+                    actions.close_modal()
 
-            if dialog.handle_event(event):
-                # Check for apply (with or without closing)
-                if dialog.apply:
-                    self.controller.actions.apply_material_from_dialog(dialog)
-                    dialog.apply = False  # Reset so we don't re-apply
-                if dialog.done:
-                    self.controller.actions.prop_dialog = None
-                return True
+            elif modal_type == 'anim_dialog':
+                if getattr(modal, 'done', False):
+                    if getattr(modal, 'apply', False):
+                        actions.apply_animation_from_dialog(modal)
+                    actions.close_modal()
 
-        # Rotation Dialog
-        if self.controller.actions.rot_dialog:
-            dialog = self.controller.actions.rot_dialog
+            # save_as_new_dialog completion handled in actions.update()
 
-            # Click-outside-to-dismiss
-            if event.type == pygame.MOUSEBUTTONDOWN:
-                if not dialog.rect.collidepoint(event.pos):
-                    self.controller.actions.rot_dialog = None
-                    return True
-
-            if dialog.handle_event(event):
-                if dialog.done:
-                    self.controller.actions.rot_dialog = None
-                return True
-
-        # Animation Dialog
-        if self.controller.actions.anim_dialog:
-            dialog = self.controller.actions.anim_dialog
-
-            # Click-outside-to-dismiss
-            if event.type == pygame.MOUSEBUTTONDOWN:
-                if not dialog.rect.collidepoint(event.pos):
-                    self.controller.actions.anim_dialog = None
-                    return True
-
-            if dialog.handle_event(event):
-                if dialog.done:
-                    if dialog.apply:
-                        self.controller.actions.apply_animation_from_dialog(dialog)
-                    self.controller.actions.anim_dialog = None
-                return True
-
-        # Save As New Dialog
-        if self.controller.actions.save_as_new_dialog:
-            dialog = self.controller.actions.save_as_new_dialog
-
-            # Click-outside-to-dismiss (cancels the dialog)
-            if event.type == pygame.MOUSEBUTTONDOWN:
-                if not dialog.rect.collidepoint(event.pos):
-                    dialog.cancelled = True
-                    dialog.done = True
-                    return True
-
-            if dialog.handle_event(event):
-                # Dialog completion is handled in controller.update()
-                return True
+            return True
 
         return False
+
+    def _check_focus_loss(self, mouse_pos):
+        """
+        Check if a click occurred outside the focused element and trigger on_focus_lost.
+
+        This is called before HUD handling to give the focused element a chance
+        to handle focus loss (e.g., clear unsaved preview changes).
+        """
+        focused = self.session.focused_element
+        if not focused:
+            return
+
+        # Don't process focus loss while a modal is active (borrowed focus)
+        if self.controller.actions.is_modal_active():
+            return
+
+        # Check if click is inside the focused element
+        # Use the element's rect for hit testing
+        if focused.rect.collidepoint(mouse_pos):
+            return  # Click is inside, keep focus
+
+        # Click is outside - notify element and clear focus
+        focused.on_focus_lost()
+        self.session.focused_element = None
+
+    def _acquire_focus(self, element):
+        """
+        Attempt to give focus to an element.
+
+        Only elements that return True from wants_focus() will receive focus.
+        """
+        if element and hasattr(element, 'wants_focus') and element.wants_focus():
+            self.session.focused_element = element
 
     def _attempt_handle_hud(self, event):
         """Layer 4: HUD Panel Tree."""
@@ -310,13 +315,35 @@ class InputHandler:
             if isinstance(menu_result, str):
                 self._dispatch_menu(menu_result)
             return True
-            
+
         # 2. Generic Tree Delegation
         # This propagates to panels -> SceneViewport -> Scene
         if self.ui.root.handle_event(event):
+            # Check if we should acquire focus for MaterialPropertyWidget
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                # Find which widget was clicked and if it wants focus
+                self._check_focus_acquisition(event.pos)
             return True
-            
+
         return False
+
+    def _check_focus_acquisition(self, mouse_pos):
+        """
+        Check if a focusable widget was clicked and acquire focus for it.
+
+        This searches the right panel for MaterialPropertyWidget (or other
+        widgets that implement wants_focus()).
+        """
+        # Check if click is in the material widget
+        if hasattr(self.ui, 'material_widget'):
+            mat_widget = self.ui.material_widget
+            # Use parent rect (right panel) for focus area, matching the widget's expectations
+            focus_rect = mat_widget.rect
+            if hasattr(mat_widget, 'parent') and mat_widget.parent:
+                focus_rect = mat_widget.parent.rect
+
+            if focus_rect.collidepoint(mouse_pos):
+                self._acquire_focus(mat_widget)
 
     def _dispatch_menu(self, selection):
         """Handle menu item selection."""

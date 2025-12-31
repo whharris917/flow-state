@@ -7,7 +7,7 @@ Root -> [Menu Bar, Middle Region, Status Bar]
 
 import pygame
 import core.config as config
-from ui.ui_widgets import UIContainer, UIElement, Button, SmartSlider, InputField, MenuBar, StatusBar, ScrollableContainer, MaterialPropertyWidget
+from ui.ui_widgets import UIContainer, UIElement, Button, SmartSlider, InputField, MenuBar, StatusBar, ScrollableContainer, MaterialPropertyWidget, OverlayProvider
 from ui import icons
 from core.session import InteractionState
 
@@ -84,7 +84,11 @@ class UIManager:
         self.buttons = {}
         self.tools = {}
         self.inputs = {}
-        
+
+        # --- OVERLAY SYSTEM ---
+        self.overlays = []  # List of active OverlayProvider instances
+        OverlayProvider.set_ui_manager(self)  # Allow widgets to register overlays
+
         # --- HIERARCHICAL TREE CONSTRUCTION ---
         
         # Level 0: Root
@@ -286,6 +290,24 @@ class UIManager:
         row_resize.add_child(self.inputs['world'])
 
 
+    # =========================================================================
+    # Overlay Management
+    # =========================================================================
+
+    def register_overlay(self, provider):
+        """Register an OverlayProvider to be drawn on top of the UI."""
+        if provider not in self.overlays:
+            self.overlays.append(provider)
+
+    def unregister_overlay(self, provider):
+        """Unregister an OverlayProvider."""
+        if provider in self.overlays:
+            self.overlays.remove(provider)
+
+    # =========================================================================
+    # Update & Draw
+    # =========================================================================
+
     def update(self, dt):
         """
         Propagate time step to all widgets via the Tree.
@@ -302,37 +324,6 @@ class UIManager:
         self._draw_overlays(screen, font)
 
     def _draw_overlays(self, screen, font):
-        """Draw elements that should appear above everything else (dropdowns, etc.)."""
-        # Draw MaterialPropertyWidget's dropdown overlay if expanded
-        if hasattr(self, 'material_widget') and self.material_widget.dropdown.expanded:
-            dropdown = self.material_widget.dropdown
-            if dropdown.options:
-                # Draw the expanded list manually (bypasses parent clip)
-                expanded_rect = dropdown.get_expanded_rect()
-
-                # Shadow
-                shadow_rect = expanded_rect.copy()
-                shadow_rect.x += 3
-                shadow_rect.y += 3
-                pygame.draw.rect(screen, (0, 0, 0, 80), shadow_rect, border_radius=4)
-
-                # Background
-                pygame.draw.rect(screen, config.PANEL_BG_COLOR, expanded_rect, border_radius=4)
-                pygame.draw.rect(screen, config.COLOR_ACCENT, expanded_rect, 1, border_radius=4)
-
-                # Options
-                for i, option in enumerate(dropdown.options):
-                    option_rect = pygame.Rect(
-                        expanded_rect.x,
-                        expanded_rect.y + i * dropdown.option_height,
-                        expanded_rect.width,
-                        dropdown.option_height
-                    )
-                    # Highlight hovered option
-                    if i == dropdown.hovered_option:
-                        pygame.draw.rect(screen, config.COLOR_ACCENT, option_rect)
-                    elif i == dropdown.selected_index:
-                        pygame.draw.rect(screen, (60, 60, 70), option_rect)
-
-                    opt_surf = font.render(option, True, config.COLOR_TEXT)
-                    screen.blit(opt_surf, (option_rect.x + 5, option_rect.centery - opt_surf.get_height() // 2))
+        """Draw all registered overlay providers above the UI tree."""
+        for provider in self.overlays:
+            provider.draw_overlay(screen, font)

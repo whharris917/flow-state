@@ -36,14 +36,63 @@ class AppController:
     def __init__(self, app):
         self.app = app
         self.sound_manager = SoundManager.get()
-        
-        # State for dialogs/menus
-        self.context_menu = None
-        self.prop_dialog = None
-        self.rot_dialog = None
-        self.anim_dialog = None
-        self.save_as_new_dialog = None
+
+        # Modal stack for dialogs/menus (replaces individual properties)
+        self._modal_stack = []
         self.ctx_vars = {'wall': -1, 'pt': None, 'const': -1}
+
+    # =========================================================================
+    # Modal Stack Management
+    # =========================================================================
+
+    def push_modal(self, modal, modal_type=None):
+        """
+        Push a modal dialog onto the stack.
+
+        Args:
+            modal: The modal dialog instance
+            modal_type: Optional string identifier (e.g., 'context_menu', 'prop_dialog')
+        """
+        self._modal_stack.append({'modal': modal, 'type': modal_type})
+
+    def pop_modal(self):
+        """Pop and return the top modal from the stack."""
+        if self._modal_stack:
+            return self._modal_stack.pop()['modal']
+        return None
+
+    def get_active_modal(self):
+        """Get the currently active (top) modal, or None if stack is empty."""
+        if self._modal_stack:
+            return self._modal_stack[-1]['modal']
+        return None
+
+    def get_active_modal_type(self):
+        """Get the type of the currently active modal, or None if stack is empty."""
+        if self._modal_stack:
+            return self._modal_stack[-1]['type']
+        return None
+
+    def is_modal_active(self):
+        """Check if any modal is currently active."""
+        return len(self._modal_stack) > 0
+
+    def close_modal(self, modal=None):
+        """
+        Close a specific modal or the top modal.
+
+        Args:
+            modal: Specific modal to close, or None to close the top modal
+        """
+        if modal is None:
+            self.pop_modal()
+        else:
+            # Find and remove specific modal
+            self._modal_stack = [m for m in self._modal_stack if m['modal'] is not modal]
+
+    def close_all_modals(self):
+        """Close all active modals."""
+        self._modal_stack.clear()
 
     # =========================================================================
     # Property Accessors (Clean SoC)
@@ -275,7 +324,7 @@ class AppController:
             self.sound_manager.play_sound('click')
 
     def open_material_dialog(self):
-        if not self.session.selection.walls and self.ctx_vars['wall'] == -1: 
+        if not self.session.selection.walls and self.ctx_vars['wall'] == -1:
             self.session.status.set("Select a wall first")
             return
         mx, my = pygame.mouse.get_pos()
@@ -287,7 +336,8 @@ class AppController:
         current_mat = "Wall"
         if target_idx != -1 and target_idx < len(self.sketch.entities):
             current_mat = self.sketch.entities[target_idx].material_id
-        self.prop_dialog = MaterialDialog(mx, my, self.sketch, current_mat)
+        dialog = MaterialDialog(mx, my, self.sketch, current_mat)
+        self.push_modal(dialog, 'prop_dialog')
 
     def open_rotation_dialog(self):
         # Legacy rotation dialog - show message about using constraint drivers
@@ -298,18 +348,20 @@ class AppController:
         if self.ctx_vars['const'] != -1:
             c = self.sketch.constraints[self.ctx_vars['const']]
             driver = getattr(c, 'driver', None)
-            self.anim_dialog = AnimationDialog(
+            dialog = AnimationDialog(
                 self.app.layout['W'] // 2,
                 self.app.layout['H'] // 2,
                 driver
             )
+            self.push_modal(dialog, 'anim_dialog')
 
     def open_save_as_new_dialog(self, suggested_name, existing_names):
         """Open the Save as New Material dialog."""
         # Center the dialog
         mx = self.app.layout['W'] // 2 - 140
         my = self.app.layout['H'] // 2 - 70
-        self.save_as_new_dialog = SaveAsNewDialog(mx, my, suggested_name, existing_names)
+        dialog = SaveAsNewDialog(mx, my, suggested_name, existing_names)
+        self.push_modal(dialog, 'save_as_new_dialog')
 
     def apply_save_as_new_from_dialog(self, dialog):
         """Apply the result from Save as New dialog."""
@@ -384,7 +436,8 @@ class AppController:
                 self.scene.execute(cmd)
                 self.sound_manager.play_sound('snap')
                 self.session.status.set("Entity set to Static (immovable)")
-        self.context_menu = None
+        # Close the context menu modal
+        self.close_modal()
 
     def spawn_context_menu(self, pos):
         mx, my = pos
@@ -411,7 +464,7 @@ class AppController:
             self.ctx_vars['wall'] = hit_pt[0]
             self.ctx_vars['pt'] = hit_pt[1]
             opts = self.get_context_options('point', hit_pt[0], hit_pt[1])
-            self.context_menu = ContextMenu(mx, my, opts)
+            self.push_modal(ContextMenu(mx, my, opts), 'context_menu')
             return
 
         # Check constraints second
@@ -428,7 +481,7 @@ class AppController:
                     const_idx = item['const_idx']
                     self.ctx_vars['const'] = const_idx
                     opts = self.get_context_options('constraint', const_idx)
-                    self.context_menu = ContextMenu(mx, my, opts)
+                    self.push_modal(ContextMenu(mx, my, opts), 'context_menu')
                     return
 
         # Check walls/entities using sketch's find_entity_at
@@ -438,7 +491,7 @@ class AppController:
         if hit_wall != -1:
             self.ctx_vars['wall'] = hit_wall
             opts = self.get_context_options('wall', hit_wall)
-            self.context_menu = ContextMenu(mx, my, opts)
+            self.push_modal(ContextMenu(mx, my, opts), 'context_menu')
         else:
             if self.session.mode == config.MODE_EDITOR: 
                 self.app.change_tool(config.TOOL_SELECT)
@@ -515,27 +568,21 @@ class AppController:
     # =========================================================================
     
     def update(self, dt):
-        if self.prop_dialog:
-            self.prop_dialog.update(dt)
-        if self.rot_dialog:
-            self.rot_dialog.update(dt)
-        if self.anim_dialog:
-            self.anim_dialog.update(dt)
-        if self.save_as_new_dialog:
-            self.save_as_new_dialog.update(dt)
-            # Check if dialog is done
-            if self.save_as_new_dialog.done:
-                self.apply_save_as_new_from_dialog(self.save_as_new_dialog)
-                self.save_as_new_dialog = None
+        """Update all active modals."""
+        for entry in self._modal_stack:
+            modal = entry['modal']
+            modal_type = entry['type']
+            if hasattr(modal, 'update'):
+                modal.update(dt)
+            # Handle save_as_new_dialog completion specially
+            if modal_type == 'save_as_new_dialog' and hasattr(modal, 'done') and modal.done:
+                self.apply_save_as_new_from_dialog(modal)
+                self.close_modal(modal)
+                break  # Modal stack was modified, exit loop
 
     def draw_overlays(self, screen, font):
-        if self.context_menu:
-            self.context_menu.draw(screen, font)
-        if self.prop_dialog:
-            self.prop_dialog.draw(screen, font)
-        if self.rot_dialog:
-            self.rot_dialog.draw(screen, font)
-        if self.anim_dialog:
-            self.anim_dialog.draw(screen, font)
-        if self.save_as_new_dialog:
-            self.save_as_new_dialog.draw(screen, font)
+        """Draw all active modals in stack order (bottom to top)."""
+        for entry in self._modal_stack:
+            modal = entry['modal']
+            if hasattr(modal, 'draw'):
+                modal.draw(screen, font)

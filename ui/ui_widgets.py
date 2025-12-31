@@ -11,17 +11,61 @@ def lerp(start, end, t):
 
 class AnimVar:
     """Simple spring-like animation value."""
-    def __init__(self, value, speed=15.0): 
+    def __init__(self, value, speed=15.0):
         self.value = value
         self.target = value
         self.speed = speed
-        
-    def update(self, dt): 
+
+    def update(self, dt):
         # Exponential smoothing approach
         self.value += (self.target - self.value) * min(self.speed * dt, 1.0)
-        
-    def set(self, target): 
+
+    def set(self, target):
         self.target = target
+
+
+# =============================================================================
+# OVERLAY PROVIDER PROTOCOL
+# =============================================================================
+
+class OverlayProvider:
+    """
+    Protocol for widgets that need to render floating overlays above other UI elements.
+
+    Examples: Dropdowns (expanded list), Tooltips, Popovers
+
+    Widgets implementing this protocol should:
+    1. Call ui_manager.register_overlay(self) when overlay should be visible
+    2. Call ui_manager.unregister_overlay(self) when overlay should hide
+    3. Implement get_overlay_rect() and draw_overlay() methods
+    """
+
+    # Reference to UIManager for registration (set by UIManager during init)
+    _ui_manager = None
+
+    @classmethod
+    def set_ui_manager(cls, ui_manager):
+        """Set the UIManager instance for all OverlayProviders."""
+        cls._ui_manager = ui_manager
+
+    def get_overlay_rect(self):
+        """Return the screen-space rect of the overlay for hit-testing."""
+        return pygame.Rect(0, 0, 0, 0)
+
+    def draw_overlay(self, screen, font):
+        """Draw the floating overlay element."""
+        pass
+
+    def _register_overlay(self):
+        """Register this widget's overlay with the UIManager."""
+        if OverlayProvider._ui_manager:
+            OverlayProvider._ui_manager.register_overlay(self)
+
+    def _unregister_overlay(self):
+        """Unregister this widget's overlay from the UIManager."""
+        if OverlayProvider._ui_manager:
+            OverlayProvider._ui_manager.unregister_overlay(self)
+
 
 # =============================================================================
 # PHASE I: HIERARCHICAL STRUCTURAL FOUNDATIONS
@@ -75,6 +119,28 @@ class UIElement:
             p_rect = self.parent.get_absolute_rect()
             return pygame.Rect(p_rect.x + self.rel_x, p_rect.y + self.rel_y, self.rect.w, self.rect.h)
         return self.rect
+
+    def on_focus_lost(self):
+        """
+        Called when this element loses focus (user clicked elsewhere).
+
+        Override in subclasses to handle focus-loss behavior like:
+        - Clearing preview changes
+        - Reverting unsaved modifications
+        - Closing expanded dropdowns
+
+        The InputHandler manages focus and calls this method when appropriate.
+        """
+        pass
+
+    def wants_focus(self):
+        """
+        Return True if this element should acquire focus when clicked.
+
+        Override in subclasses that need focus tracking (e.g., MaterialPropertyWidget).
+        Default is False - most elements don't need focus tracking.
+        """
+        return False
 
 
 class UIContainer(UIElement):
@@ -619,7 +685,7 @@ class InputField(UIElement):
         screen.set_clip(None)
 
 
-class Dropdown(UIElement):
+class Dropdown(UIElement, OverlayProvider):
     """A dropdown selector widget with a list of options."""
 
     def __init__(self, x, y, w, h, options, selected_index=0, text_color=config.COLOR_TEXT):
@@ -628,10 +694,25 @@ class Dropdown(UIElement):
         self.selected_index = selected_index
         self.text_color = text_color
         self.hovered = False
-        self.expanded = False  # Is the dropdown list showing?
+        self._expanded = False  # Is the dropdown list showing?
         self.hovered_option = -1  # Which option is being hovered
         self.option_height = h  # Height of each option in the list
         self.on_change = None  # Callback when selection changes
+
+    @property
+    def expanded(self):
+        """Get expanded state."""
+        return self._expanded
+
+    @expanded.setter
+    def expanded(self, value):
+        """Set expanded state and register/unregister overlay."""
+        if self._expanded != value:
+            self._expanded = value
+            if value:
+                self._register_overlay()
+            else:
+                self._unregister_overlay()
 
     def get_selected(self):
         """Get the currently selected option string."""
@@ -653,6 +734,44 @@ class Dropdown(UIElement):
             return pygame.Rect(0, 0, 0, 0)
         list_height = len(self.options) * self.option_height
         return pygame.Rect(self.rect.x, self.rect.bottom, self.rect.width, list_height)
+
+    def get_overlay_rect(self):
+        """OverlayProvider: Return the screen-space rect of the overlay."""
+        return self.get_expanded_rect()
+
+    def draw_overlay(self, screen, font):
+        """OverlayProvider: Draw the expanded dropdown list as a floating overlay."""
+        if not self.expanded or not self.options:
+            return
+
+        expanded_rect = self.get_expanded_rect()
+
+        # Shadow
+        shadow_rect = expanded_rect.copy()
+        shadow_rect.x += 3
+        shadow_rect.y += 3
+        pygame.draw.rect(screen, (0, 0, 0, 80), shadow_rect, border_radius=4)
+
+        # Background
+        pygame.draw.rect(screen, config.PANEL_BG_COLOR, expanded_rect, border_radius=4)
+        pygame.draw.rect(screen, config.COLOR_ACCENT, expanded_rect, 1, border_radius=4)
+
+        # Options
+        for i, option in enumerate(self.options):
+            option_rect = pygame.Rect(
+                expanded_rect.x,
+                expanded_rect.y + i * self.option_height,
+                expanded_rect.width,
+                self.option_height
+            )
+            # Highlight hovered option
+            if i == self.hovered_option:
+                pygame.draw.rect(screen, config.COLOR_ACCENT, option_rect)
+            elif i == self.selected_index:
+                pygame.draw.rect(screen, (60, 60, 70), option_rect)
+
+            opt_surf = font.render(option, True, self.text_color)
+            screen.blit(opt_surf, (option_rect.x + 5, option_rect.centery - opt_surf.get_height() // 2))
 
     def handle_event(self, event):
         if not self.visible:
@@ -735,29 +854,7 @@ class Dropdown(UIElement):
                       (arrow_x + arrow_size, arrow_y)]
         pygame.draw.polygon(screen, self.text_color, points)
 
-        # Draw expanded list
-        if self.expanded and self.options:
-            expanded_rect = self.get_expanded_rect()
-            # Shadow
-            shadow_rect = expanded_rect.copy()
-            shadow_rect.x += 3
-            shadow_rect.y += 3
-            pygame.draw.rect(screen, (0, 0, 0, 80), shadow_rect, border_radius=4)
-            # Background
-            pygame.draw.rect(screen, config.PANEL_BG_COLOR, expanded_rect, border_radius=4)
-            pygame.draw.rect(screen, config.COLOR_ACCENT, expanded_rect, 1, border_radius=4)
-
-            for i, option in enumerate(self.options):
-                option_rect = pygame.Rect(expanded_rect.x, expanded_rect.y + i * self.option_height,
-                                          expanded_rect.width, self.option_height)
-                # Highlight hovered option
-                if i == self.hovered_option:
-                    pygame.draw.rect(screen, config.COLOR_ACCENT, option_rect)
-                elif i == self.selected_index:
-                    pygame.draw.rect(screen, (60, 60, 70), option_rect)
-
-                opt_surf = font.render(option, True, self.text_color)
-                screen.blit(opt_surf, (option_rect.x + 5, option_rect.centery - opt_surf.get_height() // 2))
+        # Note: Expanded list is drawn by UIManager via OverlayProvider.draw_overlay()
 
 
 class SmartSlider(UIElement):
@@ -1641,8 +1738,6 @@ class MaterialPropertyWidget(UIContainer):
         self._dropdown_material_id = None
         # Track if current material has unsaved modifications (for display only)
         self._is_current_modified = False
-        # Track mouse state for focus-loss detection
-        self._prev_mouse_pressed = False
         # Callback for requesting "Save as New" dialog (set by controller)
         self.on_save_as_new_request = None
         # Pending save data (stored while dialog is open)
@@ -2121,45 +2216,29 @@ class MaterialPropertyWidget(UIContainer):
         # Check if selection changed
         self._check_selection_change()
 
-        # Check for focus loss (click outside widget clears global preview)
-        self._check_focus_loss()
-
         self.dropdown.hovered = False  # Reset hover state
         for child in self.children:
             if hasattr(child, 'update'):
                 child.update(dt)
 
-    def _check_focus_loss(self):
-        """Clear global preview if user clicks outside the material inspector."""
-        import pygame
+    def wants_focus(self):
+        """MaterialPropertyWidget wants focus for global preview tracking."""
+        return True
 
+    def on_focus_lost(self):
+        """
+        Clear global preview when focus is lost (user clicked outside widget).
+
+        Called by InputHandler when a click occurs outside this widget.
+        Uses borrowed focus: if a modal is open, focus is not truly lost.
+        """
         # Don't clear preview while a modal dialog is open (borrowed focus)
-        # Focus returns to material inspector when dialog closes
-        if self._is_modal_open():
-            return
+        if self.controller:
+            actions = getattr(self.controller, 'actions', None)
+            if actions and actions.is_modal_active():
+                return
 
-        # Get current mouse state
-        mouse_pressed = pygame.mouse.get_pressed()[0]  # Left button
-        mouse_pos = pygame.mouse.get_pos()
-
-        # Detect rising edge (click start)
-        click_started = mouse_pressed and not self._prev_mouse_pressed
-        self._prev_mouse_pressed = mouse_pressed
-
-        if not click_started:
-            return
-
-        # Check if click is outside this widget
-        # Use parent panel rect if available for more accurate bounds
-        widget_rect = self.rect
-        if hasattr(self, 'parent') and self.parent and hasattr(self.parent, 'rect'):
-            # Use the right panel's rect as the focus area
-            widget_rect = self.parent.rect
-
-        if widget_rect.collidepoint(mouse_pos):
-            return  # Click is inside, keep focus
-
-        # Click is outside - clear any pending global preview
+        # Only clear global preview (not entity-specific preview)
         entity = self._get_selected_entity()
         if entity is not None:
             return  # Entity selected, not using global preview
@@ -2174,25 +2253,6 @@ class MaterialPropertyWidget(UIContainer):
                 library = self._get_material_library()
                 if self._dropdown_material_id in library:
                     self._sync_from_material(library[self._dropdown_material_id])
-
-    def _is_modal_open(self):
-        """Check if any modal dialog is currently open (borrowing focus)."""
-        if not self.controller:
-            return False
-
-        # Access AppController through the app
-        actions = getattr(self.controller, 'actions', None)
-        if not actions:
-            return False
-
-        # Check all modal dialog types
-        return (
-            getattr(actions, 'context_menu', None) is not None or
-            getattr(actions, 'prop_dialog', None) is not None or
-            getattr(actions, 'rot_dialog', None) is not None or
-            getattr(actions, 'anim_dialog', None) is not None or
-            getattr(actions, 'save_as_new_dialog', None) is not None
-        )
 
     def _check_selection_change(self):
         """Check if selection changed and update widget accordingly."""
