@@ -1592,6 +1592,8 @@ class MaterialPropertyWidget(UIContainer):
         self._dropdown_material_id = None
         # Track if current material has unsaved modifications (for display only)
         self._is_current_modified = False
+        # Track mouse state for focus-loss detection
+        self._prev_mouse_pressed = False
         # Callback for requesting "Save as New" dialog (set by controller)
         self.on_save_as_new_request = None
         # Pending save data (stored while dialog is open)
@@ -2064,10 +2066,54 @@ class MaterialPropertyWidget(UIContainer):
         # Check if selection changed
         self._check_selection_change()
 
+        # Check for focus loss (click outside widget clears global preview)
+        self._check_focus_loss()
+
         self.dropdown.hovered = False  # Reset hover state
         for child in self.children:
             if hasattr(child, 'update'):
                 child.update(dt)
+
+    def _check_focus_loss(self):
+        """Clear global preview if user clicks outside the material inspector."""
+        import pygame
+
+        # Get current mouse state
+        mouse_pressed = pygame.mouse.get_pressed()[0]  # Left button
+        mouse_pos = pygame.mouse.get_pos()
+
+        # Detect rising edge (click start)
+        click_started = mouse_pressed and not self._prev_mouse_pressed
+        self._prev_mouse_pressed = mouse_pressed
+
+        if not click_started:
+            return
+
+        # Check if click is outside this widget
+        # Use parent panel rect if available for more accurate bounds
+        widget_rect = self.rect
+        if hasattr(self, 'parent') and self.parent and hasattr(self.parent, 'rect'):
+            # Use the right panel's rect as the focus area
+            widget_rect = self.parent.rect
+
+        if widget_rect.collidepoint(mouse_pos):
+            return  # Click is inside, keep focus
+
+        # Click is outside - clear any pending global preview
+        entity = self._get_selected_entity()
+        if entity is not None:
+            return  # Entity selected, not using global preview
+
+        mat_mgr = self._get_material_manager()
+        if mat_mgr and self._dropdown_material_id:
+            if mat_mgr.has_global_override(self._dropdown_material_id):
+                mat_mgr.clear_global_preview(self._dropdown_material_id)
+                self._trigger_rebuild()
+                self._update_dropdown_display()
+                # Sync sliders back to library values
+                library = self._get_material_library()
+                if self._dropdown_material_id in library:
+                    self._sync_from_material(library[self._dropdown_material_id])
 
     def _check_selection_change(self):
         """Check if selection changed and update widget accordingly."""
