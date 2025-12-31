@@ -142,6 +142,19 @@ class UIElement:
         """
         return False
 
+    def reset_interaction_state(self):
+        """
+        Reset any in-progress interaction state (e.g., button clicks, drag operations).
+
+        Called when a modal dialog opens to prevent stale interaction state from
+        causing spurious triggers when the modal closes. For example, if a button
+        is clicked and that click opens a modal, the button's 'clicked' state
+        should be cleared so the eventual MOUSEBUTTONUP doesn't re-trigger it.
+
+        Override in subclasses that maintain interaction state.
+        """
+        pass
+
 
 class UIContainer(UIElement):
     """
@@ -251,6 +264,11 @@ class UIContainer(UIElement):
         for child in self.children:
             if child.visible:
                 child.draw(screen, font)
+
+    def reset_interaction_state(self):
+        """Propagate interaction state reset to all children."""
+        for child in self.children:
+            child.reset_interaction_state()
 
 
 class ScrollableContainer(UIContainer):
@@ -451,6 +469,10 @@ class Button(UIElement):
                 return True 
         
         return action
+
+    def reset_interaction_state(self):
+        """Clear clicked state to prevent stale triggers after modal dialogs."""
+        self.clicked = False
 
     def draw(self, screen, font):
         if not self.visible: return
@@ -1287,8 +1309,13 @@ class MaterialDialog:
                 self.done = True
                 return True
 
-        # Absorb clicks inside dialog
-        if event.type == pygame.MOUSEBUTTONDOWN and self.rect.collidepoint(event.pos):
+        # Absorb all mouse events inside dialog (including MOUSEBUTTONUP)
+        if event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP):
+            if self.rect.collidepoint(event.pos):
+                return True
+
+        # Absorb mouse motion to prevent hover effects on elements behind dialog
+        if event.type == pygame.MOUSEMOTION:
             return True
 
         return False
@@ -1405,11 +1432,15 @@ class RotationDialog:
             self.apply = True; return True
         if self.btn_ok.handle_event(event):
             self.apply = True; self.done = True; return True
-            
-        if event.type == pygame.MOUSEBUTTONDOWN and self.rect.collidepoint(event.pos):
+
+        # Absorb all mouse events inside dialog (including MOUSEBUTTONUP)
+        if event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP):
+            if self.rect.collidepoint(event.pos):
+                return True
+        if event.type == pygame.MOUSEMOTION:
             return True
         return False
-    
+
     def update(self, dt):
         self.in_speed.update(dt)
         self.btn_pivot.update(dt)
@@ -1509,8 +1540,14 @@ class SaveAsNewDialog:
         if event.type == pygame.KEYDOWN:
             return True
 
-        # Absorb clicks inside dialog
-        if event.type == pygame.MOUSEBUTTONDOWN and self.rect.collidepoint(event.pos):
+        # Absorb all mouse events inside dialog (including MOUSEBUTTONUP)
+        # This prevents clicks from falling through to widgets behind the dialog
+        if event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP):
+            if self.rect.collidepoint(event.pos):
+                return True
+
+        # Absorb mouse motion to prevent hover effects on elements behind dialog
+        if event.type == pygame.MOUSEMOTION:
             return True
 
         return False
@@ -1634,11 +1671,15 @@ class AnimationDialog:
                 self.driver = {'type': 'lin', 'rate': self.in_rate.get_value(0.0)}
             self.apply = True; self.done = True
             return True
-            
-        if event.type == pygame.MOUSEBUTTONDOWN and self.rect.collidepoint(event.pos):
+
+        # Absorb all mouse events inside dialog (including MOUSEBUTTONUP)
+        if event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP):
+            if self.rect.collidepoint(event.pos):
+                return True
+        if event.type == pygame.MOUSEMOTION:
             return True
         return False
-    
+
     def update(self, dt):
         # Update input fields for cursor blinking
         self.in_amp.update(dt)

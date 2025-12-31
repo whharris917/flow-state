@@ -53,6 +53,11 @@ class AppController:
             modal: The modal dialog instance
             modal_type: Optional string identifier (e.g., 'context_menu', 'prop_dialog')
         """
+        # Reset interaction state on UI tree to prevent stale button clicks
+        # from re-triggering when the modal closes
+        if hasattr(self.app, 'ui') and hasattr(self.app.ui, 'root'):
+            self.app.ui.root.reset_interaction_state()
+
         self._modal_stack.append({'modal': modal, 'type': modal_type})
 
     def pop_modal(self):
@@ -436,8 +441,7 @@ class AppController:
                 self.scene.execute(cmd)
                 self.sound_manager.play_sound('snap')
                 self.session.status.set("Entity set to Static (immovable)")
-        # Close the context menu modal
-        self.close_modal()
+        # Note: Context menu is already closed by InputHandler before this method is called
 
     def spawn_context_menu(self, pos):
         mx, my = pos
