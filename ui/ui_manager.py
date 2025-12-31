@@ -317,11 +317,11 @@ class UIManager:
     def draw(self, screen, font, mode):
         """
         Draw the UI Tree.
+
+        Note: Overlays (dropdowns, tooltips) are drawn separately via _draw_overlays()
+        after modal dialogs, to ensure proper z-ordering.
         """
         self.root.draw(screen, font)
-
-        # Draw floating overlays (dropdown expanded lists) on top of everything
-        self._draw_overlays(screen, font)
 
     def _draw_overlays(self, screen, font):
         """Draw all registered overlay providers above the UI tree."""

@@ -282,6 +282,8 @@ class FlowStateApp:
         self.renderer.draw_app(self, self.layout, [])
         self.ui.draw(self.screen, self.font, self.session.mode)
         self.actions.draw_overlays(self.screen, self.font)
+        # Draw UI overlays (dropdowns, tooltips) last so they appear above modals
+        self.ui._draw_overlays(self.screen, self.font)
         pygame.display.flip()
 
     # =========================================================================
