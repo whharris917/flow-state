@@ -7,13 +7,13 @@ Each tool handles mouse events for a specific operation:
 - RectTool: Draw rectangles (via commands with supersede)
 - CircleTool: Draw circles (via commands with supersede)
 - PointTool: Create points (via commands)
-- SelectTool: Select and move entities (via commands with historize)
+- SelectTool: Select and move entities (via commands with supersede)
 
 Architecture:
 - Tools receive a reference to the application (self.app)
 - ALL geometry mutations go through Commands via scene.execute()
 - Creation tools use supersede=True pattern for live preview
-- Editing tools use historize=False pattern for drag feedback
+- Editing tools (SelectTool) now also use supersede=True pattern (PROP-2025-001)
 - Orchestrator (Scene.update) handles rebuild/solve automatically
 - BrushTool operates on physics (not CAD), uses sim directly
 
@@ -762,38 +762,31 @@ class SelectTool(Tool):
         return False
 
     def cancel(self):
-        """Cancel drag operation - restore original state."""
-        if self.app.session.state != InteractionState.DRAGGING_GEOMETRY:
-            return
-        
-        # Restore original state based on mode
-        if self.mode == 'EDIT' and self.original_position is not None:
-            entity = self.sketch.entities[self.target_idx]
-            entity.set_point(self.target_pt, np.array(self.original_position))
-        
-        elif self.mode == 'RESIZE_CIRCLE' and self.original_radius is not None:
-            entity = self.sketch.entities[self.target_idx]
-            entity.radius = self.original_radius
-        
-        elif self.mode in ['MOVE_WALL', 'MOVE_GROUP']:
-            # Reverse the accumulated movement
-            if self.mode == 'MOVE_GROUP' and self.group_indices:
-                for idx in self.group_indices:
-                    if 0 <= idx < len(self.sketch.entities):
-                        self.sketch.entities[idx].move(-self.total_dx, -self.total_dy)
-            elif self.target_idx >= 0:
-                if 0 <= self.target_idx < len(self.sketch.entities):
-                    self.sketch.entities[self.target_idx].move(-self.total_dx, -self.total_dy)
-        
-        # Rebuild atoms to match restored geometry
-        self.scene.rebuild()
+        """Cancel drag operation - discard via Command pattern (Air Gap compliant).
 
-        # Clear interaction data (User Servo cancelled)
+        PROP-2025-001: This method now uses scene.discard() instead of direct
+        entity mutation, ensuring all geometry changes flow through the Command
+        Pattern and maintain undo/redo integrity.
+
+        Returns:
+            bool: True if cancel was consumed, False if nothing to cancel
+        """
+        if self.app.session.state != InteractionState.DRAGGING_GEOMETRY:
+            return False
+
+        # Discard the preview command (restores original state via Command Pattern)
+        # This replaces the previous direct entity mutation which violated the Air Gap
+        self.scene.discard()
+
+        # Clear transient state (NOT Air Gap violations - these are session state)
         self.sketch.interaction_data = None
+        self.app.session.constraint_builder.snap_target = None  # Clear snap indicator
 
         self._reset_drag_state()
         self.app.session.state = InteractionState.IDLE
         self.app.session.status.set("Cancelled")
+
+        return True
 
     def _handle_click(self, mouse_pos, layout):
         """Handle mouse down - determine what was clicked and start drag."""
@@ -983,6 +976,17 @@ class SelectTool(Tool):
             'target': sim_pos
         }
 
+        # PROP-2025-001: Create initial command for supersede pattern (Air Gap compliance)
+        # This ensures scene.discard() has a command to revert on cancel
+        cmd = SetPointCommand(
+            self.sketch, wall_idx, pt_idx,
+            self.original_position,
+            old_position=self.original_position,
+            historize=True,
+            supersede=False
+        )
+        self.scene.execute(cmd)
+
         self.app.session.state = InteractionState.DRAGGING_GEOMETRY
 
     def _start_resize_drag(self, circle_idx, mouse_pos):
@@ -999,6 +1003,17 @@ class SelectTool(Tool):
         # Capture original radius for cancel/commit
         entity = self.sketch.entities[circle_idx]
         self.original_radius = float(entity.radius)
+
+        # PROP-2025-001: Create initial command for supersede pattern (Air Gap compliance)
+        # This ensures scene.discard() has a command to revert on cancel
+        cmd = SetCircleRadiusCommand(
+            self.sketch, circle_idx,
+            self.original_radius,
+            old_radius=self.original_radius,
+            historize=True,
+            supersede=False
+        )
+        self.scene.execute(cmd)
 
         self.app.session.state = InteractionState.DRAGGING_GEOMETRY
 
@@ -1043,6 +1058,18 @@ class SelectTool(Tool):
             'target': sim_pos
         }
 
+        # PROP-2025-001: Create identity placeholder for supersede pattern (Air Gap compliance)
+        # The solver will move geometry via interaction_data. This placeholder ensures
+        # scene.discard() has a command to revert on cancel.
+        cmd = SetEntityGeometryCommand(
+            self.sketch, entity_idx,
+            old_positions=self.start_positions,
+            new_positions=self.start_positions,  # Identity - no change yet
+            historize=True,
+            supersede=False
+        )
+        self.scene.execute(cmd)
+
         self.app.session.state = InteractionState.DRAGGING_GEOMETRY
 
     def _capture_entity_positions(self, entity):
@@ -1066,6 +1093,16 @@ class SelectTool(Tool):
         self.total_dx = 0.0
         self.total_dy = 0.0
 
+        # PROP-2025-001: Create identity command for supersede pattern (Air Gap compliance)
+        # This ensures scene.discard() has a command to revert on cancel
+        cmd = MoveMultipleCommand(
+            self.sketch, self.group_indices,
+            0.0, 0.0,  # Identity - no movement yet
+            historize=True,
+            supersede=False
+        )
+        self.scene.execute(cmd)
+
         self.app.session.state = InteractionState.DRAGGING_GEOMETRY
 
     # -------------------------------------------------------------------------
@@ -1078,7 +1115,7 @@ class SelectTool(Tool):
         if self.target_idx >= len(entities):
             return False
         w = entities[self.target_idx]
-        
+
         if isinstance(w, Line):
             anchor = w.end if self.target_pt == 0 else w.start
             mods = pygame.key.get_mods()
@@ -1091,15 +1128,17 @@ class SelectTool(Tool):
                 snap_to_points=snap_to_points, constrain_to_axis=constrain_to_axis
             )
             self.app.session.constraint_builder.snap_target = snap
-            
-            # Use command with historize=False for preview
+
+            # PROP-2025-001: Use supersede pattern for Air Gap compliance
             cmd = SetPointCommand(
                 self.sketch, self.target_idx, self.target_pt,
                 (dest_x, dest_y),
-                historize=False
+                old_position=self.original_position,
+                historize=True,
+                supersede=True
             )
             self.scene.execute(cmd)
-        
+
         elif isinstance(w, Circle):
             mods = pygame.key.get_mods()
             snap_to_points = bool(mods & pygame.KMOD_CTRL)
@@ -1111,15 +1150,17 @@ class SelectTool(Tool):
                 snap_to_points=snap_to_points, constrain_to_axis=constrain_to_axis
             )
             self.app.session.constraint_builder.snap_target = snap
-            
-            # Use command with historize=False for preview
+
+            # PROP-2025-001: Use supersede pattern for Air Gap compliance
             cmd = SetPointCommand(
                 self.sketch, self.target_idx, 0,
                 (dest_x, dest_y),
-                historize=False
+                old_position=self.original_position,
+                historize=True,
+                supersede=True
             )
             self.scene.execute(cmd)
-        
+
         return True
 
     def _handle_resize_drag(self, curr_sim):
@@ -1128,11 +1169,13 @@ class SelectTool(Tool):
         if isinstance(w, Circle):
             new_r = math.hypot(curr_sim[0] - w.center[0], curr_sim[1] - w.center[1])
             new_r = max(0.1, new_r)
-            
-            # Use command with historize=False for preview
+
+            # PROP-2025-001: Use supersede pattern for Air Gap compliance
             cmd = SetCircleRadiusCommand(
                 self.sketch, self.target_idx, new_r,
-                historize=False
+                old_radius=self.original_radius,
+                historize=True,
+                supersede=True
             )
             self.scene.execute(cmd)
         return True
@@ -1143,10 +1186,13 @@ class SelectTool(Tool):
         self.total_dy += dy
 
         if self.mode == 'MOVE_GROUP':
-            # Group move: use uniform translation (no parametric drag)
+            # PROP-2025-001: Use supersede pattern with cumulative delta for Air Gap compliance
+            # Each supersede undoes the previous cumulative move, then applies the new total
             cmd = MoveMultipleCommand(
-                self.sketch, self.group_indices, dx, dy,
-                historize=False
+                self.sketch, self.group_indices,
+                self.total_dx, self.total_dy,
+                historize=True,
+                supersede=True
             )
             self.scene.execute(cmd)
         # For MOVE_WALL mode: interaction constraint handles movement via solver
@@ -1160,26 +1206,18 @@ class SelectTool(Tool):
     # -------------------------------------------------------------------------
 
     def _commit_edit(self):
-        """Commit point edit with historized command."""
+        """Commit point edit - supersede pattern leaves final command on stack.
+
+        PROP-2025-001: With the supersede pattern, the final command is already
+        on the undo stack from the last drag update. No manual stack manipulation
+        needed - we just handle any snap connections.
+        """
         if self.target_idx >= len(self.sketch.entities):
             return
-        
-        entity = self.sketch.entities[self.target_idx]
-        current_pt = entity.get_point(self.target_pt)
-        final_position = (float(current_pt[0]), float(current_pt[1]))
-        
-        # Only commit if position actually changed
-        if self.original_position and self.original_position != final_position:
-            cmd = SetPointCommand(
-                self.sketch, self.target_idx, self.target_pt,
-                final_position,
-                old_position=self.original_position,
-                historize=True
-            )
-            # Add directly to queue (already at final position)
-            self.scene.commands.undo_stack.append(cmd)
-            self.scene.commands.redo_stack.clear()
-        
+
+        # The supersede pattern means the final SetPointCommand is already on the stack
+        # from _handle_edit_drag. No manual append needed.
+
         # Handle snap connection
         if self.app.session.constraint_builder.snap_target:
             snap = self.app.session.constraint_builder.snap_target
@@ -1189,58 +1227,44 @@ class SelectTool(Tool):
                 self.app.session.status.set("Snapped & Connected")
 
     def _commit_resize(self):
-        """Commit circle resize with historized command."""
-        if self.target_idx >= len(self.sketch.entities):
-            return
-        
-        entity = self.sketch.entities[self.target_idx]
-        if not hasattr(entity, 'radius'):
-            return
-        
-        final_radius = float(entity.radius)
-        
-        # Only commit if radius actually changed
-        if self.original_radius is not None and abs(self.original_radius - final_radius) > 1e-6:
-            cmd = SetCircleRadiusCommand(
-                self.sketch, self.target_idx,
-                final_radius,
-                old_radius=self.original_radius,
-                historize=True
-            )
-            # Add directly to queue (already at final radius)
-            self.scene.commands.undo_stack.append(cmd)
-            self.scene.commands.redo_stack.clear()
+        """Commit circle resize - supersede pattern leaves final command on stack.
+
+        PROP-2025-001: With the supersede pattern, the final command is already
+        on the undo stack from the last drag update. No manual stack manipulation
+        needed.
+        """
+        # The supersede pattern means the final SetCircleRadiusCommand is already
+        # on the stack from _handle_resize_drag. No manual append needed.
+        pass
 
     def _commit_move(self):
-        """Commit entity/group move with historized command."""
+        """Commit entity/group move - finalize the supersede pattern.
+
+        PROP-2025-001: With the supersede pattern:
+        - MOVE_GROUP: The final MoveMultipleCommand is already on the stack
+        - MOVE_WALL: Solver moved geometry, so we execute a final supersede
+          to capture the solver's result
+        """
         if self.mode == 'MOVE_GROUP' and self.group_indices:
-            # Group move: still uses delta-based command (uniform translation)
-            if abs(self.total_dx) < 1e-6 and abs(self.total_dy) < 1e-6:
-                return
-            cmd = MoveMultipleCommand(
-                self.sketch, self.group_indices,
-                self.total_dx, self.total_dy,
-                historize=True
-            )
-            # Add directly to queue (already moved)
-            self.scene.commands.undo_stack.append(cmd)
-            self.scene.commands.redo_stack.clear()
+            # The supersede pattern means the final MoveMultipleCommand is already
+            # on the stack from _handle_move_drag. No manual append needed.
+            pass
 
         elif self.mode == 'MOVE_WALL' and self.target_idx >= 0:
-            # Single entity: use absolute geometry command (handles rotation)
+            # Single entity: solver handled movement via interaction constraint.
+            # Execute one final supersede to capture the solver's result.
             entity = self.sketch.entities[self.target_idx]
             current_positions = self._capture_entity_positions(entity)
 
-            # Only commit if positions actually changed
+            # Only execute if positions actually changed
             if self.start_positions and current_positions != self.start_positions:
                 cmd = SetEntityGeometryCommand(
                     self.sketch, self.target_idx,
                     self.start_positions, current_positions,
-                    historize=True
+                    historize=True,
+                    supersede=True
                 )
-                # Add directly to queue (geometry already at final state)
-                self.scene.commands.undo_stack.append(cmd)
-                self.scene.commands.redo_stack.clear()
+                self.scene.execute(cmd)
 
     # -------------------------------------------------------------------------
     # Hit Testing Helpers
