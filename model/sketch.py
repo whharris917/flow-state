@@ -233,7 +233,7 @@ class Sketch:
         Returns:
             The constraint object if valid, None otherwise
         """
-        from core.definitions import CONSTRAINT_DEFS
+        from model.constraint_factory import CONSTRAINT_DEFS
 
         rules = CONSTRAINT_DEFS.get(ctype, [])
 

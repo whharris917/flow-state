@@ -32,6 +32,7 @@ from model.simulation_geometry import GeometryManager
 from model.properties import MaterialManager
 from engine.simulation import Simulation
 from engine.compiler import Compiler
+from engine.particle_brush import ParticleBrush
 from core.commands import CommandQueue
 
 
@@ -76,7 +77,10 @@ class Scene:
 
         # Bridge (knows both domains, uses MaterialManager for per-entity overrides)
         self.compiler = Compiler(self.sketch, self.simulation, self.material_manager)
-        
+
+        # Particle Brush (for tool-based particle painting)
+        self._brush = ParticleBrush(self.simulation)
+
         # Command Queue for CAD undo/redo
         self.commands = CommandQueue(max_history=50)
 
@@ -440,7 +444,52 @@ class Scene:
     def mark_topology_dirty(self):
         """Mark for full rebuild (entity add/remove, material change)."""
         self._topology_dirty = True
-    
+
+    # =========================================================================
+    # Brush Operations (Delegation to ParticleBrush)
+    # =========================================================================
+
+    def paint_particles(self, world_x: float, world_y: float, radius: float,
+                        material: dict = None) -> int:
+        """
+        Paint particles at world coordinates.
+
+        Pure delegation to ParticleBrush - no atomization logic here.
+        Per TU-SCENE Condition C2.
+
+        Args:
+            world_x, world_y: Center of brush in world coordinates
+            radius: Brush radius in world units
+            material: Optional dict with sigma, epsilon, color keys
+
+        Returns:
+            Number of particles added
+        """
+        if material:
+            return self._brush.paint(
+                world_x, world_y, radius,
+                sigma=material.get('sigma'),
+                epsilon=material.get('epsilon'),
+                color=material.get('color')
+            )
+        return self._brush.paint(world_x, world_y, radius)
+
+    def erase_particles(self, world_x: float, world_y: float, radius: float) -> int:
+        """
+        Erase particles at world coordinates.
+
+        Pure delegation to ParticleBrush - no atomization logic here.
+        Per TU-SCENE Condition C2.
+
+        Args:
+            world_x, world_y: Center of brush in world coordinates
+            radius: Brush radius in world units
+
+        Returns:
+            Number of particles removed
+        """
+        return self._brush.erase(world_x, world_y, radius)
+
     # =========================================================================
     # Model I/O (.mdl) - Sketch Only
     # =========================================================================
