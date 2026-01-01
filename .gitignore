@@ -20,5 +20,8 @@ save_files/
 art/
 music/
 sounds/
+archive/
+ui_folly/
+.claude/
 
 prompt.txt
