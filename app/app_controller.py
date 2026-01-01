@@ -61,9 +61,20 @@ class AppController:
         self._modal_stack.append({'modal': modal, 'type': modal_type})
 
     def pop_modal(self):
-        """Pop and return the top modal from the stack."""
+        """Pop and return the top modal from the stack.
+
+        AIT-003: Now resets interaction state to prevent ghost inputs.
+        This enforces Modal Stack Symmetry - both push and pop reset state.
+        """
         if self._modal_stack:
-            return self._modal_stack.pop()['modal']
+            modal = self._modal_stack.pop()['modal']
+
+            # Reset interaction state on UI tree to prevent stale button clicks
+            # from triggering unintended actions after modal closes (AIT-003)
+            if hasattr(self.app, 'ui') and hasattr(self.app.ui, 'root'):
+                self.app.ui.root.reset_interaction_state()
+
+            return modal
         return None
 
     def get_active_modal(self):
