@@ -52,7 +52,7 @@ import time
 import core.config as config
 import core.utils as utils
 
-from model.geometry import Line, Circle
+from model.protocols import EntityType
 from model.constraints import Coincident
 from core.session import InteractionState
 from engine.particle_brush import ParticleBrush
@@ -1036,10 +1036,11 @@ class SelectTool(Tool):
         # Capture start positions for undo (before any movement)
         self.start_positions = self._capture_entity_positions(entity)
 
-        if isinstance(entity, Line):
+        if entity.entity_type == EntityType.LINE:
             # Calculate t parameter (0.0 = start, 1.0 = end)
-            A = entity.start
-            B = entity.end
+            data = entity.get_render_data()
+            A = np.array(data['start'])
+            B = np.array(data['end'])
             AB = B - A
             len_sq = np.dot(AB, AB)
             if len_sq > 1e-8:
@@ -1075,13 +1076,12 @@ class SelectTool(Tool):
     def _capture_entity_positions(self, entity):
         """Capture all point positions of an entity for undo."""
         positions = []
-        if isinstance(entity, Line):
+        if entity.entity_type == EntityType.LINE:
             positions.append(tuple(entity.start))
             positions.append(tuple(entity.end))
-        elif isinstance(entity, Circle):
+        elif entity.entity_type == EntityType.CIRCLE:
             positions.append(tuple(entity.center))
-        elif hasattr(entity, 'pos'):
-            # Point entity
+        elif entity.entity_type == EntityType.POINT:
             positions.append(tuple(entity.pos))
         return positions
 
@@ -1116,7 +1116,7 @@ class SelectTool(Tool):
             return False
         w = entities[self.target_idx]
 
-        if isinstance(w, Line):
+        if w.entity_type == EntityType.LINE:
             anchor = w.end if self.target_pt == 0 else w.start
             mods = pygame.key.get_mods()
             snap_to_points = bool(mods & pygame.KMOD_CTRL)
@@ -1139,7 +1139,7 @@ class SelectTool(Tool):
             )
             self.scene.execute(cmd)
 
-        elif isinstance(w, Circle):
+        elif w.entity_type == EntityType.CIRCLE:
             mods = pygame.key.get_mods()
             snap_to_points = bool(mods & pygame.KMOD_CTRL)
             constrain_to_axis = bool(mods & pygame.KMOD_SHIFT)
@@ -1166,7 +1166,7 @@ class SelectTool(Tool):
     def _handle_resize_drag(self, curr_sim):
         """Handle circle resize drag using commands."""
         w = self.sketch.entities[self.target_idx]
-        if isinstance(w, Circle):
+        if w.entity_type == EntityType.CIRCLE:
             new_r = math.hypot(curr_sim[0] - w.center[0], curr_sim[1] - w.center[1])
             new_r = max(0.1, new_r)
 
@@ -1276,7 +1276,7 @@ class SelectTool(Tool):
         session = self.app.session
         
         for i, w in enumerate(entities):
-            if isinstance(w, Line):
+            if w.entity_type == EntityType.LINE:
                 for pt_idx in [0, 1]:
                     pt = w.get_point(pt_idx)
                     sx, sy = utils.sim_to_screen(
@@ -1288,7 +1288,7 @@ class SelectTool(Tool):
                     if key not in point_map:
                         point_map[key] = []
                     point_map[key].append((i, pt_idx))
-            elif isinstance(w, Circle):
+            elif w.entity_type == EntityType.CIRCLE:
                 sx, sy = utils.sim_to_screen(
                     w.center[0], w.center[1],
                     session.camera.zoom, session.camera.pan_x, session.camera.pan_y,
@@ -1317,7 +1317,7 @@ class SelectTool(Tool):
         session = self.app.session
         
         for i, w in enumerate(entities):
-            if isinstance(w, Circle):
+            if w.entity_type == EntityType.CIRCLE:
                 sx, sy = utils.sim_to_screen(
                     w.center[0], w.center[1],
                     session.camera.zoom, session.camera.pan_x, session.camera.pan_y,
