@@ -421,6 +421,138 @@ class ToolContext:
         self._app.scene.simulation.snapshot()
 
     # =========================================================================
+    # Interaction Data (for Solver Integration) - CR-2026-004 C-INPUT-01
+    # =========================================================================
+
+    def set_interaction_data(self, target_pos: Tuple[float, float],
+                             entity_idx: int, handle_t: float):
+        """
+        Set interaction data for the solver's User Servo.
+
+        The solver uses this to move geometry interactively while respecting
+        constraints. The mouse position becomes a constraint target.
+
+        Args:
+            target_pos: World coordinates of mouse/drag target
+            entity_idx: Index of entity being dragged
+            handle_t: Parametric position on line (0.0=start, 1.0=end)
+        """
+        self._app.scene.sketch.interaction_data = {
+            'target': target_pos,
+            'entity_idx': entity_idx,
+            'handle_t': handle_t
+        }
+
+    def update_interaction_target(self, target_pos: Tuple[float, float]):
+        """
+        Update the target position during an active drag.
+
+        Args:
+            target_pos: New world coordinates of drag target
+        """
+        if self._app.scene.sketch.interaction_data is not None:
+            self._app.scene.sketch.interaction_data['target'] = target_pos
+
+    def clear_interaction_data(self):
+        """Clear interaction data when drag ends."""
+        self._app.scene.sketch.interaction_data = None
+
+    # =========================================================================
+    # Constraint Builder Access - CR-2026-004 C3-UI
+    # =========================================================================
+
+    @property
+    def constraint_builder(self):
+        """
+        Access to the constraint builder for binary constraint operations.
+
+        Returns:
+            ConstraintBuilder instance
+        """
+        return self._app.session.constraint_builder
+
+    def clear_constraint_ui(self):
+        """
+        Clear constraint button selections in the UI.
+
+        Per CR-2026-004 C-INPUT-02: Routes through app to handle UI state.
+        """
+        builder = self._app.session.constraint_builder
+        builder.pending_type = None
+        builder.snap_target = None
+        # Clear button states if input_handler is available
+        if hasattr(self._app, 'input_handler') and self._app.input_handler:
+            for btn in self._app.input_handler.constraint_btn_map.keys():
+                btn.is_active = False
+
+    # =========================================================================
+    # Coincident Constraint Factory - CR-2026-004 C1-UI
+    # =========================================================================
+
+    def create_coincident_command(self, e1_idx: int, p1_idx: int,
+                                   e2_idx: int, p2_idx: int):
+        """
+        Create a Coincident constraint command via factory (preserves Air Gap).
+
+        This method replaces direct Coincident imports in tools.
+
+        Args:
+            e1_idx: First entity index
+            p1_idx: First point index
+            e2_idx: Second entity index
+            p2_idx: Second point index
+
+        Returns:
+            AddConstraintCommand or None if constraint cannot be created
+        """
+        constraint = self._app.scene.sketch.try_create_constraint(
+            'COINCIDENT', [], [(e1_idx, p1_idx), (e2_idx, p2_idx)]
+        )
+        if constraint:
+            from core.commands import AddConstraintCommand
+            return AddConstraintCommand(self._app.scene.sketch, constraint)
+        return None
+
+    # =========================================================================
+    # Entity Iteration (Read-Only) - CR-2026-004 C2-UI
+    # =========================================================================
+
+    def iter_entities(self):
+        """
+        Iterate over entities in read-only fashion.
+
+        Yields (index, entity_data) tuples where entity_data is a read-only
+        view containing entity_type and render_data.
+
+        Yields:
+            Tuple of (index, dict with 'entity_type' and 'render_data')
+        """
+        for i, entity in enumerate(self._app.scene.sketch.entities):
+            yield i, {
+                'entity_type': entity.entity_type,
+                'render_data': entity.get_render_data(),
+                'is_reference': entity.is_reference,
+            }
+
+    def get_entity_direct(self, index: int):
+        """
+        Get direct entity reference for command creation.
+
+        WARNING: This provides direct model access. Use only for command
+        instantiation or read-only queries. Do NOT mutate entities directly.
+
+        Args:
+            index: Entity index
+
+        Returns:
+            Entity instance or None if invalid
+        """
+        entities = self._app.scene.sketch.entities
+        if 0 <= index < len(entities):
+            return entities[index]
+        return None
+
+    # =========================================================================
     # Sketch Access (for Commands that need it) - Internal Use
     # =========================================================================
 
@@ -435,3 +567,15 @@ class ToolContext:
             Sketch instance
         """
         return self._app.scene.sketch
+
+    def _get_scene(self):
+        """
+        Get scene reference for advanced operations.
+
+        NOTE: This is intended for operations that need full scene access,
+        such as solver coordination. Use sparingly.
+
+        Returns:
+            Scene instance
+        """
+        return self._app.scene

@@ -22,6 +22,7 @@ from tkinter import filedialog, Tk
 
 from core.scene import Scene
 from core.session import Session
+from core.tool_context import ToolContext
 from ui.ui_widgets import InputField
 from ui.renderer import Renderer
 from ui.tools import SelectTool, BrushTool, LineTool, RectTool, CircleTool, PointTool
@@ -189,7 +190,15 @@ class FlowStateApp:
         }
 
     def init_tools(self):
-        """Initialize all available tools."""
+        """Initialize all available tools with ToolContext.
+
+        CR-2026-004 Phase J: Tools receive ToolContext instead of app.
+        ToolContext provides a narrow, controlled interface that enforces
+        the Air Gap principle.
+        """
+        # Create ToolContext - the narrow interface for tools
+        ctx = ToolContext(self)
+
         tool_registry = [
             (config.TOOL_SELECT, SelectTool, None),
             (config.TOOL_BRUSH, BrushTool, None),
@@ -197,15 +206,15 @@ class FlowStateApp:
             (config.TOOL_RECT, RectTool, None),
             (config.TOOL_CIRCLE, CircleTool, None),
             (config.TOOL_POINT, PointTool, None),
-            (config.TOOL_REF, LineTool, "Ref Line"), 
+            (config.TOOL_REF, LineTool, "Ref Line"),
         ]
-        
+
         # Add SourceTool if available
         if HAS_SOURCE_TOOL:
             tool_registry.append((config.TOOL_SOURCE, SourceTool, None))
-        
+
         for tid, cls, name in tool_registry:
-            self.session.tools[tid] = cls(self) 
+            self.session.tools[tid] = cls(ctx)  # Pass ctx, not self
             if name:
                 self.session.tools[tid].name = name
 

@@ -73,11 +73,18 @@ from core.commands import (
 class Tool:
     """
     Base class for all editor tools.
-    
-    See module docstring for the allowed access contract via self.app.
+
+    CR-2026-004: Tools now receive ToolContext instead of app.
+    For backward compatibility during migration, both ctx and app are available:
+    - self.ctx: ToolContext (preferred, narrow interface)
+    - self.app: App reference (deprecated, for migration compatibility)
+
+    See module docstring for the allowed access contract.
     """
-    def __init__(self, app, name="Tool"):
-        self.app = app
+    def __init__(self, ctx, name="Tool"):
+        # CR-2026-004: ctx is ToolContext, but we also expose app for compat
+        self.ctx = ctx
+        self.app = ctx._app  # Backward compat during migration
         self.name = name
 
     def activate(self):
@@ -86,7 +93,7 @@ class Tool:
 
     def deactivate(self):
         """Called when switching away from this tool."""
-        self.app.session.constraint_builder.snap_target = None
+        self.ctx.snap_target = None
 
     def handle_event(self, event, layout):
         """Handle a pygame event. Return True if event was consumed."""
@@ -99,7 +106,7 @@ class Tool:
     def draw_overlay(self, screen, renderer, layout):
         """Draw tool-specific overlay graphics."""
         pass
-    
+
     def cancel(self):
         """Cancel the current operation."""
         pass
