@@ -16,6 +16,7 @@ All entities support:
 
 import numpy as np
 import core.config as config
+from model.protocols import EntityType
 
 
 class Entity:
@@ -152,6 +153,40 @@ class Entity:
         """Serialize to dictionary."""
         raise NotImplementedError
 
+    # =========================================================================
+    # Protocol Implementation (Renderable, Draggable)
+    # =========================================================================
+
+    @property
+    def entity_type(self) -> EntityType:
+        """Return the entity type tag for protocol-based dispatch."""
+        raise NotImplementedError
+
+    @property
+    def is_reference(self) -> bool:
+        """True if this is a reference/construction entity (not physical)."""
+        return False  # Default: most entities are not reference geometry
+
+    def point_count(self) -> int:
+        """Number of control points on this entity."""
+        raise NotImplementedError
+
+    def get_anchored(self, index: int) -> bool:
+        """Check if control point at index is anchored."""
+        raise NotImplementedError
+
+    def distance_to(self, x: float, y: float) -> float:
+        """Distance from world point (x, y) to this entity."""
+        raise NotImplementedError
+
+    def parameter_at(self, x: float, y: float):
+        """Return parametric position (0.0-1.0) of closest point on entity."""
+        raise NotImplementedError
+
+    def get_render_data(self) -> dict:
+        """Return type-specific rendering data as a dictionary."""
+        raise NotImplementedError
+
 
 class Point(Entity):
     """
@@ -235,6 +270,34 @@ class Point(Entity):
             if 'velocity' in data:
                 p.velocity = np.array(data['velocity'], dtype=np.float64)
         return p
+
+    # --- Protocol Implementation ---
+
+    @property
+    def entity_type(self) -> EntityType:
+        return EntityType.POINT
+
+    def point_count(self) -> int:
+        return 1
+
+    def get_anchored(self, index: int) -> bool:
+        return self.anchored
+
+    def distance_to(self, x: float, y: float) -> float:
+        import math
+        return math.hypot(x - self.pos[0], y - self.pos[1])
+
+    def parameter_at(self, x: float, y: float):
+        return 0.0  # Points have no parametric extent
+
+    def get_render_data(self) -> dict:
+        """Return Point-specific rendering data."""
+        return {
+            'pos': (float(self.pos[0]), float(self.pos[1])),
+            'is_anchor': self.anchored,
+            'is_handle': self.is_handle,
+            'anchored': [self.anchored],
+        }
 
 
 class Line(Entity):
@@ -386,6 +449,67 @@ class Line(Entity):
             l.angular_vel = data.get('angular_vel', 0.0)
         return l
 
+    # --- Protocol Implementation ---
+
+    @property
+    def entity_type(self) -> EntityType:
+        return EntityType.LINE
+
+    @property
+    def is_reference(self) -> bool:
+        return self.ref
+
+    def point_count(self) -> int:
+        return 2
+
+    def get_anchored(self, index: int) -> bool:
+        if 0 <= index < 2:
+            return self.anchored[index]
+        return False
+
+    def distance_to(self, x: float, y: float) -> float:
+        """Distance from point to line segment."""
+        p1 = self.start
+        p2 = self.end
+        p3 = np.array([x, y])
+
+        d_vec = p2 - p1
+        len_sq = np.dot(d_vec, d_vec)
+        if len_sq == 0:
+            return np.linalg.norm(p3 - p1)
+
+        t = np.dot(p3 - p1, d_vec) / len_sq
+        # For infinite ref lines, don't clamp t
+        if not (self.ref and self.infinite):
+            t = max(0, min(1, t))
+        proj = p1 + t * d_vec
+        return float(np.linalg.norm(p3 - proj))
+
+    def parameter_at(self, x: float, y: float):
+        """Return parametric position (0.0=start, 1.0=end) of closest point."""
+        p1 = self.start
+        p2 = self.end
+        p3 = np.array([x, y])
+
+        d_vec = p2 - p1
+        len_sq = np.dot(d_vec, d_vec)
+        if len_sq == 0:
+            return 0.0
+
+        t = np.dot(p3 - p1, d_vec) / len_sq
+        return float(max(0, min(1, t)))
+
+    def get_render_data(self) -> dict:
+        """Return Line-specific rendering data."""
+        return {
+            'start': (float(self.start[0]), float(self.start[1])),
+            'end': (float(self.end[0]), float(self.end[1])),
+            'infinite': self.infinite,
+            'anchored': list(self.anchored),
+            'physical': self.physical,
+            'dynamic': self.dynamic,
+        }
+
 
 class Circle(Entity):
     """
@@ -483,3 +607,41 @@ class Circle(Entity):
                 c.velocity = np.array(data['velocity'], dtype=np.float64)
             c.angular_vel = data.get('angular_vel', 0.0)
         return c
+
+    # --- Protocol Implementation ---
+
+    @property
+    def entity_type(self) -> EntityType:
+        return EntityType.CIRCLE
+
+    def point_count(self) -> int:
+        return 1
+
+    def get_anchored(self, index: int) -> bool:
+        return self.anchored[0] if index == 0 else False
+
+    def distance_to(self, x: float, y: float) -> float:
+        """Distance from point to circle (distance to edge, not center)."""
+        import math
+        center_dist = math.hypot(x - self.center[0], y - self.center[1])
+        return abs(center_dist - self.radius)
+
+    def parameter_at(self, x: float, y: float):
+        """Return parametric position (angle/2π) of closest point on circle."""
+        import math
+        dx = x - self.center[0]
+        dy = y - self.center[1]
+        angle = math.atan2(dy, dx)
+        if angle < 0:
+            angle += 2 * math.pi
+        return angle / (2 * math.pi)
+
+    def get_render_data(self) -> dict:
+        """Return Circle-specific rendering data."""
+        return {
+            'center': (float(self.center[0]), float(self.center[1])),
+            'radius': float(self.radius),
+            'anchored': list(self.anchored),
+            'physical': self.physical,
+            'dynamic': self.dynamic,
+        }

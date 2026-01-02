@@ -16,7 +16,7 @@ import numpy as np
 import core.config as config
 
 from core.utils import sim_to_screen, screen_to_sim, get_grouped_points, calculate_current_temp
-from model.geometry import Line, Circle, Point
+from model.protocols import EntityType
 
 
 class Renderer:
@@ -268,11 +268,11 @@ class Renderer:
             is_sel = (i in session.selection.walls)
             is_pend = (session.constraint_builder.pending_type and i in session.constraint_builder.target_walls)
 
-            if isinstance(w, Line):
+            if w.entity_type == EntityType.LINE:
                 self._draw_line_entity(w, transform, is_sel, is_pend, base_color, world_size)
-            elif isinstance(w, Circle):
+            elif w.entity_type == EntityType.CIRCLE:
                 self._draw_circle_entity(w, transform, is_sel, is_pend, base_color)
-            elif isinstance(w, Point):
+            elif w.entity_type == EntityType.POINT:
                 self._draw_point_entity(w, transform, is_sel, is_pend, base_color)
 
     def _draw_line_entity(self, line, transform, is_selected, is_pending, color, world_size=50.0):
@@ -286,37 +286,51 @@ class Renderer:
             draw_col = (100, 255, 100)
             width = 3
 
+        # Get render data via protocol
+        data = line.get_render_data()
+        start = data['start']
+        end = data['end']
+        infinite = data['infinite']
+        anchored = data['anchored']
+        is_ref = line.is_reference
+
         # Calculate screen positions
-        if line.ref and line.infinite:
+        if is_ref and infinite:
             # Extend line to world boundaries
             ext_start, ext_end = self._extend_line_to_bounds(
-                line.start, line.end, world_size
+                start, end, world_size
             )
             s1 = transform(ext_start[0], ext_start[1])
             s2 = transform(ext_end[0], ext_end[1])
         else:
-            s1 = transform(line.start[0], line.start[1])
-            s2 = transform(line.end[0], line.end[1])
+            s1 = transform(start[0], start[1])
+            s2 = transform(end[0], end[1])
 
         # Draw the line (dashed for ref lines, solid otherwise)
-        if line.ref:
+        if is_ref:
             self._draw_dashed_line(draw_col, s1, s2, width)
         else:
             pygame.draw.line(self.screen, draw_col, s1, s2, width)
 
         # Draw anchor indicators at original positions (not for infinite lines)
-        if not (line.ref and line.infinite):
-            if line.anchored[0]:
+        if not (is_ref and infinite):
+            if anchored[0]:
                 pygame.draw.circle(self.screen, (255, 50, 50), s1, 3)
-            if line.anchored[1]:
+            if anchored[1]:
                 pygame.draw.circle(self.screen, (255, 50, 50), s2, 3)
 
     def _draw_circle_entity(self, circle, transform, is_selected, is_pending, color):
-        sx, sy = transform(circle.center[0], circle.center[1])
+        # Get render data via protocol
+        data = circle.get_render_data()
+        center = data['center']
+        radius = data['radius']
+        anchored = data['anchored']
+
+        sx, sy = transform(center[0], center[1])
         p0 = transform(0, 0)
-        pr = transform(circle.radius, 0)
+        pr = transform(radius, 0)
         s_radius = abs(pr[0] - p0[0])
-        
+
         draw_col = color if color else (255, 255, 255)
         width = 1
 
@@ -326,24 +340,30 @@ class Renderer:
         elif is_pending:
             draw_col = (100, 255, 100)
             width = 3
-        
-        if circle.anchored[0]:
+
+        if anchored[0]:
             pygame.draw.circle(self.screen, (255, 50, 50), (int(sx), int(sy)), 4)
         pygame.draw.circle(self.screen, draw_col, (int(sx), int(sy)), int(s_radius), width)
 
     def _draw_point_entity(self, pt, transform, is_selected, is_pending, color):
-        sx, sy = transform(pt.pos[0], pt.pos[1])
+        # Get render data via protocol
+        data = pt.get_render_data()
+        pos = data['pos']
+        is_handle = data['is_handle']
+        is_anchor = data['is_anchor']
+
+        sx, sy = transform(pos[0], pos[1])
         draw_col = color if color else (255, 255, 255)
-        
+
         if is_selected:
             draw_col = (0, 255, 255)
         elif is_pending:
             draw_col = (100, 255, 100)
-        
-        if getattr(pt, 'is_handle', False):
+
+        if is_handle:
             pygame.draw.circle(self.screen, config.COLOR_SOURCE, (int(sx), int(sy)), 6, 2)
         else:
-            if pt.anchored:
+            if is_anchor:
                 pygame.draw.circle(self.screen, (255, 50, 50), (int(sx), int(sy)), 6)
             pygame.draw.circle(self.screen, draw_col, (int(sx), int(sy)), 4)
 
@@ -592,14 +612,18 @@ class Renderer:
         if entity_idx < 0 or entity_idx >= len(entities):
             return (0, 0)
         e = entities[entity_idx]
-        if hasattr(e, 'start'):  # Line
-            p1 = transform(e.start[0], e.start[1])
-            p2 = transform(e.end[0], e.end[1])
+        data = e.get_render_data()
+        if e.entity_type == EntityType.LINE:
+            start, end = data['start'], data['end']
+            p1 = transform(start[0], start[1])
+            p2 = transform(end[0], end[1])
             return ((p1[0]+p2[0])//2, (p1[1]+p2[1])//2)
-        elif hasattr(e, 'center'):  # Circle
-            return transform(e.center[0], e.center[1])
-        elif hasattr(e, 'pos'):  # Point
-            return transform(e.pos[0], e.pos[1])
+        elif e.entity_type == EntityType.CIRCLE:
+            center = data['center']
+            return transform(center[0], center[1])
+        elif e.entity_type == EntityType.POINT:
+            pos = data['pos']
+            return transform(pos[0], pos[1])
         return (0, 0)
 
     def _get_point_screen(self, ent_idx, pt_idx, entities, transform):
@@ -642,13 +666,7 @@ class Renderer:
                 pygame.draw.circle(self.screen, color, (cx, cy), radius, 2)
                 
                 w = sketch.entities[w_idx]
-                is_anchored = False
-                if isinstance(w, Line):
-                    is_anchored = w.anchored[pt_idx]
-                elif isinstance(w, Circle):
-                    is_anchored = w.anchored[0]
-                elif isinstance(w, Point):
-                    is_anchored = w.anchored
+                is_anchored = w.get_anchored(pt_idx)
                 
                 if is_anchored:
                     anchored_points_draw_list.append((cx, cy))
