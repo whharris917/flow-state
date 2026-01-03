@@ -124,26 +124,25 @@ The key change is that brush logic (hex packing, overlap detection)
 is now in ParticleBrush, keeping the tool focused on input handling.
 """
 
-class BrushTool:
+class BrushTool(Tool):
     """
     Brush tool for painting/erasing particles.
-    
+
     This tool handles INPUT only:
     - Mouse down/up detection
     - Coordinate transforms
     - Delegating to ParticleBrush for actual particle operations
-    
+
     The ParticleBrush handles BRUSH LOGIC:
     - Hexagonal packing
     - Overlap detection
     - Particle creation/deletion
     """
-    
-    def __init__(self, app):
-        self.app = app
-        self.name = "Brush"
+
+    def __init__(self, ctx):
+        super().__init__(ctx, "Brush")
         self.brush_radius = 5.0
-        
+
         # Lazy-initialized brush (created on first use)
         self._brush = None
     
