@@ -1,3 +1,15 @@
+# A Note from Wil
+
+The majority of content in this repo was generated with the help of AI, particularly Claude Code (Opus 4.5) and Gemini 3 Pro. 
+
+This note, however, is not. This is my attempt to "step out from behind the curtain" and explain what, exactly, I'm trying to do here.
+
+This project started straighforwardly enough: I wanted to build a game. I have a B.S. in chemical engineering and have had a "pipe dream" of creating a chemical engineering simulation game for at least a decade. When reliable AI coding assistants became widely available, creating this game was one of the first things that came to mind. I didn't start using AI consistently until April 2025, at which point I realized that AI was far more capable than I had realized, and that I was late to the party. After some project naming fumbles, I began working on my game, Flow State. The name "Pipe Dream" now survives for historical reasons (i.e., I didn't think of Flow State until after I created the repo.) Gemini suggested I use it as my project's "code name." Works for me!
+
+I'm sure I don't need to convince anyone reading this that AI has improved palpably over the last year. The jump from Gemini 2.5 to Gemini 3 and Claude Code with Opus 4.5 was shocking and exciting.
+
+---
+
 # 🌊 Flow State
 
 **Flow State** (codenamed *Pipe Dream*) is a high-performance, Numba-accelerated 2D engineering simulator and CAD hybrid.
