@@ -421,26 +421,51 @@ class ToolContext:
         self._app.scene.simulation.snapshot()
 
     # =========================================================================
+    # ProcessObject Registration (Source/Sink/etc.) - CR-112
+    # =========================================================================
+
+    def add_process_object(self, obj) -> None:
+        """
+        Add a ProcessObject (Source, Sink, etc.) to the scene.
+
+        Delegates to Scene.add_process_object, which registers the object's
+        handles with the Sketch so they can participate in constraints.
+
+        Args:
+            obj: ProcessObject instance (e.g., Source)
+        """
+        self._app.scene.add_process_object(obj)
+
+    # =========================================================================
     # Interaction Data (for Solver Integration) - CR-2026-004 C-INPUT-01
     # =========================================================================
 
     def set_interaction_data(self, target_pos: Tuple[float, float],
-                             entity_idx: int, handle_t: float):
+                             entity_idx: int, *,
+                             handle_t: Optional[float] = None,
+                             point_idx: Optional[int] = None):
         """
         Set interaction data for the solver's User Servo.
 
         The solver uses this to move geometry interactively while respecting
         constraints. The mouse position becomes a constraint target.
 
+        Exactly one of handle_t or point_idx is typically provided:
+        - handle_t (0.0=start, 1.0=end) for body drags along a line
+        - point_idx for endpoint drags in EDIT mode (Point or Circle entities
+          set point_idx=0; line endpoints set point_idx=0 or 1)
+
         Args:
             target_pos: World coordinates of mouse/drag target
             entity_idx: Index of entity being dragged
-            handle_t: Parametric position on line (0.0=start, 1.0=end)
+            handle_t: Parametric position on line (keyword-only)
+            point_idx: Specific point index on entity (keyword-only)
         """
         self._app.scene.sketch.interaction_data = {
             'target': target_pos,
             'entity_idx': entity_idx,
-            'handle_t': handle_t
+            'handle_t': handle_t,
+            'point_idx': point_idx,
         }
 
     def update_interaction_target(self, target_pos: Tuple[float, float]):
@@ -456,6 +481,10 @@ class ToolContext:
     def clear_interaction_data(self):
         """Clear interaction data when drag ends."""
         self._app.scene.sketch.interaction_data = None
+
+    def has_interaction_data(self) -> bool:
+        """True if a drag interaction is currently active."""
+        return self._app.scene.sketch.interaction_data is not None
 
     # =========================================================================
     # Constraint Builder Access - CR-2026-004 C3-UI
@@ -473,17 +502,19 @@ class ToolContext:
 
     def clear_constraint_ui(self):
         """
-        Clear constraint button selections in the UI.
+        Clear the constraint-builder pending state and the constraint-button
+        visual state.
 
-        Per CR-2026-004 C-INPUT-02: Routes through app to handle UI state.
+        Resets the ConstraintBuilder fully (clearing pending_type, snap_target,
+        target_walls, target_points, etc.) and deactivates each constraint
+        button. Selection clearing is a separate concern; callers that also
+        need selection cleared should call ctx.selection.walls.clear() and
+        ctx.selection.points.clear() alongside this method.
         """
-        builder = self._app.session.constraint_builder
-        builder.pending_type = None
-        builder.snap_target = None
-        # Clear button states if input_handler is available
+        self._app.session.constraint_builder.reset()
         if hasattr(self._app, 'input_handler') and self._app.input_handler:
             for btn in self._app.input_handler.constraint_btn_map.keys():
-                btn.is_active = False
+                btn.active = False
 
     # =========================================================================
     # Coincident Constraint Factory - CR-2026-004 C1-UI

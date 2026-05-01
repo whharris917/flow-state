@@ -10,38 +10,50 @@ Each tool handles mouse events for a specific operation:
 - SelectTool: Select and move entities (via commands with supersede)
 
 Architecture:
-- Tools receive a reference to the application (self.app)
-- ALL geometry mutations go through Commands via scene.execute()
-- Creation tools use supersede=True pattern for live preview
-- Editing tools (SelectTool) now also use supersede=True pattern (PROP-2025-001)
-- Orchestrator (Scene.update) handles rebuild/solve automatically
-- BrushTool operates on physics (not CAD), uses sim directly
+- Tools receive a ToolContext (self.ctx). They have no direct
+  application reference (CR-112).
+- ALL geometry mutations go through Commands via ctx.execute(cmd).
+- Creation tools use supersede=True pattern for live preview.
+- Editing tools (SelectTool) now also use supersede=True pattern
+  (PROP-2025-001).
+- Orchestrator (Scene.update) handles rebuild/solve automatically.
+- BrushTool operates on physics (not CAD), via ctx.paint_particles
+  / ctx.erase_particles.
 
-Tool Contract - Allowed Access via self.app:
+Tool Contract - Allowed Access via self.ctx:
 
-    READ-ONLY STATE:
-    - session.camera.zoom, pan_x, pan_y  — View transforms
-    - session.mode                       — SIM vs EDITOR mode
-    - session.state                      — Interaction state enum
-    - session.selection.walls/points     — Current selection
-    - sim.world_size                     — For coordinate transforms
-    - layout                             — Screen regions
-    - sketch.entities                    — Geometry for hit testing/snapping
-    
-    WRITE STATE:
-    - session.state                              — Set interaction state
-    - session.constraint_builder.snap_target     — Update snap indicator
-    - session.selection.walls/points             — Modify selection
-    - session.status.set()                       — Status bar messages
-    
-    COMMANDS (geometry changes):
-    - scene.execute(cmd)          — Execute command (rebuild/solve automatic)
-    - scene.discard()             — For cancel operations (removes, not redoable)
-    
+    VIEW STATE (read-only):
+    - ctx.zoom, ctx.pan, ctx.world_size, ctx.layout, ctx.mode
+
+    INTERACTION STATE (read/write):
+    - ctx.interaction_state              — Set interaction state enum
+    - ctx.snap_target                    — Update snap indicator
+    - ctx.selection                      — Modify selection (.walls / .points)
+    - ctx.set_status(message)            — Status bar message
+    - ctx.play_sound(sound_id)           — UI sound effect
+    - ctx.set_interaction_data(...)      — Solver "User Servo" injection
+    - ctx.update_interaction_target(pos)
+    - ctx.clear_interaction_data()
+    - ctx.has_interaction_data()         — Query active drag
+
+    GEOMETRY QUERIES (read-only):
+    - ctx.iter_entities(), ctx.find_entity_at(), ctx.get_entity_*
+    - ctx.find_snap(...), ctx.get_active_material()
+    - ctx._get_sketch() for command construction (use sparingly)
+
+    COMMANDS (geometry / structural changes):
+    - ctx.execute(cmd)        — Execute command (rebuild/solve automatic)
+    - ctx.discard()           — Discard last command (cancel)
+    - ctx.create_coincident_command(...)
+    - ctx.add_process_object(obj)
+
     PHYSICS (BrushTool only):
-    - sim.snapshot()              — Physics undo
-    - ParticleBrush.paint()       — Create particles
-    - ParticleBrush.erase()       — Erase particles
+    - ctx.snapshot_particles()
+    - ctx.paint_particles(x, y, radius, material=None)
+    - ctx.erase_particles(x, y, radius)
+
+    CONSTRAINT UI:
+    - ctx.constraint_builder, ctx.clear_constraint_ui()
 """
 
 import pygame
@@ -55,8 +67,6 @@ import core.utils as utils
 from model.protocols import EntityType
 from model.constraints import Coincident
 from core.session import InteractionState
-from engine.particle_brush import ParticleBrush
-
 # Commands for proper undo/redo
 from core.commands import (
     AddLineCommand, AddCircleCommand, RemoveEntityCommand,
@@ -74,17 +84,12 @@ class Tool:
     """
     Base class for all editor tools.
 
-    CR-2026-004: Tools now receive ToolContext instead of app.
-    For backward compatibility during migration, both ctx and app are available:
-    - self.ctx: ToolContext (preferred, narrow interface)
-    - self.app: App reference (deprecated, for migration compatibility)
-
-    See module docstring for the allowed access contract.
+    Tools interact with the application exclusively through the ToolContext
+    facade (self.ctx). See the module docstring for the allowed access
+    contract (per CR-112).
     """
     def __init__(self, ctx, name="Tool"):
-        # CR-2026-004: ctx is ToolContext, but we also expose app for compat
         self.ctx = ctx
-        self.app = ctx._app  # Backward compat during migration
         self.name = name
 
     def activate(self):
@@ -116,14 +121,6 @@ class Tool:
 # Brush Tool (Physics Domain)
 # =============================================================================
 
-"""
-Refactored BrushTool - Uses ParticleBrush for particle operations
-
-This is a drop-in replacement for the BrushTool in ui/tools.py.
-The key change is that brush logic (hex packing, overlap detection)
-is now in ParticleBrush, keeping the tool focused on input handling.
-"""
-
 class BrushTool(Tool):
     """
     Brush tool for painting/erasing particles.
@@ -131,76 +128,65 @@ class BrushTool(Tool):
     This tool handles INPUT only:
     - Mouse down/up detection
     - Coordinate transforms
-    - Delegating to ParticleBrush for actual particle operations
+    - Delegating to the Scene-owned ParticleBrush via ctx.paint_particles
+      / ctx.erase_particles
 
-    The ParticleBrush handles BRUSH LOGIC:
-    - Hexagonal packing
-    - Overlap detection
-    - Particle creation/deletion
+    Brush logic (hexagonal packing, overlap detection, particle creation /
+    deletion) lives in engine/particle_brush.py and is owned by Scene; tools
+    interact only through the ctx facade.
     """
 
     def __init__(self, ctx):
         super().__init__(ctx, "Brush")
         self.brush_radius = 5.0
 
-        # Lazy-initialized brush (created on first use)
-        self._brush = None
-    
-    @property
-    def brush(self):
-        """Get the ParticleBrush, creating it if needed."""
-        if self._brush is None:
-            self._brush = ParticleBrush(self.app.sim)
-        return self._brush
-    
     def activate(self):
         """Called when tool becomes active."""
         pass
-    
+
     def deactivate(self):
         """Called when switching away from this tool."""
         pass
-    
+
     def cancel(self):
         """Cancel current operation."""
-        if self.app.session.state == InteractionState.PAINTING:
-            self.app.session.state = InteractionState.IDLE
-    
+        if self.ctx.interaction_state == InteractionState.PAINTING:
+            self.ctx.interaction_state = InteractionState.IDLE
+
     def update(self, dt, layout):
         """
         Called every frame while tool is active.
-        
+
         Handles continuous painting while mouse is held down.
         """
-        if self.app.session.state != InteractionState.PAINTING:
+        if self.ctx.interaction_state != InteractionState.PAINTING:
             return
-        
+
         mx, my = pygame.mouse.get_pos()
-        
+
         # Check if mouse is in the viewport
-        if not (layout['MID_X'] < mx < layout['RIGHT_X'] and 
+        if not (layout['MID_X'] < mx < layout['RIGHT_X'] and
                 config.TOP_MENU_H < my < config.WINDOW_HEIGHT):
             return
-        
+
         # Convert to world coordinates
-        sim = self.app.sim
         wx, wy = utils.screen_to_sim(
             mx, my,
-            self.app.session.camera.zoom,
-            self.app.session.camera.pan_x,
-            self.app.session.camera.pan_y,
-            sim.world_size,
+            self.ctx.zoom,
+            self.ctx.pan[0],
+            self.ctx.pan[1],
+            self.ctx.world_size,
             layout
         )
-        
+
         # Paint or erase based on which button is held
         if pygame.mouse.get_pressed()[0]:  # Left button - paint
-            mat = self.app.session.active_material
-            self.brush.paint(wx, wy, self.brush_radius,
-                           sigma=mat.sigma, epsilon=mat.epsilon,
-                           color=mat.color)
+            self.ctx.paint_particles(
+                wx, wy, self.brush_radius,
+                material=self.ctx.get_active_material()
+            )
         elif pygame.mouse.get_pressed()[2]:  # Right button - erase
-            self.brush.erase(wx, wy, self.brush_radius)
+            self.ctx.erase_particles(wx, wy, self.brush_radius)
     
     def handle_event(self, event, layout):
         """
@@ -209,7 +195,7 @@ class BrushTool(Tool):
         Returns True if event was consumed.
         """
         # Only active in SIM mode
-        if self.app.session.mode != config.MODE_SIM:
+        if self.ctx.mode != config.MODE_SIM:
             return False
         
         if event.type == pygame.MOUSEBUTTONDOWN:
@@ -222,16 +208,16 @@ class BrushTool(Tool):
             
             if event.button in (1, 3):  # Left or right click
                 # Enter painting state
-                self.app.session.state = InteractionState.PAINTING
+                self.ctx.interaction_state = InteractionState.PAINTING
                 
                 # Snapshot for undo (physics domain)
-                self.app.sim.snapshot()
+                self.ctx.snapshot_particles()
                 
                 return True
         
         elif event.type == pygame.MOUSEBUTTONUP:
-            if self.app.session.state == InteractionState.PAINTING:
-                self.app.session.state = InteractionState.IDLE
+            if self.ctx.interaction_state == InteractionState.PAINTING:
+                self.ctx.interaction_state = InteractionState.IDLE
                 return True
         
         return False
@@ -246,8 +232,8 @@ class BrushTool(Tool):
             return
         
         # Convert brush radius to screen space
-        zoom = self.app.session.camera.zoom
-        world_size = self.app.sim.world_size
+        zoom = self.ctx.zoom
+        world_size = self.ctx.world_size
         base_scale = (layout['MID_W'] - 50) / world_size
         final_scale = base_scale * zoom
         screen_radius = self.brush_radius * final_scale
@@ -276,18 +262,18 @@ class GeometryTool(Tool):
 
     @property
     def sketch(self):
-        return self.app.scene.sketch
-    
+        return self.ctx._get_sketch()
+
     @property
     def scene(self):
-        return self.app.scene
+        return self.ctx._get_scene()
 
     def get_world_pos(self, mx, my, layout):
         """Convert screen coordinates to world coordinates."""
         return utils.screen_to_sim(
             mx, my, 
-            self.app.session.camera.zoom, self.app.session.camera.pan_x, self.app.session.camera.pan_y, 
-            self.app.sim.world_size, layout
+            self.ctx.zoom, self.ctx.pan[0], self.ctx.pan[1], 
+            self.ctx.world_size, layout
         )
 
     def get_snapped(self, mx, my, layout, anchor=None, exclude_idx=-1):
@@ -298,8 +284,8 @@ class GeometryTool(Tool):
         return utils.get_snapped_pos(
             mx, my,
             self.sketch.entities,
-            self.app.session.camera.zoom, self.app.session.camera.pan_x, self.app.session.camera.pan_y,
-            self.app.sim.world_size, layout, anchor, exclude_idx,
+            self.ctx.zoom, self.ctx.pan[0], self.ctx.pan[1],
+            self.ctx.world_size, layout, anchor, exclude_idx,
             snap_to_points=snap_to_points, constrain_to_axis=constrain_to_axis
         )
 
@@ -309,15 +295,15 @@ class GeometryTool(Tool):
             self.scene.discard()  # Remove preview permanently (not redoable)
             self.dragging = False
             self.start_pos = None
-            self.app.session.state = InteractionState.IDLE
-            self.app.session.status.set("Cancelled")
-        self.app.session.constraint_builder.snap_target = None
+            self.ctx.interaction_state = InteractionState.IDLE
+            self.ctx.set_status("Cancelled")
+        self.ctx.snap_target = None
 
     def _update_hover_snap(self, mx, my, layout):
         """Update snap indicator when not dragging."""
         if not self.dragging:
             _, _, snap = self.get_snapped(mx, my, layout, anchor=None)
-            self.app.session.constraint_builder.snap_target = snap
+            self.ctx.snap_target = snap
 
 
 # =============================================================================
@@ -361,11 +347,11 @@ class LineTool(GeometryTool):
 
             # Create initial degenerate line (zero length)
             is_ref = (self.name == "Ref Line")
-            cmd = AddLineCommand(self.sketch, (sx, sy), (sx, sy), is_ref=is_ref, physical=self.app.session.auto_atomize)
+            cmd = AddLineCommand(self.sketch, (sx, sy), (sx, sy), is_ref=is_ref, physical=self.ctx.auto_atomize)
             self.scene.execute(cmd)
 
             self.dragging = True
-            self.app.session.state = InteractionState.DRAGGING_GEOMETRY
+            self.ctx.interaction_state = InteractionState.DRAGGING_GEOMETRY
             return True
 
         elif event.type == pygame.MOUSEMOTION:
@@ -375,20 +361,20 @@ class LineTool(GeometryTool):
                 # Exclude the line being created from snapping (it's the last entity)
                 current_line_idx = len(self.sketch.entities) - 1
                 sx, sy, snap = self.get_snapped(mx, my, layout, anchor, exclude_idx=current_line_idx)
-                self.app.session.constraint_builder.snap_target = snap
+                self.ctx.snap_target = snap
 
                 # Supersede with updated line
                 is_ref = (self.name == "Ref Line")
                 cmd = AddLineCommand(
                     self.sketch, self.start_pos, (sx, sy),
-                    is_ref=is_ref, supersede=True, physical=self.app.session.auto_atomize
+                    is_ref=is_ref, supersede=True, physical=self.ctx.auto_atomize
                 )
                 self.scene.execute(cmd)
 
                 # Show length in status bar
-                if self.app.session.mode == config.MODE_EDITOR:
+                if self.ctx.mode == config.MODE_EDITOR:
                     length = math.hypot(sx - self.start_pos[0], sy - self.start_pos[1])
-                    self.app.session.status.set(f"Length: {length:.2f}")
+                    self.ctx.set_status(f"Length: {length:.2f}")
                 return True
             else:
                 self._update_hover_snap(mx, my, layout)
@@ -400,7 +386,7 @@ class LineTool(GeometryTool):
             if elapsed < self.QUICK_CLICK_THRESHOLD and not self.click_click_mode:
                 # Enter click-click mode - don't finalize yet
                 self.click_click_mode = True
-                self.app.session.status.set("Click to set endpoint")
+                self.ctx.set_status("Click to set endpoint")
                 return True
 
             # Normal drag release - finalize the line
@@ -421,7 +407,7 @@ class LineTool(GeometryTool):
         is_ref = (self.name == "Ref Line")
         cmd = AddLineCommand(
             self.sketch, self.start_pos, (sx, sy),
-            is_ref=is_ref, supersede=True, physical=self.app.session.auto_atomize
+            is_ref=is_ref, supersede=True, physical=self.ctx.auto_atomize
         )
         self.scene.execute(cmd)
         wall_idx = cmd.created_index
@@ -444,8 +430,8 @@ class LineTool(GeometryTool):
         self.start_pos = None
         self.start_snap = None
         self.click_click_mode = False
-        self.app.session.state = InteractionState.IDLE
-        self.app.session.constraint_builder.snap_target = None
+        self.ctx.interaction_state = InteractionState.IDLE
+        self.ctx.snap_target = None
 
     def cancel(self):
         """Cancel current operation - also resets click-click mode."""
@@ -481,11 +467,11 @@ class RectTool(GeometryTool):
                 self.start_pos = (sx, sy)
                 
                 # Create initial degenerate rectangle (zero size)
-                cmd = AddRectangleCommand(self.sketch, sx, sy, sx, sy, physical=self.app.session.auto_atomize)
+                cmd = AddRectangleCommand(self.sketch, sx, sy, sx, sy, physical=self.ctx.auto_atomize)
                 self.scene.execute(cmd)
                 
                 self.dragging = True
-                self.app.session.state = InteractionState.DRAGGING_GEOMETRY
+                self.ctx.interaction_state = InteractionState.DRAGGING_GEOMETRY
                 return True
 
         elif event.type == pygame.MOUSEMOTION:
@@ -497,7 +483,7 @@ class RectTool(GeometryTool):
                 # Supersede with updated rectangle
                 cmd = AddRectangleCommand(
                     self.sketch, sx, sy, cx, cy,
-                    supersede=True, physical=self.app.session.auto_atomize
+                    supersede=True, physical=self.ctx.auto_atomize
                 )
                 self.scene.execute(cmd)
                 return True
@@ -513,7 +499,7 @@ class RectTool(GeometryTool):
             # Final supersede - stays in undo stack
             cmd = AddRectangleCommand(
                 self.sketch, sx, sy, cx, cy,
-                supersede=True, physical=self.app.session.auto_atomize
+                supersede=True, physical=self.ctx.auto_atomize
             )
             self.scene.execute(cmd)
             
@@ -526,7 +512,7 @@ class RectTool(GeometryTool):
         """Clean up drag state."""
         self.dragging = False
         self.start_pos = None
-        self.app.session.state = InteractionState.IDLE
+        self.ctx.interaction_state = InteractionState.IDLE
 
 
 # =============================================================================
@@ -569,11 +555,11 @@ class CircleTool(GeometryTool):
             self.click_click_mode = False
 
             # Create initial circle with minimal radius
-            cmd = AddCircleCommand(self.sketch, (sx, sy), 0.1, physical=self.app.session.auto_atomize)
+            cmd = AddCircleCommand(self.sketch, (sx, sy), 0.1, physical=self.ctx.auto_atomize)
             self.scene.execute(cmd)
 
             self.dragging = True
-            self.app.session.state = InteractionState.DRAGGING_GEOMETRY
+            self.ctx.interaction_state = InteractionState.DRAGGING_GEOMETRY
             return True
 
         elif event.type == pygame.MOUSEMOTION:
@@ -586,13 +572,13 @@ class CircleTool(GeometryTool):
                 # Supersede with updated circle
                 cmd = AddCircleCommand(
                     self.sketch, center, radius,
-                    supersede=True, physical=self.app.session.auto_atomize
+                    supersede=True, physical=self.ctx.auto_atomize
                 )
                 self.scene.execute(cmd)
 
                 # Show radius in status bar
-                if self.app.session.mode == config.MODE_EDITOR:
-                    self.app.session.status.set(f"Radius: {radius:.2f}")
+                if self.ctx.mode == config.MODE_EDITOR:
+                    self.ctx.set_status(f"Radius: {radius:.2f}")
                 return True
             else:
                 self._update_hover_snap(mx, my, layout)
@@ -604,7 +590,7 @@ class CircleTool(GeometryTool):
             if elapsed < self.QUICK_CLICK_THRESHOLD and not self.click_click_mode:
                 # Enter click-click mode - don't finalize yet
                 self.click_click_mode = True
-                self.app.session.status.set("Click to set radius")
+                self.ctx.set_status("Click to set radius")
                 return True
 
             # Normal drag release - finalize the circle
@@ -622,7 +608,7 @@ class CircleTool(GeometryTool):
         # Final supersede - stays in undo stack
         cmd = AddCircleCommand(
             self.sketch, center, radius,
-            supersede=True, physical=self.app.session.auto_atomize
+            supersede=True, physical=self.ctx.auto_atomize
         )
         self.scene.execute(cmd)
         circle_idx = cmd.created_index
@@ -641,8 +627,8 @@ class CircleTool(GeometryTool):
         self.start_pos = None
         self.center_snap = None
         self.click_click_mode = False
-        self.app.session.state = InteractionState.IDLE
-        self.app.session.constraint_builder.snap_target = None
+        self.ctx.interaction_state = InteractionState.IDLE
+        self.ctx.snap_target = None
 
     def cancel(self):
         """Cancel current operation - also resets click-click mode."""
@@ -682,7 +668,7 @@ class PointTool(GeometryTool):
                 sx, sy, snap = self.get_snapped(mx, my, layout)
                 
                 # Create point as degenerate line via command
-                cmd = AddLineCommand(self.sketch, (sx, sy), (sx, sy), is_ref=False, physical=self.app.session.auto_atomize)
+                cmd = AddLineCommand(self.sketch, (sx, sy), (sx, sy), is_ref=False, physical=self.ctx.auto_atomize)
                 self.scene.execute(cmd)
                 wall_idx = cmd.created_index
                 
@@ -740,17 +726,17 @@ class SelectTool(Tool):
 
     @property
     def sketch(self):
-        return self.app.scene.sketch
+        return self.ctx._get_sketch()
 
     @property
     def scene(self):
-        return self.app.scene
+        return self.ctx._get_scene()
 
     def deactivate(self):
         """Called when switching away from SelectTool."""
         super().deactivate()
         # Clear selection when leaving SelectTool
-        self.app.session.selection.clear()
+        self.ctx.selection.clear()
         self._reset_drag_state()
 
     def handle_event(self, event, layout):
@@ -758,11 +744,11 @@ class SelectTool(Tool):
             return self._handle_click(event.pos, layout)
         
         elif event.type == pygame.MOUSEMOTION:
-            if self.app.session.state == InteractionState.DRAGGING_GEOMETRY:
+            if self.ctx.interaction_state == InteractionState.DRAGGING_GEOMETRY:
                 return self._handle_drag(event.pos, layout)
         
         elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
-            if self.app.session.state == InteractionState.DRAGGING_GEOMETRY:
+            if self.ctx.interaction_state == InteractionState.DRAGGING_GEOMETRY:
                 return self._handle_release(event.pos, layout)
         
         return False
@@ -777,20 +763,20 @@ class SelectTool(Tool):
         Returns:
             bool: True if cancel was consumed, False if nothing to cancel
         """
-        if self.app.session.state != InteractionState.DRAGGING_GEOMETRY:
+        if self.ctx.interaction_state != InteractionState.DRAGGING_GEOMETRY:
             return False
 
         # Discard the preview command (restores original state via Command Pattern)
         # This replaces the previous direct entity mutation which violated the Air Gap
         self.scene.discard()
 
-        # Clear transient state (NOT Air Gap violations - these are session state)
-        self.sketch.interaction_data = None
-        self.app.session.constraint_builder.snap_target = None  # Clear snap indicator
+        # Clear transient drag state via the ToolContext facade (CR-112)
+        self.ctx.clear_interaction_data()
+        self.ctx.snap_target = None  # Clear snap indicator
 
         self._reset_drag_state()
-        self.app.session.state = InteractionState.IDLE
-        self.app.session.status.set("Cancelled")
+        self.ctx.interaction_state = InteractionState.IDLE
+        self.ctx.set_status("Cancelled")
 
         return True
 
@@ -800,9 +786,8 @@ class SelectTool(Tool):
         if not (layout['MID_X'] < mx < layout['RIGHT_X']):
             return False
 
-        session = self.app.session
         entities = self.sketch.entities
-        builder = session.constraint_builder
+        builder = self.ctx.constraint_builder
 
         # Build point map for hit testing
         point_map = self._build_point_map(entities, layout)
@@ -817,23 +802,23 @@ class SelectTool(Tool):
                 wall_idx, pt_idx = hit_pt
                 builder.add_wall(wall_idx)
                 builder.add_point(wall_idx, pt_idx)
-                self._try_finalize_constraint(builder, session)
+                self._try_finalize_constraint(builder)
                 return True
 
             # Check for entity body hit
             sim_x, sim_y = utils.screen_to_sim(
-                mx, my, session.camera.zoom, session.camera.pan_x, session.camera.pan_y,
-                self.app.sim.world_size, layout
+                mx, my, self.ctx.zoom, self.ctx.pan[0], self.ctx.pan[1],
+                self.ctx.world_size, layout
             )
-            hit_idx = self.sketch.find_entity_at(sim_x, sim_y, 0.5 / session.camera.zoom)
+            hit_idx = self.sketch.find_entity_at(sim_x, sim_y, 0.5 / self.ctx.zoom)
 
             if hit_idx >= 0:
                 builder.add_wall(hit_idx)
-                self._try_finalize_constraint(builder, session)
+                self._try_finalize_constraint(builder)
                 return True
 
             # Clicked empty space - cancel pending constraint
-            self._cancel_pending_constraint(builder, session)
+            self._cancel_pending_constraint(builder)
             return True
 
         # =====================================================================
@@ -848,12 +833,12 @@ class SelectTool(Tool):
 
             if shift_held:
                 # Shift+Click: toggle point selection
-                session.selection.toggle_point(wall_idx, pt_idx)
+                self.ctx.selection.toggle_point(wall_idx, pt_idx)
             else:
                 # Regular click: clear other selections, select this point
-                session.selection.walls.clear()
-                session.selection.points.clear()
-                session.selection.select_point(wall_idx, pt_idx)
+                self.ctx.selection.walls.clear()
+                self.ctx.selection.points.clear()
+                self.ctx.selection.select_point(wall_idx, pt_idx)
 
             self._start_edit_drag(wall_idx, pt_idx, mouse_pos, layout)
             return True
@@ -868,42 +853,42 @@ class SelectTool(Tool):
 
         # 3. Check for entity body hit
         sim_x, sim_y = utils.screen_to_sim(
-            mx, my, session.camera.zoom, session.camera.pan_x, session.camera.pan_y,
-            self.app.sim.world_size, layout
+            mx, my, self.ctx.zoom, self.ctx.pan[0], self.ctx.pan[1],
+            self.ctx.world_size, layout
         )
-        hit_idx = self.sketch.find_entity_at(sim_x, sim_y, 0.5 / session.camera.zoom)
+        hit_idx = self.sketch.find_entity_at(sim_x, sim_y, 0.5 / self.ctx.zoom)
 
         if hit_idx >= 0:
             shift_held = pygame.key.get_mods() & pygame.KMOD_SHIFT
 
             # Clear point selection when selecting entities
             if not shift_held:
-                session.selection.points.clear()
+                self.ctx.selection.points.clear()
 
             if shift_held:
                 # Shift+Click: toggle membership in selection (takes priority)
-                session.selection.toggle_entity(hit_idx)
+                self.ctx.selection.toggle_entity(hit_idx)
                 # Only start drag if entity is now selected
-                if session.selection.is_entity_selected(hit_idx):
-                    if len(session.selection.walls) > 1:
+                if self.ctx.selection.is_entity_selected(hit_idx):
+                    if len(self.ctx.selection.walls) > 1:
                         self._start_group_move(mouse_pos, layout)
                     else:
                         self._start_entity_move(hit_idx, mouse_pos, layout)
-            elif hit_idx in session.selection.walls and len(session.selection.walls) > 1:
+            elif hit_idx in self.ctx.selection.walls and len(self.ctx.selection.walls) > 1:
                 # Click on already-selected entity in group: start group move
                 self._start_group_move(mouse_pos, layout)
             else:
                 # Regular click: replace selection and move
-                session.selection.walls.clear()
-                session.selection.points.clear()
-                session.selection.walls.add(hit_idx)
+                self.ctx.selection.walls.clear()
+                self.ctx.selection.points.clear()
+                self.ctx.selection.walls.add(hit_idx)
                 self._start_entity_move(hit_idx, mouse_pos, layout)
             return True
         
         # 4. Clicked empty - deselect
         if not (pygame.key.get_mods() & pygame.KMOD_SHIFT):
-            session.selection.walls.clear()
-            session.selection.points.clear()
+            self.ctx.selection.walls.clear()
+            self.ctx.selection.points.clear()
         return True
 
     def _handle_drag(self, mouse_pos, layout):
@@ -911,13 +896,13 @@ class SelectTool(Tool):
         mx, my = mouse_pos
         curr_sim = utils.screen_to_sim(
             mx, my,
-            self.app.session.camera.zoom, self.app.session.camera.pan_x, self.app.session.camera.pan_y,
-            self.app.sim.world_size, layout
+            self.ctx.zoom, self.ctx.pan[0], self.ctx.pan[1],
+            self.ctx.world_size, layout
         )
         prev_sim = utils.screen_to_sim(
             self.drag_start_mouse[0], self.drag_start_mouse[1],
-            self.app.session.camera.zoom, self.app.session.camera.pan_x, self.app.session.camera.pan_y,
-            self.app.sim.world_size, layout
+            self.ctx.zoom, self.ctx.pan[0], self.ctx.pan[1],
+            self.ctx.world_size, layout
         )
 
         dx = curr_sim[0] - prev_sim[0]
@@ -925,8 +910,8 @@ class SelectTool(Tool):
         self.drag_start_mouse = (mx, my)
 
         # Update interaction data target (User Servo tracks mouse)
-        if self.sketch.interaction_data is not None:
-            self.sketch.interaction_data['target'] = curr_sim
+        if self.ctx.has_interaction_data():
+            self.ctx.update_interaction_target(curr_sim)
 
         if self.mode == 'EDIT':
             return self._handle_edit_drag(mx, my, layout)
@@ -946,11 +931,11 @@ class SelectTool(Tool):
         elif self.mode in ['MOVE_WALL', 'MOVE_GROUP']:
             self._commit_move()
 
-        # Clear interaction data (User Servo released)
-        self.sketch.interaction_data = None
+        # Clear interaction data (User Servo released) via the ctx facade (CR-112)
+        self.ctx.clear_interaction_data()
 
         self._reset_drag_state()
-        self.app.session.state = InteractionState.IDLE
+        self.ctx.interaction_state = InteractionState.IDLE
         return True
 
     # -------------------------------------------------------------------------
@@ -972,15 +957,10 @@ class SelectTool(Tool):
         # Set interaction data for point editing (User Servo)
         sim_pos = utils.screen_to_sim(
             mouse_pos[0], mouse_pos[1],
-            self.app.session.camera.zoom, self.app.session.camera.pan_x, self.app.session.camera.pan_y,
-            self.app.sim.world_size, layout
+            self.ctx.zoom, self.ctx.pan[0], self.ctx.pan[1],
+            self.ctx.world_size, layout
         )
-        self.sketch.interaction_data = {
-            'entity_idx': wall_idx,
-            'point_idx': pt_idx,
-            'handle_t': None,
-            'target': sim_pos
-        }
+        self.ctx.set_interaction_data(sim_pos, wall_idx, point_idx=pt_idx)
 
         # PROP-2025-001: Create initial command for supersede pattern (Air Gap compliance)
         # This ensures scene.discard() has a command to revert on cancel
@@ -993,7 +973,7 @@ class SelectTool(Tool):
         )
         self.scene.execute(cmd)
 
-        self.app.session.state = InteractionState.DRAGGING_GEOMETRY
+        self.ctx.interaction_state = InteractionState.DRAGGING_GEOMETRY
 
     def _start_resize_drag(self, circle_idx, mouse_pos):
         """Start resizing a circle."""
@@ -1002,9 +982,9 @@ class SelectTool(Tool):
         self.drag_start_mouse = mouse_pos
 
         # Select the circle being resized so it highlights yellow
-        self.app.session.selection.walls.clear()
-        self.app.session.selection.points.clear()
-        self.app.session.selection.walls.add(circle_idx)
+        self.ctx.selection.walls.clear()
+        self.ctx.selection.points.clear()
+        self.ctx.selection.walls.add(circle_idx)
 
         # Capture original radius for cancel/commit
         entity = self.sketch.entities[circle_idx]
@@ -1021,7 +1001,7 @@ class SelectTool(Tool):
         )
         self.scene.execute(cmd)
 
-        self.app.session.state = InteractionState.DRAGGING_GEOMETRY
+        self.ctx.interaction_state = InteractionState.DRAGGING_GEOMETRY
 
     def _start_entity_move(self, entity_idx, mouse_pos, layout):
         """Start moving a single entity."""
@@ -1035,8 +1015,8 @@ class SelectTool(Tool):
         entity = self.sketch.entities[entity_idx]
         sim_pos = utils.screen_to_sim(
             mouse_pos[0], mouse_pos[1],
-            self.app.session.camera.zoom, self.app.session.camera.pan_x, self.app.session.camera.pan_y,
-            self.app.sim.world_size, layout
+            self.ctx.zoom, self.ctx.pan[0], self.ctx.pan[1],
+            self.ctx.world_size, layout
         )
 
         # Capture start positions for undo (before any movement)
@@ -1057,13 +1037,8 @@ class SelectTool(Tool):
         else:
             self.handle_t = None
 
-        # Set initial interaction data (User Servo)
-        self.sketch.interaction_data = {
-            'entity_idx': entity_idx,
-            'point_idx': None,
-            'handle_t': self.handle_t,
-            'target': sim_pos
-        }
+        # Set initial interaction data (User Servo) via the ctx facade (CR-112)
+        self.ctx.set_interaction_data(sim_pos, entity_idx, handle_t=self.handle_t)
 
         # PROP-2025-001: Create identity placeholder for supersede pattern (Air Gap compliance)
         # The solver will move geometry via interaction_data. This placeholder ensures
@@ -1077,7 +1052,7 @@ class SelectTool(Tool):
         )
         self.scene.execute(cmd)
 
-        self.app.session.state = InteractionState.DRAGGING_GEOMETRY
+        self.ctx.interaction_state = InteractionState.DRAGGING_GEOMETRY
 
     def _capture_entity_positions(self, entity):
         """Capture all point positions of an entity for undo."""
@@ -1094,7 +1069,7 @@ class SelectTool(Tool):
     def _start_group_move(self, mouse_pos, layout):
         """Start moving multiple selected entities."""
         self.mode = 'MOVE_GROUP'
-        self.group_indices = list(self.app.session.selection.walls)
+        self.group_indices = list(self.ctx.selection.walls)
         self.drag_start_mouse = mouse_pos
         self.total_dx = 0.0
         self.total_dy = 0.0
@@ -1109,7 +1084,7 @@ class SelectTool(Tool):
         )
         self.scene.execute(cmd)
 
-        self.app.session.state = InteractionState.DRAGGING_GEOMETRY
+        self.ctx.interaction_state = InteractionState.DRAGGING_GEOMETRY
 
     # -------------------------------------------------------------------------
     # Drag Handling Methods
@@ -1129,11 +1104,11 @@ class SelectTool(Tool):
             constrain_to_axis = bool(mods & pygame.KMOD_SHIFT)
             dest_x, dest_y, snap = utils.get_snapped_pos(
                 mx, my, entities,
-                self.app.session.camera.zoom, self.app.session.camera.pan_x, self.app.session.camera.pan_y,
-                self.app.sim.world_size, self.app.layout, anchor, self.target_idx,
+                self.ctx.zoom, self.ctx.pan[0], self.ctx.pan[1],
+                self.ctx.world_size, self.ctx.layout, anchor, self.target_idx,
                 snap_to_points=snap_to_points, constrain_to_axis=constrain_to_axis
             )
-            self.app.session.constraint_builder.snap_target = snap
+            self.ctx.snap_target = snap
 
             # PROP-2025-001: Use supersede pattern for Air Gap compliance
             cmd = SetPointCommand(
@@ -1151,11 +1126,11 @@ class SelectTool(Tool):
             constrain_to_axis = bool(mods & pygame.KMOD_SHIFT)
             dest_x, dest_y, snap = utils.get_snapped_pos(
                 mx, my, entities,
-                self.app.session.camera.zoom, self.app.session.camera.pan_x, self.app.session.camera.pan_y,
-                self.app.sim.world_size, self.app.layout, None, self.target_idx,
+                self.ctx.zoom, self.ctx.pan[0], self.ctx.pan[1],
+                self.ctx.world_size, self.ctx.layout, None, self.target_idx,
                 snap_to_points=snap_to_points, constrain_to_axis=constrain_to_axis
             )
-            self.app.session.constraint_builder.snap_target = snap
+            self.ctx.snap_target = snap
 
             # PROP-2025-001: Use supersede pattern for Air Gap compliance
             cmd = SetPointCommand(
@@ -1225,12 +1200,12 @@ class SelectTool(Tool):
         # from _handle_edit_drag. No manual append needed.
 
         # Handle snap connection
-        if self.app.session.constraint_builder.snap_target:
-            snap = self.app.session.constraint_builder.snap_target
+        if self.ctx.snap_target:
+            snap = self.ctx.snap_target
             if not (self.target_idx == snap[0] and self.target_pt == snap[1]):
                 c = Coincident(self.target_idx, self.target_pt, snap[0], snap[1])
                 self.scene.execute(AddConstraintCommand(self.sketch, c))
-                self.app.session.status.set("Snapped & Connected")
+                self.ctx.set_status("Snapped & Connected")
 
     def _commit_resize(self):
         """Commit circle resize - supersede pattern leaves final command on stack.
@@ -1279,7 +1254,6 @@ class SelectTool(Tool):
     def _build_point_map(self, entities, layout):
         """Build a map of screen positions to (entity_idx, point_idx) pairs."""
         point_map = {}
-        session = self.app.session
         
         for i, w in enumerate(entities):
             if w.entity_type == EntityType.LINE:
@@ -1287,8 +1261,8 @@ class SelectTool(Tool):
                     pt = w.get_point(pt_idx)
                     sx, sy = utils.sim_to_screen(
                         pt[0], pt[1],
-                        session.camera.zoom, session.camera.pan_x, session.camera.pan_y,
-                        self.app.sim.world_size, layout
+                        self.ctx.zoom, self.ctx.pan[0], self.ctx.pan[1],
+                        self.ctx.world_size, layout
                     )
                     key = (int(sx), int(sy))
                     if key not in point_map:
@@ -1297,8 +1271,8 @@ class SelectTool(Tool):
             elif w.entity_type == EntityType.CIRCLE:
                 sx, sy = utils.sim_to_screen(
                     w.center[0], w.center[1],
-                    session.camera.zoom, session.camera.pan_x, session.camera.pan_y,
-                    self.app.sim.world_size, layout
+                    self.ctx.zoom, self.ctx.pan[0], self.ctx.pan[1],
+                    self.ctx.world_size, layout
                 )
                 key = (int(sx), int(sy))
                 if key not in point_map:
@@ -1320,21 +1294,20 @@ class SelectTool(Tool):
 
     def _hit_test_circle_resize(self, mx, my, entities, layout):
         """Test if mouse hit a circle's resize handle (edge). Returns entity index or None."""
-        session = self.app.session
         
         for i, w in enumerate(entities):
             if w.entity_type == EntityType.CIRCLE:
                 sx, sy = utils.sim_to_screen(
                     w.center[0], w.center[1],
-                    session.camera.zoom, session.camera.pan_x, session.camera.pan_y,
-                    self.app.sim.world_size, layout
+                    self.ctx.zoom, self.ctx.pan[0], self.ctx.pan[1],
+                    self.ctx.world_size, layout
                 )
                 
                 # Calculate screen radius
-                p0 = utils.sim_to_screen(0, 0, session.camera.zoom, session.camera.pan_x, session.camera.pan_y,
-                                         self.app.sim.world_size, layout)
-                pr = utils.sim_to_screen(w.radius, 0, session.camera.zoom, session.camera.pan_x, session.camera.pan_y,
-                                         self.app.sim.world_size, layout)
+                p0 = utils.sim_to_screen(0, 0, self.ctx.zoom, self.ctx.pan[0], self.ctx.pan[1],
+                                         self.ctx.world_size, layout)
+                pr = utils.sim_to_screen(w.radius, 0, self.ctx.zoom, self.ctx.pan[0], self.ctx.pan[1],
+                                         self.ctx.world_size, layout)
                 screen_r = abs(pr[0] - p0[0])
                 
                 # Check if near edge (not center)
@@ -1348,7 +1321,7 @@ class SelectTool(Tool):
     # Constraint Building Helpers
     # -------------------------------------------------------------------------
 
-    def _try_finalize_constraint(self, builder, session):
+    def _try_finalize_constraint(self, builder):
         """
         Try to finalize the pending constraint.
 
@@ -1362,26 +1335,29 @@ class SelectTool(Tool):
 
             # Clean up UI state
             ctype = builder.pending_type
-            self._clear_constraint_ui(builder, session)
-            session.status.set(f"Applied {ctype}")
-            self.app.sound_manager.play_sound('click')
+            self._clear_constraint_ui()
+            self.ctx.set_status(f"Applied {ctype}")
+            self.ctx.play_sound('click')
         else:
             # Not ready yet - update status with progress
-            session.status.set(builder.get_status_message())
-            self.app.sound_manager.play_sound('click')
+            self.ctx.set_status(builder.get_status_message())
+            self.ctx.play_sound('click')
 
-    def _cancel_pending_constraint(self, builder, session):
+    def _cancel_pending_constraint(self, builder):
         """Cancel the pending constraint and clean up UI state."""
-        self._clear_constraint_ui(builder, session)
-        session.status.set("Constraint cancelled")
+        self._clear_constraint_ui()
+        self.ctx.set_status("Constraint cancelled")
 
-    def _clear_constraint_ui(self, builder, session):
-        """Clear all constraint-related UI state."""
-        builder.reset()
-        session.selection.walls.clear()
-        session.selection.points.clear()
-        for btn in self.app.input_handler.constraint_btn_map.keys():
-            btn.active = False
+    def _clear_constraint_ui(self):
+        """Clear constraint UI state and selection.
+
+        Per CR-112 §5.2: ctx.clear_constraint_ui() resets the constraint
+        builder and deactivates the constraint buttons. Selection clearing
+        stays inline because selection is a separable concern.
+        """
+        self.ctx.clear_constraint_ui()
+        self.ctx.selection.walls.clear()
+        self.ctx.selection.points.clear()
 
     def draw_overlay(self, screen, renderer, layout):
         """Draw selection indicators and drag feedback."""

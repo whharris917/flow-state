@@ -1,25 +1,34 @@
 """
 Compiler - The Bridge between Sketch (CAD) and Simulation (Physics)
 
-Reads geometry and materials from Sketch, writes static particle arrays
-to Simulation. This is the ONLY component that knows about both domains.
+Reads geometry and materials from Sketch, writes particle arrays to
+Simulation. This is the ONLY component that knows about both domains.
 
-Data flow is ONE-WAY: Sketch → Simulation (never reverse)
+The Compiler itself is a one-way translator: it reads Sketch geometry
+and writes atom arrays. It never reads back from the Simulation.
+However, the system as a whole supports two-way coupling at the physics
+step via tethered atoms (is_static=3): once compiled, tethered atoms and
+their parent dynamic entities exchange forces in physics_core's tether
+kernel and Scene._run_physics_coupling. The Compiler enables that
+coupling by emitting tethered atoms; it does not implement the coupling
+itself.
 
 Particle Types (is_static):
 - 0: Dynamic particle (free-moving fluid)
-- 1: Static particle (immovable wall)
-- 3: Tethered particle (bound to geometry via spring)
+- 1: Static particle (immovable wall — teleported with its entity)
+- 3: Tethered particle (bound to geometry via spring; participates in
+     two-way coupling with dynamic entities)
 
 Handle System:
 - Points with is_handle=True are ProcessObject handles
 - These are SKIPPED during atomization (they don't become particles)
 - They exist only for constraint participation
 
-Tether System (Two-Way Coupling):
+Tether System (Two-Way Coupling, downstream of compilation):
 - When entity.dynamic=True, atoms are tethered instead of static
 - Tethered atoms have local coordinates on their parent entity
-- Spring forces connect atoms to their anchor points on the entity
+- Spring forces connect atoms to their anchor points on the entity;
+  reaction forces accumulate on the entity for integration
 """
 
 import numpy as np

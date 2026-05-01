@@ -1,11 +1,18 @@
 """
 InputHandler - Explicit Chain of Responsibility
 
-Handles all keyboard and mouse input using a 5-layer protocol:
+Handles all keyboard and mouse input using a 4-layer protocol, in this
+dispatch order:
+
 1. System (Quit, Resize)
-2. Global (Hotkeys)
-3. Modals (Context Menu, Dialogs)
-4. HUD (Panel Tree - NOW INCLUDES SCENE)
+2. Modals (Context Menu, Dialogs) — runs before Global so dialogs can
+   capture keyboard input before global hotkeys trigger.
+3. Global (Hotkeys)
+4. HUD (Panel Tree, including SceneViewport)
+
+Each layer's _attempt_handle_* method returns True if it consumed the
+event; subsequent layers are skipped. This enforces the "events flow
+to the most-specific consumer first" model.
 """
 
 import pygame
