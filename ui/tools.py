@@ -87,13 +87,9 @@ class Tool:
     Tools interact with the application exclusively through the ToolContext
     facade (self.ctx). See the module docstring for the allowed access
     contract (per CR-112).
-
-    The CR-2026-004 backward-compat passthrough (self.app = ctx._app) is
-    retired in CR-112 EI-7. Tools must not rely on self.app.
     """
     def __init__(self, ctx, name="Tool"):
         self.ctx = ctx
-        self.app = ctx._app  # Backward-compat passthrough — retired in CR-112 EI-7
         self.name = name
 
     def activate(self):
