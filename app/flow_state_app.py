@@ -106,7 +106,11 @@ class FlowStateApp:
         # UI & Input Setup
         # =====================================================================
         
-        self.session.input_world = InputField(0, 0, 0, 0)
+        self.session.input_world = InputField(
+            0, 0,
+            config.scale(60), config.scale(25),
+            str(config.DEFAULT_WORLD_SIZE),
+        )
         self.session.camera.zoom = 0.9
         
         self.session.editor_paused = False 

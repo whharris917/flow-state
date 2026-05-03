@@ -15,7 +15,7 @@ import math
 import core.config as config
 import core.utils as utils
 
-from ui.ui_widgets import MaterialDialog, RotationDialog, AnimationDialog, ContextMenu, SaveAsNewDialog
+from ui.ui_widgets import MaterialDialog, RotationDialog, AnimationDialog, ContextMenu, SaveAsNewDialog, ConfirmDialog
 from ui import icons
 from model.geometry import Line, Circle, Point
 from core.definitions import CONSTRAINT_DEFS
@@ -180,11 +180,64 @@ class AppController:
     def action_resize_world(self, size_str):
         try:
             val = float(size_str)
-            self.sim.resize_world(val)
-            self.session.status.set(f"World Resized: {val}")
-            self.sound_manager.play_sound('click')
         except ValueError:
             self.session.status.set("Invalid Size")
+            return
+
+        if self.sim.count > 0:
+            # Particles present — confirm before destructive reset.
+            # Center the dialog on screen using the existing layout dict.
+            screen_w = self.app.layout.get('W', 800)
+            screen_h = self.app.layout.get('H', 600)
+            dlg_w, dlg_h = 360, 180
+            x = (screen_w - dlg_w) // 2
+            y = (screen_h - dlg_h) // 2
+            dialog = ConfirmDialog(
+                x, y,
+                title="Resize World",
+                message=(
+                    f"Resize the world to {val} and reset the simulation?\n"
+                    f"All {self.sim.count} particles will be cleared and physics\n"
+                    f"settings will return to defaults."
+                ),
+                destructive=True,
+            )
+            dialog.pending_value = val   # stashed for the dispatcher
+            self.push_modal(dialog, 'confirm_resize_dialog')
+        else:
+            self._do_resize_world(val)
+
+    def _do_resize_world(self, val):
+        """Apply the resize and restore Compiler-emitted atoms.
+
+        scene.rebuild() is required because Simulation.reset() wipes the
+        static (is_static=1) and tethered (is_static=3) atoms emitted from
+        CAD geometry. Without it, walls stop colliding until something
+        else dirties topology. Mirrors action_clear_particles precedent.
+        """
+        self.sim.resize_world(val)
+        self.scene.rebuild()
+        self.session.status.set(f"World Resized: {val}")
+        self.sound_manager.play_sound('click')
+
+    def apply_resize_confirm(self, dialog):
+        """Dispatcher hook for 'confirm_resize_dialog' completion.
+
+        Polled from actions.update() once dialog.done is True. Routes the
+        outcome based on which flag the dialog set.
+
+        On cancel, restore the input_world field to the actual world
+        size so the displayed value doesn't lie about the current state
+        (the user typed a new value before clicking Resize World; if
+        they cancel, the field should return to the real world_size).
+        """
+        if dialog.confirmed:
+            self._do_resize_world(dialog.pending_value)
+        else:
+            self.session.status.set("Resize cancelled")
+            if self.session.input_world is not None:
+                self.session.input_world.set_value(self.sim.world_size)
+        self.close_modal(dialog)
 
     # =========================================================================
     # Editor Actions
@@ -593,6 +646,12 @@ class AppController:
             if modal_type == 'save_as_new_dialog' and hasattr(modal, 'done') and modal.done:
                 self.apply_save_as_new_from_dialog(modal)
                 self.close_modal(modal)
+                break  # Modal stack was modified, exit loop
+            # Handle confirm_resize_dialog completion (per CR-114 §5.3,
+            # tu_scene cycle 7 note — converge all dispatch paths through
+            # this per-frame poll rather than the event-driven dispatcher)
+            if modal_type == 'confirm_resize_dialog' and hasattr(modal, 'done') and modal.done:
+                self.apply_resize_confirm(modal)
                 break  # Modal stack was modified, exit loop
 
     def draw_overlays(self, screen, font):

@@ -267,12 +267,24 @@ class Simulation:
     # =========================================================================
 
     def resize_world(self, new_size):
-        """Resize the simulation world."""
-        self.snapshot()
+        """Resize the simulation world. Performs a full physics reset.
+
+        All particles are cleared and physics settings (gravity, dt,
+        damping, sigma, epsilon, skin_distance, target_temp) return to
+        defaults. The new world_size overrides the default set by reset().
+
+        Note: reset() snapshots internally (see line 292), so no outer
+        snapshot() call is needed here — that would push two undo states
+        per resize and require two Ctrl+Z presses to revert.
+
+        Callers (see AppController.action_resize_world) are responsible
+        for triggering scene.rebuild() afterwards to regenerate the
+        Compiler-emitted static and tethered atoms that reset() wipes.
+        """
         if new_size < 10.0:
             new_size = 10.0
-        self.world_size = new_size
-        self.clear(snapshot=False)
+        self.reset()                  # full physics reset; reset() snapshots internally
+        self.world_size = new_size    # override the default set by reset()
 
     def clear(self, snapshot=True):
         """Remove all particles."""
