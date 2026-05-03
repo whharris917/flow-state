@@ -225,11 +225,18 @@ class AppController:
 
         Polled from actions.update() once dialog.done is True. Routes the
         outcome based on which flag the dialog set.
+
+        On cancel, restore the input_world field to the actual world
+        size so the displayed value doesn't lie about the current state
+        (the user typed a new value before clicking Resize World; if
+        they cancel, the field should return to the real world_size).
         """
         if dialog.confirmed:
             self._do_resize_world(dialog.pending_value)
         else:
             self.session.status.set("Resize cancelled")
+            if self.session.input_world is not None:
+                self.session.input_world.set_value(self.sim.world_size)
         self.close_modal(dialog)
 
     # =========================================================================
