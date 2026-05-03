@@ -2563,3 +2563,137 @@ class ColorSwatch(UIElement):
         # Draw border
         border_col = config.COLOR_ACCENT if self.hovered else config.PANEL_BORDER_COLOR
         pygame.draw.rect(screen, border_col, self.rect, 1, border_radius=4)
+
+
+class ConfirmDialog:
+    """Generic confirmation modal.
+
+    Polled-flag pattern (like SaveAsNewDialog / AnimationDialog):
+      done       - True once the user has chosen or dismissed
+      confirmed  - True only on explicit Confirm; False on cancel/dismiss/escape
+      cancelled  - True for any non-confirm completion (symmetry with SaveAsNewDialog)
+
+    When destructive=True the Cancel button gets the default-focus visual
+    treatment AND Enter routes to Cancel — so a hasty Enter press never fires
+    a destructive action. Escape always cancels.
+
+    Callers may stash arbitrary context on the instance (e.g.
+    `dialog.pending_value = X`) for the dispatcher to consume on completion.
+    """
+
+    def __init__(self, x, y, title, message, destructive=False):
+        # Dimensions sized for ~3 lines of message; AppController positions
+        # the dialog in screen-center via the standard pattern.
+        self.rect = pygame.Rect(x, y, 360, 180)
+        self.title = title
+        self.message = message
+        self.destructive = bool(destructive)
+
+        # Polled flags
+        self.done = False
+        self.confirmed = False
+        self.cancelled = False
+        self.visible = True
+
+        # Buttons (positioned at bottom of dialog)
+        btn_w = 120
+        btn_y = y + 130
+        # Cancel on the left, Confirm on the right (matches SaveAsNewDialog layout)
+        self.btn_cancel = Button(
+            x + 20, btn_y, btn_w, 30, "Cancel",
+            toggle=False, color_inactive=(80, 80, 90),
+        )
+        self.btn_confirm = Button(
+            x + self.rect.w - btn_w - 20, btn_y, btn_w, 30, "Confirm",
+            toggle=False,
+            color_inactive=(config.COLOR_DANGER if destructive else config.COLOR_SUCCESS),
+        )
+
+    def has_active_input(self):
+        """No input fields. Provided for parity with other dialogs."""
+        return False
+
+    def handle_event(self, event):
+        if not self.visible:
+            return False
+
+        # Mouse clicks on buttons
+        if event.type == pygame.MOUSEBUTTONDOWN:
+            if self.btn_cancel.rect.collidepoint(event.pos):
+                self.btn_cancel.handle_event(event)
+                self.cancelled = True
+                self.done = True
+                return True
+            if self.btn_confirm.rect.collidepoint(event.pos):
+                self.btn_confirm.handle_event(event)
+                self.confirmed = True
+                self.done = True
+                return True
+
+        # Keyboard
+        if event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_ESCAPE:
+                self.cancelled = True
+                self.done = True
+                return True
+            if event.key == pygame.K_RETURN:
+                if self.destructive:
+                    # Hasty Enter must not destroy state
+                    self.cancelled = True
+                else:
+                    self.confirmed = True
+                self.done = True
+                return True
+            # Block all other key events from reaching global hotkeys
+            return True
+
+        # Absorb mouse events inside the dialog rect so they don't leak to
+        # widgets behind the modal.
+        if event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP):
+            if self.rect.collidepoint(event.pos):
+                return True
+        if event.type == pygame.MOUSEMOTION:
+            return True
+
+        return False
+
+    def update(self, dt):
+        self.btn_cancel.update(dt)
+        self.btn_confirm.update(dt)
+
+    def draw(self, screen, font):
+        if not self.visible:
+            return
+
+        # Drop shadow
+        shadow = self.rect.copy()
+        shadow.x += 5
+        shadow.y += 5
+        s_surf = pygame.Surface((shadow.width, shadow.height), pygame.SRCALPHA)
+        pygame.draw.rect(s_surf, (0, 0, 0, 100), s_surf.get_rect(), border_radius=6)
+        screen.blit(s_surf, shadow)
+
+        # Background panel
+        pygame.draw.rect(screen, config.PANEL_BG_COLOR, self.rect, border_radius=6)
+        pygame.draw.rect(screen, config.COLOR_ACCENT, self.rect, 1, border_radius=6)
+
+        # Title
+        title_surf = font.render(self.title, True, (255, 255, 255))
+        screen.blit(title_surf, (self.rect.x + 15, self.rect.y + 12))
+
+        # Message — split on \n for multi-line support
+        line_y = self.rect.y + 50
+        for line in self.message.split('\n'):
+            line_surf = font.render(line, True, config.COLOR_TEXT)
+            screen.blit(line_surf, (self.rect.x + 20, line_y))
+            line_y += line_surf.get_height() + 2
+
+        # Buttons
+        self.btn_cancel.draw(screen, font)
+        self.btn_confirm.draw(screen, font)
+
+        # Default-focus highlight on the safe button when destructive=True.
+        # A 2px accent ring around Cancel signals "Enter goes here".
+        if self.destructive:
+            ring = self.btn_cancel.rect.inflate(6, 6)
+            pygame.draw.rect(screen, config.COLOR_ACCENT, ring, 2, border_radius=6)
