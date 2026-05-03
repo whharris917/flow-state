@@ -250,6 +250,12 @@ class InputHandler:
                 if modal_type == 'save_as_new_dialog':
                     modal.cancelled = True
                     modal.done = True
+                elif modal_type == 'confirm_resize_dialog':
+                    # Set cancellation flags; AppController.update()
+                    # polls dialog.done and routes through
+                    # apply_resize_confirm on the next frame.
+                    modal.cancelled = True
+                    modal.done = True
                 else:
                     actions.close_modal()
                 return True
