@@ -14,6 +14,7 @@ import math
 import core.config as config
 import core.utils as utils
 
+from core.source_commands import AddSourceCommand
 from model.process_objects import Source, SourceProperties
 from ui.tools import Tool
 
@@ -152,31 +153,28 @@ class SourceTool(Tool):
             pygame.draw.circle(screen, (100, 180, 255), (mx, my), 4)
 
     def _create_source(self, radius):
-        """Create the Source and add to scene."""
-        # Create Source with default properties
-        source = Source(
+        """Create the Source and add to scene via AddSourceCommand so Ctrl+Z reverses it."""
+        cmd = AddSourceCommand(
+            scene=self.ctx._get_scene(),
             center=self.center,
             radius=radius,
-            properties=SourceProperties()
+            properties=SourceProperties(),
         )
-
-        # Add to scene (this registers handles with Sketch)
-        self.ctx.add_process_object(source)
+        self.ctx.execute(cmd)
+        source = cmd.source
 
         # If we snapped to a point, create a coincident constraint
         if self.center_snap and pygame.key.get_mods() & pygame.KMOD_CTRL:
-            # Get the handle index in the sketch
             handle_indices = source.get_handle_indices(self.ctx._get_sketch())
             if 'center' in handle_indices:
                 center_idx = handle_indices['center']
                 snap_entity, snap_pt = self.center_snap
 
-                # Create coincident constraint between Source center and snap target
-                cmd = self.ctx.create_coincident_command(
+                constraint_cmd = self.ctx.create_coincident_command(
                     center_idx, 0, snap_entity, snap_pt
                 )
-                if cmd is not None:
-                    self.ctx.execute(cmd)
+                if constraint_cmd is not None:
+                    self.ctx.execute(constraint_cmd)
 
         self.ctx.set_status(f"Source created (r={radius:.1f})")
 

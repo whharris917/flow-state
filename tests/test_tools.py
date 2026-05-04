@@ -435,3 +435,63 @@ class TestSourceTool:
         tool.handle_event(make_event(pygame.KEYDOWN, key=pygame.K_ESCAPE, unicode=""), layout)
         assert tool.center is None
         assert len(tool_ctx._app.scene.process_objects) == 0
+
+    def _place_source_via_two_clicks(self, tool, layout):
+        """Helper: drive the two-click workflow to completion on the test layout."""
+        cx_screen = layout["MID_X"] + layout["MID_W"] // 2
+        cy_screen = config.TOP_MENU_H + layout["MID_H"] // 2
+        tool.handle_event(make_event(pygame.MOUSEBUTTONDOWN, pos=(cx_screen, cy_screen), button=1), layout)
+        tool.handle_event(make_event(pygame.MOUSEBUTTONDOWN, pos=(cx_screen + 100, cy_screen), button=1), layout)
+
+    def test_source_creation_is_undoable(self, tool_ctx, layout):
+        """Ctrl+Z must remove a Source created via the two-click workflow.
+
+        Regression: prior to this fix SourceTool._create_source called
+        ctx.add_process_object(source) directly, bypassing the Command pattern,
+        so the creation never landed on the undo stack. AddSourceCommand
+        existed in core/source_commands.py but was never used by any
+        production path.
+        """
+        from ui.source_tool import SourceTool
+        tool = SourceTool(tool_ctx)
+        scene = tool_ctx._app.scene
+
+        self._place_source_via_two_clicks(tool, layout)
+        assert len(scene.process_objects) == 1
+        assert scene.can_undo()
+
+        assert scene.undo() is True
+        assert len(scene.process_objects) == 0
+
+    def test_source_creation_supports_redo_after_undo(self, tool_ctx, layout):
+        from ui.source_tool import SourceTool
+        tool = SourceTool(tool_ctx)
+        scene = tool_ctx._app.scene
+
+        self._place_source_via_two_clicks(tool, layout)
+        scene.undo()
+        assert len(scene.process_objects) == 0
+        assert scene.can_redo()
+
+        assert scene.redo() is True
+        assert len(scene.process_objects) == 1
+
+    def test_source_undo_unregisters_handles(self, tool_ctx, layout):
+        """Undoing a Source must also unregister its handle Points from the Sketch.
+
+        AddSourceCommand.undo() routes through scene.remove_process_object,
+        which calls obj.unregister_handles(sketch). Without that path the
+        handle Points would remain in the sketch even though the Source
+        is gone from process_objects.
+        """
+        from ui.source_tool import SourceTool
+        tool = SourceTool(tool_ctx)
+        scene = tool_ctx._app.scene
+        sketch = tool_ctx._get_sketch()
+
+        baseline_entity_count = len(sketch.entities)
+        self._place_source_via_two_clicks(tool, layout)
+        assert len(sketch.entities) > baseline_entity_count
+
+        scene.undo()
+        assert len(sketch.entities) == baseline_entity_count
