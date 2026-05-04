@@ -13,8 +13,8 @@ Tests are headless. Pygame runs against the dummy SDL driver (set in `conftest.p
 | `test_geometry.py` | `model/geometry.py` | Line / Circle / Point primitives, dynamics state, dict round-trips |
 | `test_sketch.py` | `model/sketch.py` | Entity CRUD, constraint registration, conflict resolution, materials |
 | `test_solver.py` | `model/solver.py` | Constraint satisfaction (LENGTH, RADIUS, COINCIDENT, HORIZONTAL, VERTICAL, PARALLEL, PERPENDICULAR, EQUAL, MIDPOINT) |
-| `test_commands.py` | `core/commands.py`, `model/commands/*` | CommandQueue undo/redo/discard/supersede/merge; each command's execute+undo |
-| `test_compiler.py` | `engine/compiler.py` | Atom emission for static/dynamic/reference/handle entities, COINCIDENT joint IDs |
+| `test_commands.py` | `core/commands.py`, `model/commands/*` | CommandQueue undo/redo/discard/supersede/merge; each command's execute+undo (incl. ResizeWorldCommand snapshot/restore for Ctrl+Z support) |
+| `test_compiler.py` | `engine/compiler.py` | Atom emission for static/dynamic/reference/handle entities, COINCIDENT joint IDs, bounds-clip for out-of-bounds positions |
 | `test_simulation.py` | `engine/simulation.py` | World resize, sync_entity_arrays, snapshot/restore, to_dict round-trip |
 | `test_brush.py` | `engine/particle_brush.py` | Paint/erase semantics, tethered/static atom preservation |
 | `test_scene.py` | `core/scene.py` | Orchestrator dirty flags, undo triggers rebuild, ProcessObject registration |
@@ -37,13 +37,12 @@ Tests are headless. Pygame runs against the dummy SDL driver (set in `conftest.p
 
 ## Documented latent bugs (xfail, strict=True)
 
-Three known bugs are pinned as `@pytest.mark.xfail(strict=True)` so they will start failing as soon as someone fixes them — forcing removal of the marker. Each is a candidate for a separate small CR.
-
-| Test | Bug |
-|------|-----|
-| `test_simulation.py::test_restore_empty_simulation_xfail` | `Simulation.restore()` with `count==0` hits a numpy shape mismatch on `atom_color` (empty list vs `(0, 3)` target). Surfaced during initial suite authoring. |
-| `test_simulation.py::test_step_preserves_out_of_bounds_tethered_atom` | `Simulation.step()` compacts atoms whose position is outside `world_size` regardless of `is_static`. A tethered or static atom that drifts out (e.g., during a drag) is removed, orphaning the tether linkage. The escape filter at the end of `step()` should gate on `is_static`. Surfaced via TU-SIM. |
-| `test_persistence.py::test_load_scene_marks_topology_dirty_for_physical_entities` | `Scene.load_scene()` does not set `_topology_dirty` after restoration. Tether linkage (`tether_entity_idx`, `tether_local_pos`, `tether_stiffness`) is not in `Simulation.to_dict()`, so atoms exist but their entity coupling is lost on load. Setting `_topology_dirty=True` after load would force a `rebuild()` on the next `update()` and re-establish linkage. Surfaced via TU-SCENE. |
+None currently — the three bugs surfaced through TU collaboration during
+CR-116 EI-3 (`Simulation.restore()` count==0, `Simulation.step()` escape
+filter, `Scene.load_scene()` topology dirty) were all fixed in the same
+commit batch and the markers removed. New bugs surfaced in future
+sessions should be pinned here as `@pytest.mark.xfail(strict=True)` so
+they start failing as soon as the underlying fix lands.
 
 ## What's *not* covered
 
