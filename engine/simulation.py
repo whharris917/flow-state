@@ -357,7 +357,9 @@ class Simulation:
             self.atom_sigma[:self.count] = np.array(data['atom_sigma'], dtype=np.float32)
         if 'atom_eps_sqrt' in data:
             self.atom_eps_sqrt[:self.count] = np.array(data['atom_eps_sqrt'], dtype=np.float32)
-        if 'atom_color' in data:
+        # Guard against the count==0 case: np.array([], dtype=uint8) has shape (0,)
+        # which doesn't broadcast into atom_color[:0] of shape (0, 3).
+        if 'atom_color' in data and self.count > 0:
             self.atom_color[:self.count] = np.array(data['atom_color'], dtype=np.uint8)
 
         self.rebuild_next = True
@@ -769,14 +771,20 @@ class Simulation:
                     np.float32(self.target_temp), np.float32(0.1)
                 )
             
-            # Remove particles that escaped the world
+            # Remove particles that escaped the world. Only dynamic atoms
+            # (is_static==0) are subject to this filter — static (1) and
+            # tethered (3) atoms must be retained because their positions are
+            # managed by the Compiler and sync_static_atoms_to_geometry path,
+            # and removing them would orphan tether linkage indices.
             active_x = self.pos_x[:self.count]
             active_y = self.pos_y[:self.count]
+            active_static = self.is_static[:self.count]
             w = self.world_size
             is_inside = (active_x >= 0) & (active_x <= w) & (active_y >= 0) & (active_y <= w)
-            
-            if not np.all(is_inside):
-                keep_indices = np.where(is_inside)[0]
+            keep = is_inside | (active_static != 0)
+
+            if not np.all(keep):
+                keep_indices = np.where(keep)[0]
                 self.compact_arrays(keep_indices)
                 self.rebuild_next = True
 

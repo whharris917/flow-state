@@ -716,9 +716,16 @@ class Scene:
                     obj = create_process_object(obj_data)
                     if obj:
                         scene.add_process_object(obj)
-            
+
+            # Mark topology dirty so the next update() rebuilds via the Compiler.
+            # Simulation.to_dict does not serialize tether arrays (tether_entity_idx,
+            # tether_local_pos, tether_stiffness), so atoms restored from disk have
+            # no entity coupling. The rebuild re-establishes linkage from the
+            # restored sketch geometry.
+            scene._topology_dirty = True
+
             view_state = data.get('view', None)
-            
+
             return scene, view_state, f"Scene loaded: {os.path.basename(path)}"
             
         except json.JSONDecodeError as e:

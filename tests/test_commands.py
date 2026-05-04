@@ -577,6 +577,78 @@ class TestMaxHistoryEviction:
         assert q.undo() is False
 
 
+class TestResizeWorldCommand:
+    """Wraps Simulation.resize_world so Ctrl+Z reverts a destructive resize."""
+
+    def test_execute_resizes_world(self, scene):
+        from core.commands import ResizeWorldCommand
+        cmd = ResizeWorldCommand(scene, 75.0)
+        cmd.execute()
+        assert scene.simulation.world_size == 75.0
+
+    def test_undo_restores_world_size(self, scene):
+        from core.commands import ResizeWorldCommand
+        original = scene.simulation.world_size
+        cmd = ResizeWorldCommand(scene, 75.0)
+        cmd.execute()
+        cmd.undo()
+        assert scene.simulation.world_size == original
+
+    def test_undo_restores_particles(self, scene):
+        """resize_world wipes all particles. Undo must bring them back."""
+        from core.commands import ResizeWorldCommand
+        scene.paint_particles(25.0, 25.0, radius=2.0)
+        before_count = scene.simulation.count
+        assert before_count > 0
+
+        cmd = ResizeWorldCommand(scene, 75.0)
+        cmd.execute()
+        # After resize, particles cleared
+        assert scene.simulation.count == 0
+
+        cmd.undo()
+        # Particles restored
+        assert scene.simulation.count == before_count
+
+    def test_clamps_to_minimum(self, scene):
+        from core.commands import ResizeWorldCommand
+        ResizeWorldCommand(scene, 1.0).execute()
+        assert scene.simulation.world_size == 10.0  # clamped
+
+    def test_via_scene_execute_lands_on_undo_stack(self, scene):
+        """Ctrl+Z can revert it because the command goes onto the CAD undo stack."""
+        from core.commands import ResizeWorldCommand
+        scene.execute(ResizeWorldCommand(scene, 80.0))
+        assert scene.can_undo()
+        scene.undo()
+        # After undo, world is back to default
+        import core.config as config
+        assert scene.simulation.world_size == config.DEFAULT_WORLD_SIZE
+
+    def test_resize_after_cad_undo_chain(self, scene):
+        """Ctrl+Z prefers CAD commands over physics undo. With ResizeWorldCommand
+        on the CAD stack, a single Ctrl+Z reverts the resize even when there
+        are CAD commands above it in stack order."""
+        from core.commands import ResizeWorldCommand, AddLineCommand
+
+        # 1. Resize world (goes onto CAD stack)
+        scene.execute(ResizeWorldCommand(scene, 60.0))
+        assert scene.simulation.world_size == 60.0
+        # 2. Add a line (also onto CAD stack, on top of the resize)
+        scene.execute(AddLineCommand(scene.sketch, (0, 0), (5, 0)))
+        # Stack now has [resize, line]; can_undo true
+        assert scene.can_undo()
+        # First undo pops the line
+        scene.undo()
+        assert len(scene.sketch.entities) == 0
+        # World still resized
+        assert scene.simulation.world_size == 60.0
+        # Second undo pops the resize
+        scene.undo()
+        import core.config as config
+        assert scene.simulation.world_size == config.DEFAULT_WORLD_SIZE
+
+
 class TestSetEntityGeometryDefensive:
     def test_mismatched_lengths_round_trip_is_asymmetric(self, sketch):
         """Documents current asymmetric behavior of SetEntityGeometryCommand

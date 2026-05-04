@@ -393,11 +393,6 @@ class TestBrushToolRightClick:
 
 class TestSourceTool:
     def test_two_click_workflow_creates_source(self, tool_ctx, layout):
-        """Per TU-UI: SourceTool only X-gates clicks (no Y-gate, unlike BrushTool).
-        Use config.TOP_MENU_H for the screen-space Y to be principled, even though
-        SourceTool currently doesn't enforce it. The Y-gate inconsistency is a
-        latent UI bug worth flagging in the source code (see ui/source_tool.py
-        handle_event vs ui/tools.py BrushTool.handle_event)."""
         from ui.source_tool import SourceTool
         tool = SourceTool(tool_ctx)
 
@@ -410,6 +405,24 @@ class TestSourceTool:
         tool.handle_event(make_event(pygame.MOUSEBUTTONDOWN, pos=(cx_screen + 100, cy_screen), button=1), layout)
 
         assert len(tool_ctx._app.scene.process_objects) == 1
+        assert tool.center is None
+
+    def test_click_in_top_menu_bar_is_ignored(self, tool_ctx, layout):
+        """Fixed in CR-116 EI-3: SourceTool now Y-gates clicks (matching
+        BrushTool's pattern). A click with my < TOP_MENU_H must NOT begin
+        a source-placement workflow — it would otherwise place a Source
+        anywhere on screen, including the top menu bar."""
+        from ui.source_tool import SourceTool
+        tool = SourceTool(tool_ctx)
+
+        cx_screen = layout["MID_X"] + layout["MID_W"] // 2
+        # Click above the menu bar — must be rejected
+        my_above_menu = config.TOP_MENU_H - 5
+        consumed = tool.handle_event(
+            make_event(pygame.MOUSEBUTTONDOWN, pos=(cx_screen, my_above_menu), button=1),
+            layout,
+        )
+        assert consumed is False
         assert tool.center is None
 
     def test_escape_cancels_two_click_in_progress(self, tool_ctx, layout):

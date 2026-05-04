@@ -238,23 +238,21 @@ class TestImportModelMaterialMerge:
 # ----- Latent bug: load_scene does not mark topology dirty -----------------
 
 class TestLoadSceneTopologyDirty:
-    @pytest.mark.xfail(reason="Bug: Scene.load_scene() does not set _topology_dirty after restoration. The simulation atoms are restored from to_dict(), but their tether linkage (tether_entity_idx, tether_local_pos, tether_stiffness) is NOT serialized — so on load the atoms exist but their entity coupling is lost. Setting _topology_dirty=True after load would force a rebuild() on the next update() and re-establish linkage. Captured during CR-116 TU collaboration.", strict=True)
     def test_load_scene_marks_topology_dirty_for_physical_entities(self, scene, tmp_scene_path):
-        """Per TU-SIM refinement: assert the *consequence* of the flag, not
-        just the flag value. The fix isn't just "set the flag" — it must
-        actually drive a rebuild() that re-establishes tether linkage, which
-        we verify by checking that at least one tether_entity_idx >= 0
-        post-update."""
+        """Fixed in CR-116 EI-3: Scene.load_scene() now sets _topology_dirty=True
+        at the end of restoration. Simulation.to_dict() does not serialize tether
+        arrays (tether_entity_idx, tether_local_pos, tether_stiffness), so atoms
+        restored from disk have no entity coupling. The next update() runs
+        rebuild() which re-establishes linkage from the restored sketch geometry."""
         scene.simulation._add_particle(1.0, 1.0)
         scene.sketch.add_line((0, 0), (10, 0))
         scene.sketch.entities[0].physical = True
         scene.save_scene(tmp_scene_path)
 
         loaded, _, _ = Scene.load_scene(tmp_scene_path, skip_warmup=True)
-        # Currently False; should be True so the next update() re-atomizes
         assert loaded._topology_dirty is True
         loaded.update(dt=0.016, geo_time=0.0, run_physics=False)
-        # And after rebuild, atoms must have valid tether linkage
+        # After rebuild, atoms have valid tether linkage
         sim = loaded.simulation
         valid_links = sum(1 for i in range(sim.count) if int(sim.tether_entity_idx[i]) >= 0)
         assert valid_links > 0

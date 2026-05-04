@@ -11,6 +11,7 @@ The Source's center handle participates in constraints like any Point.
 import pygame
 import math
 
+import core.config as config
 import core.utils as utils
 
 from model.process_objects import Source, SourceProperties
@@ -64,8 +65,12 @@ class SourceTool(Tool):
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             mx, my = event.pos
 
-            # Only handle clicks in the viewport
+            # Only handle clicks in the viewport (X and Y).
+            # Y-gate matches BrushTool's pattern so clicks in the top menu bar
+            # or below the viewport don't accidentally place a Source.
             if not (layout['LEFT_X'] < mx < layout['RIGHT_X']):
+                return False
+            if not (config.TOP_MENU_H < my < config.WINDOW_HEIGHT):
                 return False
 
             # Get snapped world position

@@ -219,6 +219,53 @@ class TestCoincidentJointIDs:
         assert len(ids) == 1
 
 
+class TestCompilerBoundsClip:
+    """Compiler skips atom emission for positions outside world_size.
+
+    Fixes CR-114-deferred / CR-117-candidate issue: after resize-to-smaller,
+    entities whose original world coordinates fell outside the new bounds
+    used to keep emitting atoms at those out-of-bounds positions, leaving
+    invisible "ghost walls" that affected physics. Bounds-clip approach
+    (option (a) from CR-114 Execution Comment 3): skip emission rather than
+    warn-and-keep.
+    """
+
+    def test_fully_out_of_bounds_line_emits_nothing(self, sketch, simulation, compiler):
+        # Default world is 50; line entirely outside
+        sketch.add_line((100, 100), (110, 100))
+        sketch.entities[0].physical = True
+        compiler.rebuild()
+        assert simulation.count == 0
+
+    def test_partially_out_of_bounds_line_emits_only_in_bounds_atoms(self, sketch, simulation, compiler):
+        # Default world is 50; line straddles the right boundary
+        sketch.add_line((40, 25), (60, 25))
+        sketch.entities[0].physical = True
+        compiler.rebuild()
+        # Some atoms should land in [0, 50], others outside should be skipped
+        assert simulation.count > 0
+        for i in range(simulation.count):
+            assert 0 <= simulation.pos_x[i] <= 50.0
+            assert 0 <= simulation.pos_y[i] <= 50.0
+
+    def test_negative_coordinates_clipped(self, sketch, simulation, compiler):
+        sketch.add_line((-10, 25), (10, 25))
+        sketch.entities[0].physical = True
+        compiler.rebuild()
+        for i in range(simulation.count):
+            assert simulation.pos_x[i] >= 0
+
+    def test_circle_partially_out_of_bounds_keeps_in_bounds_arc(self, sketch, simulation, compiler):
+        # Circle centered at edge: half the circumference is outside
+        sketch.add_circle((50, 25), 10.0)
+        sketch.entities[0].physical = True
+        compiler.rebuild()
+        # Some atoms emitted (the in-bounds half), but every emitted atom is in bounds
+        assert simulation.count > 0
+        for i in range(simulation.count):
+            assert 0 <= simulation.pos_x[i] <= 50.0
+
+
 class TestCompilerEdgeCases:
     def test_degenerate_line_emits_no_atoms(self, sketch, simulation, compiler):
         """Lines with length < 1e-4 are skipped to avoid divide-by-zero."""

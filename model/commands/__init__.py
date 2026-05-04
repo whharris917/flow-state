@@ -52,6 +52,11 @@ from model.commands.composite import (
     AddRectangleCommand,
 )
 
+# World-property commands (operate on Simulation, not Sketch)
+from model.commands.world import (
+    ResizeWorldCommand,
+)
+
 __all__ = [
     # Geometry
     'AddLineCommand',
@@ -76,4 +81,6 @@ __all__ = [
     # Composite
     'CompositeCommand',
     'AddRectangleCommand',
+    # World
+    'ResizeWorldCommand',
 ]

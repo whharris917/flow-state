@@ -61,6 +61,20 @@ class Compiler:
         self.sim = simulation
         self.material_manager = material_manager
 
+    def _is_in_world(self, pos):
+        """Return True if a candidate atom position is inside the simulation world.
+
+        Out-of-bounds atoms are skipped during emission (CR-116 EI-3): emitting
+        them anyway would put walls in coordinate space the physics kernel
+        treats as invalid, and Simulation.step()'s escape filter would compact
+        any non-static-or-tethered ones away on the first physics tick.
+        After resize-to-smaller, entities whose original world coordinates
+        fell outside the new bounds remain in the Sketch but no longer
+        contribute atoms.
+        """
+        w = self.sim.world_size
+        return (0.0 <= pos[0] <= w) and (0.0 <= pos[1] <= w)
+
     def rebuild(self, sketch=None):
         """
         Rebuilds the static/tethered atoms in the simulation based on the sketch.
@@ -166,6 +180,14 @@ class Compiler:
             t = k / max(1, num_atoms - 1) if num_atoms > 1 else 0.5
             pos = p1 + vec * t
 
+            # Skip atoms whose position falls outside the world bounds.
+            # The vertex_to_atom mapping is left without an entry for this
+            # (entity_idx, pt_idx) pair; _assign_joint_ids handles missing
+            # entries gracefully via its `if atom1 is not None and atom2
+            # is not None` guard.
+            if not self._is_in_world(pos):
+                continue
+
             # Record atom index before adding (for vertex-to-atom mapping)
             atom_idx = self.sim.count
 
@@ -210,6 +232,10 @@ class Compiler:
             angle = (k / num_atoms) * 2 * math.pi
             pos = w.center + np.array([math.cos(angle) * w.radius,
                                        math.sin(angle) * w.radius])
+
+            # Skip atoms outside world bounds (see _is_in_world docstring)
+            if not self._is_in_world(pos):
+                continue
 
             if w.dynamic:
                 # Tethered atom - local_pos stores angle

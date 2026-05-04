@@ -186,6 +186,8 @@ from model.commands import (
     # Composite
     CompositeCommand,
     AddRectangleCommand,
+    # World
+    ResizeWorldCommand,
 )
 
 __all__ = [
@@ -211,4 +213,5 @@ __all__ = [
     'SetDriverCommand',
     'CompositeCommand',
     'AddRectangleCommand',
+    'ResizeWorldCommand',
 ]

@@ -25,7 +25,8 @@ from core.sound_manager import SoundManager
 from core.commands import (
     RemoveEntityCommand, RemoveConstraintCommand, CompositeCommand,
     ToggleAnchorCommand, ToggleInfiniteCommand, SetPhysicalCommand,
-    SetMaterialCommand, SetDriverCommand, SetEntityDynamicCommand
+    SetMaterialCommand, SetDriverCommand, SetEntityDynamicCommand,
+    ResizeWorldCommand,
 )
 
 
@@ -208,15 +209,19 @@ class AppController:
             self._do_resize_world(val)
 
     def _do_resize_world(self, val):
-        """Apply the resize and restore Compiler-emitted atoms.
+        """Apply the resize through the Command queue so Ctrl+Z reverts it.
 
-        scene.rebuild() is required because Simulation.reset() wipes the
-        static (is_static=1) and tethered (is_static=3) atoms emitted from
-        CAD geometry. Without it, walls stop colliding until something
-        else dirties topology. Mirrors action_clear_particles precedent.
+        ResizeWorldCommand captures the pre-resize physics state (positions,
+        velocities, world_size, etc.), applies the destructive resize, and
+        runs scene.rebuild() to restore Compiler-emitted atoms. Undo restores
+        the captured state and re-emits atoms.
+
+        Going through scene.execute() is what gives Ctrl+Z the right behavior:
+        AppController.action_undo prefers scene.can_undo() over sim.undo(),
+        so without a CAD-level command the resize would only be reversible
+        when the CAD undo stack is empty.
         """
-        self.sim.resize_world(val)
-        self.scene.rebuild()
+        self.scene.execute(ResizeWorldCommand(self.scene, val))
         self.session.status.set(f"World Resized: {val}")
         self.sound_manager.play_sound('click')
 

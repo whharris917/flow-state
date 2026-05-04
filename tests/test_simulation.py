@@ -173,12 +173,15 @@ class TestSerializationRoundTrip:
         sim2.restore(d)
         assert sim2.world_size == 75.0
 
-    @pytest.mark.xfail(reason="Bug: Simulation.restore() with count==0 hits a numpy shape mismatch on atom_color (empty list vs (0,3) target). Captured during CR-116 test suite authoring; fix is a separate CR.", strict=True)
-    def test_restore_empty_simulation_xfail(self):
+    def test_restore_empty_simulation(self):
+        """Fixed in CR-116 EI-3: Simulation.restore() with count==0 used to hit
+        a numpy shape mismatch on atom_color. Now guarded — the empty case is
+        a clean no-op."""
         sim = Simulation(skip_warmup=True)
         d = sim.to_dict()
         sim2 = Simulation(skip_warmup=True)
         sim2.restore(d)
+        assert sim2.count == 0
 
 
 class TestPhysicsUndoStack:
@@ -345,19 +348,19 @@ class TestResizeArrays:
 
 # ----- Latent bug: world-escape compaction orphans tethered/static atoms ----
 
-class TestWorldEscapeBug:
-    @pytest.mark.xfail(reason="Bug: Simulation.step() compacts atoms whose pos is outside world_size REGARDLESS of is_static. A tethered or static atom that drifts out (e.g., during a drag) gets removed, orphaning the tether linkage. The escape filter at the end of step() does not gate on is_static. Captured during CR-116 TU collaboration.", strict=True)
+class TestWorldEscape:
     @pytest.mark.slow
     def test_step_preserves_out_of_bounds_tethered_atom(self):
-        """A tethered atom pushed outside world bounds must NOT be removed by step()."""
+        """Fixed in CR-116 EI-3: Simulation.step()'s escape filter now gates
+        on is_static. Static (1) and tethered (3) atoms are retained even when
+        their position is outside world_size — only dynamic atoms (is_static==0)
+        are compacted out. This prevents tether linkage orphaning when an atom
+        drifts out during a drag."""
         sim = Simulation(skip_warmup=True)
         sim.world_size = 10.0
-        # Use sync_entity_arrays for the entity setup (production path) instead of
-        # poking entity_positions/types/count manually. Per TU-SIM refinement.
         line = Line((0.0, 0.0), (10.0, 0.0))
         sim.sync_entity_arrays([line])
 
-        # Add a tethered atom and push it outside world bounds
         idx = sim._add_particle(15.0, 5.0)  # x > world_size
         sim.is_static[idx] = 3
         sim.tether_entity_idx[idx] = 0
@@ -366,6 +369,21 @@ class TestWorldEscapeBug:
 
         before = sim.count
         sim.step(steps_to_run=1)
-        # Currently this fails: the atom is compacted out by the world-bounds filter
+        # Tethered atom survives out-of-bounds step
         assert sim.count == before
         assert int(sim.tether_entity_idx[0]) == 0  # tether linkage intact
+
+    @pytest.mark.slow
+    def test_step_still_removes_out_of_bounds_dynamic_atom(self):
+        """The escape filter must STILL remove dynamic atoms (is_static==0)
+        that escape — only static/tethered atoms get the linkage protection."""
+        sim = Simulation(skip_warmup=True)
+        sim.world_size = 10.0
+        # Add a dynamic atom inside bounds, plus one outside
+        sim._add_particle(5.0, 5.0)        # inside
+        sim._add_particle(15.0, 5.0)       # outside, dynamic — should be removed
+
+        sim.step(steps_to_run=1)
+        # Out-of-bounds dynamic atom removed; in-bounds atom retained
+        assert sim.count == 1
+        assert sim.pos_x[0] == pytest.approx(5.0, abs=0.5)
