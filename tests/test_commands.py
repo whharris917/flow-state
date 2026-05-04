@@ -477,19 +477,21 @@ class TestSetEntityGeometryOnNonLines:
 
 class TestMergeGuards:
     def test_merge_does_not_cross_historize_boundaries(self, sketch):
-        """historize=False then historize=True moves on the same entity must
-        not merge — the queue must keep them as two separate stack entries
-        (well, only the historized one ends up on the stack, but the merge
-        must not happen)."""
+        """The historize=True successor must NOT absorb the historize=False
+        predecessor's dx via merge. Per TU-SKETCH refinement: the
+        non-historized predecessor was never appended to the stack in the
+        first place; what we're really pinning is that
+        MoveEntityCommand.merge guards on `other.historize == self.historize`,
+        so the historized successor's dx stays at its own value (not folded
+        with the predecessor's)."""
         sketch.add_line((0, 0), (1, 0))
         q = CommandQueue()
         q.execute(MoveEntityCommand(sketch, 0, 1.0, 0.0, historize=False))
         q.execute(MoveEntityCommand(sketch, 0, 2.0, 0.0, historize=True))
-        # Only the historized command should be on the stack
         assert len(q.undo_stack) == 1
-        # And it should NOT have been merged with the non-historized predecessor
         cmd = q.undo_stack[0]
-        assert cmd.dx == 2.0  # not 3.0
+        # If the merge guard were absent, dx would be 3.0 (1.0 + 2.0)
+        assert cmd.dx == 2.0
 
     def test_merge_does_not_cross_point_indices_mismatch(self, sketch):
         sketch.add_line((0, 0), (1, 0))
@@ -576,17 +578,28 @@ class TestMaxHistoryEviction:
 
 
 class TestSetEntityGeometryDefensive:
-    def test_mismatched_lengths_does_not_crash(self, sketch):
-        """Defensive: command iterates min(len(old_positions), len(new_positions))
-        and shouldn't raise on length mismatch."""
+    def test_mismatched_lengths_round_trip_is_asymmetric(self, sketch):
+        """Documents current asymmetric behavior of SetEntityGeometryCommand
+        when old_positions and new_positions have different lengths.
+
+        Per TU-SCENE: the implementation iterates each list independently
+        (no min(...) guard). With 1 old and 2 new positions, execute() sets
+        both points but undo() only restores point 0 — leaving point 1 stuck
+        at the new position. This is a latent issue the test pins so a future
+        fix (likely: zip-shortest or explicit length validation) starts
+        failing here.
+        """
         sketch.add_line((0, 0), (10, 0))
-        # Pass one old, two new — should not crash
-        try:
-            cmd = SetEntityGeometryCommand(
-                sketch, 0,
-                old_positions=[(0, 0)],
-                new_positions=[(5, 5), (15, 5)],
-            )
-            cmd.execute()
-        except (IndexError, ValueError):
-            pytest.fail("Command should handle length mismatch gracefully")
+        cmd = SetEntityGeometryCommand(
+            sketch, 0,
+            old_positions=[(0, 0)],
+            new_positions=[(5, 5), (15, 5)],
+        )
+        cmd.execute()
+        # Both points moved by execute()
+        assert tuple(sketch.entities[0].start) == (5.0, 5.0)
+        assert tuple(sketch.entities[0].end) == (15.0, 5.0)
+        cmd.undo()
+        # Asymmetric undo: point 0 restored, point 1 left in new position
+        assert tuple(sketch.entities[0].start) == (0.0, 0.0)
+        assert tuple(sketch.entities[0].end) == (15.0, 5.0)  # NOT restored

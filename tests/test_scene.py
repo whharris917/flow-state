@@ -28,6 +28,15 @@ class TestDirtyFlags:
         scene.execute(AddLineCommand(scene.sketch, (0, 0), (1, 0)))
         assert scene._topology_dirty is True
 
+    def test_topology_dirty_flag_drives_rebuild_through_update(self, scene):
+        """End-to-end: execute(topology cmd) → update() → flag cleared AND
+        atoms emitted. Per TU-SCENE: the dirty-flag tests verify the entry
+        point only; this test verifies the *consumption* side as well."""
+        scene.execute(AddLineCommand(scene.sketch, (0, 0), (10, 0), physical=True))
+        scene.update(dt=0.016, geo_time=0.0, run_physics=False)
+        assert scene._topology_dirty is False
+        assert scene.simulation.count > 0
+
     def test_non_topology_changing_command_sets_geometry_dirty(self, scene):
         scene.sketch.add_line((0, 0), (1, 0))
         scene._topology_dirty = False
@@ -191,18 +200,21 @@ class TestUpdateLoopOrdering:
         assert rebuild_calls == []
 
     def test_interaction_data_alone_triggers_solve(self, scene):
-        """Even with no constraints, an active User Servo must trigger solve()."""
+        """Even with no constraints, an active User Servo must trigger solve().
+
+        Per TU-UI cross-domain note: this test is a Scene-level orchestration
+        check (the Scene is allowed to mutate sketch.interaction_data — the Air
+        Gap restriction is on tools, not on Scene). The corresponding
+        tool-level facade contract is exercised in test_tool_context.py
+        (set_interaction_data writes the four documented keys).
+        """
         scene.execute(AddLineCommand(scene.sketch, (0, 0), (10, 0)))
-        # First update clears dirty flags
         scene.update(dt=0.016, geo_time=0.0, run_physics=False)
-        # Inject a User Servo target
         scene.sketch.interaction_data = {
             "entity_idx": 0, "point_idx": 1, "handle_t": None, "target": (5.0, 5.0),
         }
-        # Snapshot current end position
         end_before = scene.sketch.entities[0].end.copy()
         scene.update(dt=0.016, geo_time=0.0, run_physics=False)
-        # Solver should have moved the line's end toward the target
         assert tuple(scene.sketch.entities[0].end) != tuple(end_before)
 
 
@@ -243,10 +255,14 @@ class TestUndoRedoEagerRebuild:
         assert scene.simulation.count == 0
 
     def test_redo_eagerly_rebuilds_atoms(self, scene):
+        """TU-SCENE refinement: assert the intermediate state (count == 0 after undo)
+        so we isolate eager rebuild from incidental atom-leftover scenarios."""
         scene.execute(AddLineCommand(scene.sketch, (0, 0), (10, 0), physical=True))
         scene.update(dt=0.016, geo_time=0.0, run_physics=False)
         atom_count = scene.simulation.count
         scene.undo()
+        # Snapshot intermediate: undo's eager rebuild cleared all atoms
+        assert scene.simulation.count == 0
         scene.redo()
         # Redo's eager rebuild should restore the atoms
         assert scene.simulation.count == atom_count
@@ -336,9 +352,11 @@ class TestTwoWayCoupling:
 
     def test_tether_torque_sign_on_dynamic_line(self):
         """Push a tethered atom at a known parametric position perpendicular
-        to the line and verify the entity's torque accumulator has the correct
-        sign (right-hand rule)."""
+        to the line and verify the entity's torque accumulator has the predicted
+        sign per right-hand rule. TU-SIM refinement: assert the *sign*, not just
+        nonzero, so a flipped cross-product convention regression is caught."""
         from core.scene import Scene
+        import math
         scene = Scene(skip_warmup=True)
         scene.sketch.add_line((0, 0), (10, 0))
         scene.sketch.entities[0].physical = True
@@ -346,19 +364,32 @@ class TestTwoWayCoupling:
         scene.rebuild()
 
         sim = scene.simulation
-        # Find an atom near the right end (high t value)
+        # Find an atom near the right end (high t value) — lever arm is +x relative to COM
         candidates = [i for i in range(sim.count)
                       if sim.is_static[i] == 3 and sim.tether_local_pos[i, 0] > 0.7]
         assert candidates, "Need a tethered atom near the right end"
         idx = candidates[0]
-        # Displace in +y → restoring force is -y → at +x lever arm produces -z torque
+
+        # Capture lever arm before displacement: r = anchor - COM
+        com = scene.sketch.entities[0].get_center_of_mass()
+        anchor_x = float(sim.pos_x[idx])
+        anchor_y = float(sim.pos_y[idx])
+        rx = anchor_x - com[0]
+        ry = anchor_y - com[1]
+
+        # Displace in +y → restoring force on atom is -y → reaction on entity is +y
+        # τ = r × F_reaction; with r = (+x, 0) and F = (0, +y), τ = +x * y - 0 = positive
         sim.pos_y[idx] += 0.5
 
         sim.clear_entity_forces()
         sim.apply_tether_forces()
         forces = sim.get_entity_forces()
-        # Torque accumulator (column 2) should have the predicted sign
-        assert forces[0, 2] != 0  # any nonzero torque is the regression target
+        torque = float(forces[0, 2])
+        # The predicted sign for a +x lever arm with +y displacement is positive
+        # (atom force is -y, entity reaction is +y, torque is +x*+y = +z).
+        # Sign convention: rx > 0 → torque has same sign as the y-displacement direction
+        # of the entity reaction (which equals the y-displacement of the atom).
+        assert torque > 0, f"Predicted positive torque (rx={rx:.2f}, +y displacement); got {torque}"
 
 
 class TestMaxTetherForceClampNoNaN:
@@ -385,8 +416,12 @@ class TestMaxTetherForceClampNoNaN:
         assert np.all(np.isfinite(forces))
 
 
-class TestPaintParticlesUndoIntegration:
-    def test_paint_then_simulation_undo_restores_count(self, scene):
+class TestSimulationSnapshotUndo:
+    """Renamed per TU-SIM: this exercises raw snapshot/undo on the Simulation,
+    not an integration with the BrushTool path. The Brush tool's snapshot
+    integration is tested separately in test_tools.py."""
+
+    def test_manual_snapshot_then_paint_then_undo_restores_count(self, scene):
         sim = scene.simulation
         sim.snapshot()
         scene.paint_particles(25.0, 25.0, radius=2.0)
@@ -399,15 +434,16 @@ class TestPaintParticlesUndoIntegration:
 # ----- CompositeCommand topology declaration -------------------------------
 
 class TestCompositeCommandTopology:
-    def test_generic_composite_does_not_inherit_changes_topology(self, scene):
-        """Generic CompositeCommand has no changes_topology attribute by default;
-        Scene.execute treats it as a geometry-only change. Documents the contract:
-        topology declarations must be explicit on subclasses (like AddRectangleCommand)."""
+    def test_generic_composite_inherits_false_changes_topology(self, scene):
+        """Generic CompositeCommand inherits changes_topology=False from the
+        Command base class; Scene.execute treats it as a geometry-only change.
+        Documents the contract: topology declarations must be explicitly set
+        on subclasses (like AddRectangleCommand) to opt into rebuild."""
         from core.commands import CompositeCommand, AddLineCommand
         cmds = [AddLineCommand(scene.sketch, (0, 0), (1, 0), historize=False)]
         comp = CompositeCommand(cmds, "test")
-        # Generic composite — changes_topology defaults to False (or absent)
-        assert getattr(comp, "changes_topology", False) is False
+        # Inherits Command.changes_topology = False
+        assert comp.changes_topology is False
         scene.execute(comp)
         # Without changes_topology, Scene marks geometry_dirty (not topology_dirty)
         assert scene._topology_dirty is False

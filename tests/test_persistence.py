@@ -77,11 +77,20 @@ class TestSceneSaveLoad:
         assert source.properties.rate == 15.0
 
     def test_view_state_preserved(self, scene, tmp_scene_path):
+        """Per TU-UI: round-trip the loaded view through CameraController so the
+        camera's serialization contract is exercised end-to-end, not just
+        dict-equality on the raw dict."""
+        from core.camera import CameraController
         _prime_scene_with_particle(scene)
         view = {"zoom": 2.0, "pan_x": 100.0, "pan_y": 50.0}
         scene.save_scene(tmp_scene_path, view_state=view)
         _, loaded_view, _ = Scene.load_scene(tmp_scene_path, skip_warmup=True)
-        assert loaded_view == view
+
+        cam = CameraController()
+        cam.set_view_state(loaded_view)
+        assert cam.zoom == 2.0
+        assert cam.pan_x == 100.0
+        assert cam.pan_y == 50.0
 
     def test_load_invalid_format_returns_error(self, tmp_path):
         bad_path = tmp_path / "bad.scn"
@@ -150,17 +159,31 @@ class TestPhysicalDynamicFlagsRoundTrip:
         assert loaded.sketch.entities[0].physical is True
 
     def test_dynamic_flag_survives_scn_round_trip(self, scene, tmp_scene_path):
-        scene.simulation._add_particle(1.0, 1.0)
+        """Per TU-SIM: rebuild the compiler before saving so the saved file
+        actually contains tethered atoms. This makes the test exercise both
+        the entity-flag round-trip AND the saved-with-atoms scenario.
+        (The downstream tether-linkage gap is captured by the load_scene
+        topology_dirty xfail in this same file.)
+
+        Note: Compiler auto-bumps dynamic-entity mass to ensure the entity is
+        heavier than its atoms (see Compiler._compile_line ENTITY_MASS_MULTIPLIER).
+        We capture the post-rebuild mass and round-trip *that*, since the user-
+        supplied mass is overridden if too low.
+        """
         scene.sketch.add_line((0, 0), (10, 0))
         scene.sketch.entities[0].physical = True
         scene.sketch.entities[0].dynamic = True
         scene.sketch.entities[0].mass = 25.0
+        scene.rebuild()
+        assert scene.simulation.count > 0
+        # Capture the (possibly auto-bumped) mass after rebuild
+        expected_mass = scene.sketch.entities[0].mass
         scene.save_scene(tmp_scene_path)
 
         loaded, _, _ = Scene.load_scene(tmp_scene_path, skip_warmup=True)
         line = loaded.sketch.entities[0]
         assert line.dynamic is True
-        assert line.mass == 25.0
+        assert line.mass == expected_mass
 
 
 class TestCoincidentInScnRoundTrip:
@@ -197,16 +220,19 @@ class TestProcessObjectHandleIdentity:
 
 class TestImportModelMaterialMerge:
     def test_import_brings_in_custom_materials(self, scene, tmp_model_path):
+        """Per TU-SKETCH: also assert material *properties* round-tripped, not
+        just the name registration. A buggy import that creates an empty
+        Custom material with default fields would otherwise pass."""
         from model.properties import Material
         scene.sketch.materials["Custom"] = Material("Custom", color=(123, 45, 6))
         scene.sketch.add_line((0, 0), (5, 0), material_id="Custom")
         scene.save_model(tmp_model_path)
 
         target = Scene(skip_warmup=True)
-        # No "Custom" material yet
         assert "Custom" not in target.sketch.materials
         target.import_model(tmp_model_path)
         assert "Custom" in target.sketch.materials
+        assert tuple(target.sketch.materials["Custom"].color) == (123, 45, 6)
 
 
 # ----- Latent bug: load_scene does not mark topology dirty -----------------
@@ -214,6 +240,11 @@ class TestImportModelMaterialMerge:
 class TestLoadSceneTopologyDirty:
     @pytest.mark.xfail(reason="Bug: Scene.load_scene() does not set _topology_dirty after restoration. The simulation atoms are restored from to_dict(), but their tether linkage (tether_entity_idx, tether_local_pos, tether_stiffness) is NOT serialized — so on load the atoms exist but their entity coupling is lost. Setting _topology_dirty=True after load would force a rebuild() on the next update() and re-establish linkage. Captured during CR-116 TU collaboration.", strict=True)
     def test_load_scene_marks_topology_dirty_for_physical_entities(self, scene, tmp_scene_path):
+        """Per TU-SIM refinement: assert the *consequence* of the flag, not
+        just the flag value. The fix isn't just "set the flag" — it must
+        actually drive a rebuild() that re-establishes tether linkage, which
+        we verify by checking that at least one tether_entity_idx >= 0
+        post-update."""
         scene.simulation._add_particle(1.0, 1.0)
         scene.sketch.add_line((0, 0), (10, 0))
         scene.sketch.entities[0].physical = True
@@ -222,3 +253,8 @@ class TestLoadSceneTopologyDirty:
         loaded, _, _ = Scene.load_scene(tmp_scene_path, skip_warmup=True)
         # Currently False; should be True so the next update() re-atomizes
         assert loaded._topology_dirty is True
+        loaded.update(dt=0.016, geo_time=0.0, run_physics=False)
+        # And after rebuild, atoms must have valid tether linkage
+        sim = loaded.simulation
+        valid_links = sum(1 for i in range(sim.count) if int(sim.tether_entity_idx[i]) >= 0)
+        assert valid_links > 0

@@ -331,12 +331,16 @@ class TestResizeArrays:
             assert simulation.tether_stiffness[i] == pytest.approx(float(i))
 
     def test_new_slots_have_default_values(self, simulation):
-        """After resize, new slots must have correct defaults (esp. tether_entity_idx=-1)."""
-        # Add one particle, then force resize
+        """After resize, slots in the *freshly allocated* half must have the
+        manually-set defaults (tether_entity_idx=-1). Per TU-SIM: slot 100 was
+        already initialized to -1 by __init__, so probing it after resize
+        proves nothing about the resize path. Probe in the new half instead."""
+        old_capacity = simulation.capacity
         simulation._add_particle(1.0, 1.0)
         simulation._resize_arrays()
-        # Slots beyond count should have the manually-set defaults
-        assert int(simulation.tether_entity_idx[100]) == -1
+        # Slot is in the freshly allocated upper half — only present after resize
+        new_slot = old_capacity + 100
+        assert int(simulation.tether_entity_idx[new_slot]) == -1
 
 
 # ----- Latent bug: world-escape compaction orphans tethered/static atoms ----
@@ -348,17 +352,17 @@ class TestWorldEscapeBug:
         """A tethered atom pushed outside world bounds must NOT be removed by step()."""
         sim = Simulation(skip_warmup=True)
         sim.world_size = 10.0
+        # Use sync_entity_arrays for the entity setup (production path) instead of
+        # poking entity_positions/types/count manually. Per TU-SIM refinement.
+        line = Line((0.0, 0.0), (10.0, 0.0))
+        sim.sync_entity_arrays([line])
+
         # Add a tethered atom and push it outside world bounds
         idx = sim._add_particle(15.0, 5.0)  # x > world_size
         sim.is_static[idx] = 3
         sim.tether_entity_idx[idx] = 0
         sim.tether_local_pos[idx, 0] = 0.5
         sim.tether_stiffness[idx] = 10000.0
-
-        # Need a corresponding entity for the tether kernel; just sync zero
-        sim.entity_count = 1
-        sim.entity_positions[0] = [0, 0, 10, 0]
-        sim.entity_types[0] = 0  # LINE
 
         before = sim.count
         sim.step(steps_to_run=1)

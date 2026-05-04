@@ -171,10 +171,12 @@ class TestSolverBackends:
 
 class TestUserServo:
     def test_endpoint_drag_with_anchored_opposite_rotates_about_anchor(self, sketch):
-        """Endpoint drag with the other end anchored produces rotation."""
+        """Endpoint drag with the other end anchored produces rotation, not pure translation.
+        TU-SKETCH refinement: assert the rotational character explicitly — anchored start
+        unchanged AND the angle between start→end has shifted from horizontal."""
+        import math
         sketch.add_line((0, 0), (10, 0))
         sketch.entities[0].anchored = [True, False]
-        # Inject a User Servo target pulling end (idx 1) up to (5, 5)
         sketch.interaction_data = {
             "entity_idx": 0,
             "point_idx": 1,
@@ -182,15 +184,12 @@ class TestUserServo:
             "target": (5.0, 5.0),
         }
         sketch.solve()
-        # Anchored start should not have moved
+        # Anchor invariant
         assert tuple(sketch.entities[0].start) == (0.0, 0.0)
-        # End should have moved toward (5,5) — the line rotates about the anchor
-        # The line stretches; we just verify the end is now closer to the target
-        # than the original (10, 0) was.
+        # Rotation invariant: the line is no longer horizontal
         end = sketch.entities[0].end
-        d_to_target = ((end[0] - 5) ** 2 + (end[1] - 5) ** 2) ** 0.5
-        d_orig = ((10 - 5) ** 2 + (0 - 5) ** 2) ** 0.5
-        assert d_to_target < d_orig
+        ang = abs(math.atan2(end[1] - 0.0, end[0] - 0.0))
+        assert ang > 0.1  # measurably rotated from the original 0-radian heading
 
     def test_body_drag_with_handle_t_translates_line(self, sketch):
         """Body drag at handle_t=0.5 translates the line so the midpoint lands at the target."""
@@ -218,8 +217,9 @@ class TestUserServo:
         # Clear servo and solve again with no constraints
         sketch.interaction_data = None
         sketch.solve()
-        # Without an active servo, geometry should be stable across the solve
-        assert tuple(sketch.entities[0].end) == tuple(end_after_drag)
+        # Tolerance-based equality survives future damping/refactors
+        assert sketch.entities[0].end[0] == pytest.approx(end_after_drag[0], abs=1e-9)
+        assert sketch.entities[0].end[1] == pytest.approx(end_after_drag[1], abs=1e-9)
 
 
 # ----- Combined network convergence -----------------------------------------
@@ -246,8 +246,15 @@ class TestCombinedConstraints:
 class TestCoincidentPointOnEntity:
     def test_point_pulled_to_circle_center(self, sketch):
         """For Circles, COINCIDENT-with-entity drives the point to the circle's
-        center (the circle's "anchor"), not to the circumference. Documents the
-        current solver behavior — the second `_solve_coincident_pt_ent` rule."""
+        center (the circle's "anchor"), not to the circumference. Documents
+        current solver behavior — the second `_solve_coincident_pt_ent` rule.
+
+        NOTE: TU-SKETCH flagged this semantics as surprising — coincident-with-circle
+        pulling to center rather than nearest-point-on-circumference. If this is
+        intended (treating "the entity itself" as its anchor point), the test pins
+        it; if it's actually a latent bug, the future fix will need to flip this
+        test (and TU-SKETCH would xfail it then). Keeping as a behavior pin for now.
+        """
         from model.geometry import Point
         from model.constraints import Coincident
         sketch.add_circle((5, 5), 3.0)

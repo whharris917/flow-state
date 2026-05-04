@@ -1,12 +1,10 @@
-"""Tests for the input dispatch order — System → Modal → Global → HUD.
+"""Tests for modal absorption and UI-tree reset behavior.
 
-The full InputHandler requires a wired AppController; these tests cover the
-*invariants* of the dispatch chain by exercising widget-level absorption
-behavior with a real ConfirmDialog standing in for the modal layer.
-
-The intent: pin the System→Modal→Global→HUD ordering documented in §6.2,
-which is most readily observed at the dialog level (a modal must absorb
-KEYDOWN events so global hotkeys don't trigger).
+Per TU-UI: these tests verify *widget-level* event absorption (a modal
+ConfirmDialog absorbs key/mouse events that would otherwise leak to global
+hotkeys). They do NOT verify the InputHandler's actual System→Modal→Global→HUD
+dispatch ordering — that requires a wired AppController and is out of scope
+for the current headless harness. Tests below were renamed accordingly.
 """
 
 import pygame
@@ -16,7 +14,7 @@ from ui.ui_widgets import ConfirmDialog, Button, UIContainer
 from tests.conftest import make_event
 
 
-class TestModalAbsorption:
+class TestConfirmDialogAbsorption:
     def test_modal_absorbs_arbitrary_keydown(self):
         """A live ConfirmDialog must consume any KEYDOWN so it cannot leak
         through to the Global hotkey layer behind it."""

@@ -82,12 +82,16 @@ class TestStaticAtomEmission:
             assert 0.0 <= simulation.pos_x[i] <= 10.001
 
     def test_static_atom_records_tether_entity_idx(self, sketch, simulation, compiler):
+        """Each static atom records its parent entity. Multi-entity check ensures
+        the test would fail under a constant-0 trivial implementation."""
         sketch.add_line((0, 0), (10, 0))
-        sketch.entities[0].physical = True
+        sketch.add_line((0, 20), (10, 20))
+        for e in sketch.entities:
+            e.physical = True
         compiler.rebuild()
-        for i in range(simulation.count):
-            # Static atoms still record entity_idx for sync_static_atoms_to_geometry
-            assert simulation.tether_entity_idx[i] == 0
+        # Atoms should partition between entity 0 and entity 1
+        idx_set = set(int(simulation.tether_entity_idx[i]) for i in range(simulation.count))
+        assert idx_set == {0, 1}
 
 
 class TestTetheredAtomEmission:
@@ -226,7 +230,10 @@ class TestCompilerEdgeCases:
     def test_single_atom_line_records_both_vertex_indices(self, sketch, simulation, compiler):
         """A line short enough to produce num_atoms == 1: both pt_idx 0 and
         pt_idx 1 in _vertex_to_atom map to the same atom (Compiler internal
-        invariant). The COINCIDENT joint_id assignment should still work."""
+        invariant). The COINCIDENT joint_id assignment should still pair the
+        single atom of line-0 with the start atom of line-1 in the SAME group.
+        Strengthened per TU-SIM: assert the atoms share a joint_id, not just
+        that one was assigned."""
         from model.properties import Material
         # Wall material has spacing = 0.7 * sigma = 0.7. A line of length 0.05
         # produces num_atoms = max(1, int(0.05/0.7) + 1) = 1.
@@ -234,9 +241,14 @@ class TestCompilerEdgeCases:
         sketch.add_line((0.05, 0), (5, 0))
         for e in sketch.entities:
             e.physical = True
-        # Coincident between line-0's end and line-1's start
         sketch.add_constraint_object(Coincident(0, 1, 1, 0), solve=False)
         compiler.rebuild()
-        # Should still produce a joint group between the single atom of line-0
-        # and the start atom of line-1 — verify at least one atom got a joint_id
-        assert int(np.sum(simulation.joint_ids[:simulation.count] != 0)) >= 1
+        # Locate the single atom of line-0 (first atom emitted) and the start atom of line-1
+        # (the second emission since line-0 contributed exactly one).
+        atom_l0 = 0
+        atom_l1_start = 1
+        # They should share a non-zero joint_id (same group).
+        joint_l0 = int(simulation.joint_ids[atom_l0])
+        joint_l1 = int(simulation.joint_ids[atom_l1_start])
+        assert joint_l0 != 0
+        assert joint_l0 == joint_l1

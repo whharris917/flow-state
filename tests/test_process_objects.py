@@ -178,15 +178,18 @@ class TestSourceRateGuards:
 class TestSourceVelocitySampling:
     def test_directional_bias_produces_rightward_mean(self):
         """With injection_direction=0 (rightward) and a tight spread, mean vx > 0
-        and mean vy ≈ 0."""
+        and mean vy ≈ 0. Seeded for determinism per TU-SIM."""
         import numpy as np
+        import random
+        random.seed(42)
+        np.random.seed(42)
+
         sim = Simulation(skip_warmup=True)
         sim.world_size = 100.0
         source = Source((50, 50), 5.0, SourceProperties(
             rate=10000.0, temperature=1.0, mass=1.0,
             injection_direction=0.0, injection_spread=0.5,
         ))
-        # Run multiple frames to gather a sample
         for _ in range(5):
             source.execute(sim, dt=1.0)
         assert sim.count > 10
@@ -196,7 +199,15 @@ class TestSourceVelocitySampling:
         assert abs(vy_mean) < 0.5
 
     def test_isotropic_spread_produces_balanced_directions(self):
+        """Per TU-SIM: seed both numpy and Python random so the test is
+        deterministic. The 1.0 threshold was chosen for a sample size of
+        ~100+ at unit temperature/mass; the seeded harness ensures we don't
+        rely on luck."""
         import numpy as np
+        import random
+        random.seed(42)
+        np.random.seed(42)
+
         sim = Simulation(skip_warmup=True)
         sim.world_size = 100.0
         source = Source((50, 50), 5.0, SourceProperties(

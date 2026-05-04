@@ -104,13 +104,20 @@ class TestPanControls:
 
 class TestStoredViews:
     def test_default_views_per_mode(self):
+        """Constructor pre-populates SIM and EDITOR with sensible defaults.
+        Per TU-UI: read defaults from the camera's own pre-populated dict
+        rather than hardcoding 1.0/1.5, so cosmetic UX tuning doesn't break
+        this test for the wrong reason."""
         cam = CameraController()
-        # Constructor pre-populates SIM and EDITOR with sensible defaults
+        sim_default = cam._stored_views[config.MODE_SIM]["zoom"]
+        editor_default = cam._stored_views[config.MODE_EDITOR]["zoom"]
         cam.zoom = 999.0
         cam.restore_view(config.MODE_SIM)
-        assert cam.zoom == 1.0
+        assert cam.zoom == sim_default
         cam.restore_view(config.MODE_EDITOR)
-        assert cam.zoom == 1.5
+        assert cam.zoom == editor_default
+        # And SIM and EDITOR should be different (otherwise the per-mode mechanism is broken)
+        assert sim_default != editor_default
 
     def test_store_then_restore_round_trip(self):
         cam = CameraController()
