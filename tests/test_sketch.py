@@ -178,3 +178,92 @@ class TestSerialization:
         new_sketch.restore(d)
         assert len(new_sketch.constraints) == 1
         assert new_sketch.constraints[0].type == "LENGTH"
+
+    def test_restore_preserves_active_driver(self, sketch):
+        sketch.add_line((0, 0), (10, 0))
+        sketch.add_constraint_object(Length(0, 5.0), solve=False)
+        # Prime a driver with explicit base_value/base_time so to_dict captures them
+        sketch.constraints[0].driver = {"type": "sin", "amp": 1.0, "freq": 1.0, "phase": 0.0}
+        sketch.constraints[0].base_value = 5.0
+        sketch.constraints[0].base_time = 2.0
+        d = sketch.to_dict()
+
+        new_sketch = Sketch()
+        new_sketch.restore(d)
+        c = new_sketch.constraints[0]
+        assert c.driver is not None
+        assert c.driver["type"] == "sin"
+        assert c.base_value == 5.0
+        assert c.base_time == 2.0
+
+
+class TestRemoveEntityIndexShift:
+    def test_coincident_tuple_indices_shift_correctly(self, sketch):
+        sketch.add_line((0, 0), (1, 0))   # 0 — to be removed
+        sketch.add_line((1, 0), (2, 0))   # 1 — survives, becomes 0
+        sketch.add_line((2, 0), (3, 0))   # 2 — survives, becomes 1
+        # Coincident between line 1's end and line 2's start
+        sketch.add_constraint_object(Coincident(1, 1, 2, 0), solve=False)
+        sketch.remove_entity(0)
+        # Tuple-form indices should both shift down by one
+        assert sketch.constraints[0].indices == [(0, 1), (1, 0)]
+
+    def test_midpoint_mixed_indices_shift_correctly(self, sketch):
+        from model.constraints import Midpoint
+        from model.geometry import Point
+        sketch.add_line((0, 0), (1, 0))   # 0 — to be removed
+        sketch.add_line((2, 0), (12, 0))  # 1 — survives, becomes 0
+        sketch.entities.append(Point(5, 5))  # 2 — survives, becomes 1
+        # Midpoint constrains point at idx 2 to lie on line at idx 1
+        sketch.add_constraint_object(Midpoint(2, 0, 1), solve=False)
+        sketch.remove_entity(0)
+        # Tuple part (point) shifts; scalar part (line ref) also shifts
+        assert sketch.constraints[0].indices == [(1, 0), 0]
+
+
+class TestConstraintConflictNuance:
+    def test_horizontal_then_parallel_on_overlapping_set_keeps_both(self, sketch):
+        from model.constraints import Angle
+        sketch.add_line((0, 0), (1, 0))
+        sketch.add_line((0, 1), (1, 2))
+        sketch.add_constraint_object(Angle("HORIZONTAL", 0), solve=False)
+        sketch.add_constraint_object(Angle("PARALLEL", 0, 1), solve=False)
+        # Index sets {0} vs {0,1} differ, so neither replaces the other under
+        # the angle-conflict rule. Documents the current behavior.
+        types = sorted(c.type for c in sketch.constraints)
+        assert types == ["HORIZONTAL", "PARALLEL"]
+
+
+class TestAnchorBehavior:
+    def test_fully_anchored_line_holds_under_length(self, sketch):
+        sketch.add_line((0, 0), (10, 0))
+        sketch.entities[0].anchored = [True, True]
+        # Both endpoints anchored — Length cannot move them. Should not crash.
+        sketch.add_constraint_object(Length(0, 99.0))
+        assert tuple(sketch.entities[0].start) == (0.0, 0.0)
+        assert tuple(sketch.entities[0].end) == (10.0, 0.0)
+
+
+class TestTryCreateConstraint:
+    def test_length_on_line_returns_length(self, sketch):
+        sketch.add_line((0, 0), (5, 0))
+        c = sketch.try_create_constraint("LENGTH", [0], [])
+        assert c is not None
+        assert c.type == "LENGTH"
+
+    def test_length_on_circle_returns_radius(self, sketch):
+        sketch.add_circle((5, 5), 3.0)
+        c = sketch.try_create_constraint("LENGTH", [0], [])
+        # CONSTRAINT_DEFS['LENGTH'] has two rules; the Circle path returns Radius
+        assert c is not None
+        assert c.type == "RADIUS"
+
+    def test_radius_on_line_returns_none(self, sketch):
+        sketch.add_line((0, 0), (5, 0))
+        c = sketch.try_create_constraint("RADIUS", [0], [])
+        assert c is None
+
+    def test_parallel_with_one_entity_returns_none(self, sketch):
+        sketch.add_line((0, 0), (5, 0))
+        c = sketch.try_create_constraint("PARALLEL", [0], [])
+        assert c is None  # PARALLEL needs 2 entities

@@ -181,3 +181,62 @@ class TestCoincidentJointIDs:
         compiler.rebuild()
         # Without coincidents, no atom should have a non-zero joint_id
         assert int(np.sum(simulation.joint_ids[:simulation.count] != 0)) == 0
+
+    def test_dsu_transitivity_three_way_chain(self, sketch, simulation, compiler):
+        """Three coincidents A.end~B.start, B.end~C.start should produce
+        TWO distinct joint groups (A-B, B-C are separate vertices on B)."""
+        sketch.add_line((0, 0), (5, 0))    # 0
+        sketch.add_line((5, 0), (10, 0))   # 1
+        sketch.add_line((10, 0), (15, 0))  # 2
+        for e in sketch.entities:
+            e.physical = True
+        sketch.add_constraint_object(Coincident(0, 1, 1, 0), solve=False)
+        sketch.add_constraint_object(Coincident(1, 1, 2, 0), solve=False)
+        compiler.rebuild()
+        # Collect non-zero joint IDs
+        ids = sorted(set(int(j) for j in simulation.joint_ids[:simulation.count] if j != 0))
+        # Two distinct groups expected
+        assert len(ids) == 2
+
+    def test_dsu_transitivity_three_way_overlapping_vertex(self, sketch, simulation, compiler):
+        """If A.end~B.start AND A.end~C.start (both coincident with the same
+        vertex on A), all three atoms should share ONE joint group via DSU
+        transitivity."""
+        sketch.add_line((0, 0), (5, 0))
+        sketch.add_line((5, 0), (10, 0))
+        sketch.add_line((5, 0), (5, 5))
+        for e in sketch.entities:
+            e.physical = True
+        sketch.add_constraint_object(Coincident(0, 1, 1, 0), solve=False)
+        sketch.add_constraint_object(Coincident(0, 1, 2, 0), solve=False)
+        compiler.rebuild()
+        ids = sorted(set(int(j) for j in simulation.joint_ids[:simulation.count] if j != 0))
+        # All three start/end vertices share the same joint via DSU
+        assert len(ids) == 1
+
+
+class TestCompilerEdgeCases:
+    def test_degenerate_line_emits_no_atoms(self, sketch, simulation, compiler):
+        """Lines with length < 1e-4 are skipped to avoid divide-by-zero."""
+        sketch.add_line((1.0, 1.0), (1.0 + 1e-6, 1.0))
+        sketch.entities[0].physical = True
+        compiler.rebuild()
+        assert simulation.count == 0
+
+    def test_single_atom_line_records_both_vertex_indices(self, sketch, simulation, compiler):
+        """A line short enough to produce num_atoms == 1: both pt_idx 0 and
+        pt_idx 1 in _vertex_to_atom map to the same atom (Compiler internal
+        invariant). The COINCIDENT joint_id assignment should still work."""
+        from model.properties import Material
+        # Wall material has spacing = 0.7 * sigma = 0.7. A line of length 0.05
+        # produces num_atoms = max(1, int(0.05/0.7) + 1) = 1.
+        sketch.add_line((0, 0), (0.05, 0))
+        sketch.add_line((0.05, 0), (5, 0))
+        for e in sketch.entities:
+            e.physical = True
+        # Coincident between line-0's end and line-1's start
+        sketch.add_constraint_object(Coincident(0, 1, 1, 0), solve=False)
+        compiler.rebuild()
+        # Should still produce a joint group between the single atom of line-0
+        # and the start atom of line-1 — verify at least one atom got a joint_id
+        assert int(np.sum(simulation.joint_ids[:simulation.count] != 0)) >= 1

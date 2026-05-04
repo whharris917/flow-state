@@ -27,10 +27,23 @@ Tests are headless. Pygame runs against the dummy SDL driver (set in `conftest.p
 |------|-----------|----------------|
 | `test_camera.py` | `core/camera.py` | View transforms, zoom clamping, pan accumulation, stored views per mode, view-state dict round-trip |
 | `test_selection.py` | `core/selection.py` | Entity / point selection, toggle semantics, `remap_after_deletion` index shifting, dict round-trip |
-| `test_session.py` | `core/session.py` | Defaults, tool activate/deactivate, per-mode tool memory, `clear_interaction_state` |
+| `test_session.py` | `core/session.py` | Defaults, tool activate/deactivate, per-mode tool memory, `clear_interaction_state`, mid-drag tool switch, `focused_element` lifecycle |
 | `test_utils_transforms.py` | `core/utils.py` | `screen_to_sim` ↔ `sim_to_screen` inverse, pan/zoom effects, `get_connected_group` (incl. transitive COINCIDENT chains), `is_group_anchored` |
-| `test_widgets.py` | `ui/ui_widgets.py` | UIElement / UIContainer position propagation; Button click vs drag-off semantics, toggle, disabled, hover; InputField cursor + typing + arrow keys; ContextMenu option dispatch; ConfirmDialog (Enter-confirms / Enter-cancels-when-destructive / Escape always cancels / modal key absorption) |
-| `test_tools.py` | `ui/tools.py` | LineTool / RectTool / CircleTool / PointTool / BrushTool / SelectTool — drag → finalize, supersede yields one-undo-step, click-click mode, cancel discards preview, mode-gating (BrushTool sim-only), entity hit-test selection |
+| `test_constraint_builder.py` | `core/constraint_builder.py` | State machine: start / add_wall / add_point / reset / check_ready, multi/binary flags, `try_build_command` auto-trim |
+| `test_tool_context.py` | `core/tool_context.py` | Air Gap facade integrity: reflective sweep for model-object leaks, underscore-only escape hatches, Servo facade four-key contract, `get_active_material` returns a copy, `iter_entities` yields read-only views |
+| `test_widgets.py` | `ui/ui_widgets.py` | UIElement / UIContainer position propagation; Button click vs drag-off semantics, toggle, disabled (does not consume), hover; InputField cursor + typing + arrow keys + click-outside deactivation; ContextMenu option dispatch; ConfirmDialog (Enter-confirms / Enter-cancels-when-destructive / Escape always cancels / modal key absorption) |
+| `test_tools.py` | `ui/tools.py`, `ui/source_tool.py` | Line / Rect / Circle / Point / Brush / Select tool state machines via FakeApp + ToolContext; SelectTool MOVE_WALL cancel preserves geometry (PROP-2025-001); LineTool click-click cancel; BrushTool right-click; SourceTool two-click workflow + ESC cancel |
+| `test_input_dispatch.py` | dispatch invariants | Modal-stack absorption (key/mouse events absorbed by `ConfirmDialog` while open, including Ctrl+Z); `reset_interaction_state` recursion through nested UIContainers |
+
+## Documented latent bugs (xfail, strict=True)
+
+Three known bugs are pinned as `@pytest.mark.xfail(strict=True)` so they will start failing as soon as someone fixes them — forcing removal of the marker. Each is a candidate for a separate small CR.
+
+| Test | Bug |
+|------|-----|
+| `test_simulation.py::test_restore_empty_simulation_xfail` | `Simulation.restore()` with `count==0` hits a numpy shape mismatch on `atom_color` (empty list vs `(0, 3)` target). Surfaced during initial suite authoring. |
+| `test_simulation.py::test_step_preserves_out_of_bounds_tethered_atom` | `Simulation.step()` compacts atoms whose position is outside `world_size` regardless of `is_static`. A tethered or static atom that drifts out (e.g., during a drag) is removed, orphaning the tether linkage. The escape filter at the end of `step()` should gate on `is_static`. Surfaced via TU-SIM. |
+| `test_persistence.py::test_load_scene_marks_topology_dirty_for_physical_entities` | `Scene.load_scene()` does not set `_topology_dirty` after restoration. Tether linkage (`tether_entity_idx`, `tether_local_pos`, `tether_stiffness`) is not in `Simulation.to_dict()`, so atoms exist but their entity coupling is lost on load. Setting `_topology_dirty=True` after load would force a `rebuild()` on the next `update()` and re-establish linkage. Surfaced via TU-SCENE. |
 
 ## What's *not* covered
 

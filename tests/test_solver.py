@@ -134,3 +134,191 @@ class TestSolverBackends:
         sketch.add_line((0, 0), (1, 0))
         sketch.add_constraint_object(Length(0, 3.0))
         assert _line_length(sketch.entities[0]) == pytest.approx(3.0, abs=0.05)
+
+    def test_empty_constraint_list_is_noop_legacy(self, sketch):
+        sketch.use_numba = False
+        sketch.solve()  # No entities, no constraints — must not raise
+
+    def test_empty_constraint_list_is_noop_numba(self, sketch):
+        sketch.use_numba = True
+        sketch.solve()
+
+    @pytest.mark.slow
+    def test_numba_legacy_parity_combined_network(self, sketch):
+        """Both backends should converge to within tolerance on the same network."""
+        # Build identical sketch geometry twice
+        from model.sketch import Sketch
+        from model.constraints import Angle
+
+        def build_and_solve(use_numba):
+            s = Sketch()
+            s.use_numba = use_numba
+            s.add_line((0, 0), (1, 0))
+            s.add_line((1, 0), (1, 1))
+            s.entities[0].anchored = [True, True]
+            s.add_constraint_object(Angle("PERPENDICULAR", 0, 1), solve=False)
+            s.add_constraint_object(Length(1, 5.0))
+            return s.entities[1].end.copy()
+
+        legacy = build_and_solve(False)
+        numba = build_and_solve(True)
+        # Positions should match within solver tolerance
+        assert abs(legacy[0] - numba[0]) < 0.1
+        assert abs(legacy[1] - numba[1]) < 0.1
+
+
+# ----- User Servo (interaction_data) ----------------------------------------
+
+class TestUserServo:
+    def test_endpoint_drag_with_anchored_opposite_rotates_about_anchor(self, sketch):
+        """Endpoint drag with the other end anchored produces rotation."""
+        sketch.add_line((0, 0), (10, 0))
+        sketch.entities[0].anchored = [True, False]
+        # Inject a User Servo target pulling end (idx 1) up to (5, 5)
+        sketch.interaction_data = {
+            "entity_idx": 0,
+            "point_idx": 1,
+            "handle_t": None,
+            "target": (5.0, 5.0),
+        }
+        sketch.solve()
+        # Anchored start should not have moved
+        assert tuple(sketch.entities[0].start) == (0.0, 0.0)
+        # End should have moved toward (5,5) — the line rotates about the anchor
+        # The line stretches; we just verify the end is now closer to the target
+        # than the original (10, 0) was.
+        end = sketch.entities[0].end
+        d_to_target = ((end[0] - 5) ** 2 + (end[1] - 5) ** 2) ** 0.5
+        d_orig = ((10 - 5) ** 2 + (0 - 5) ** 2) ** 0.5
+        assert d_to_target < d_orig
+
+    def test_body_drag_with_handle_t_translates_line(self, sketch):
+        """Body drag at handle_t=0.5 translates the line so the midpoint lands at the target."""
+        sketch.add_line((0, 0), (10, 0))
+        sketch.interaction_data = {
+            "entity_idx": 0,
+            "point_idx": None,
+            "handle_t": 0.5,
+            "target": (5.0, 5.0),
+        }
+        sketch.solve()
+        # Midpoint should now be ~ (5, 5)
+        line = sketch.entities[0]
+        mid = (line.start + line.end) / 2.0
+        assert mid[0] == pytest.approx(5.0, abs=0.5)
+        assert mid[1] == pytest.approx(5.0, abs=0.5)
+
+    def test_clearing_interaction_data_stops_servo(self, sketch):
+        sketch.add_line((0, 0), (10, 0))
+        sketch.interaction_data = {
+            "entity_idx": 0, "point_idx": 1, "handle_t": None, "target": (5, 5),
+        }
+        sketch.solve()
+        end_after_drag = sketch.entities[0].end.copy()
+        # Clear servo and solve again with no constraints
+        sketch.interaction_data = None
+        sketch.solve()
+        # Without an active servo, geometry should be stable across the solve
+        assert tuple(sketch.entities[0].end) == tuple(end_after_drag)
+
+
+# ----- Combined network convergence -----------------------------------------
+
+class TestCombinedConstraints:
+    def test_length_plus_parallel_converges_to_both(self, sketch):
+        """The Solver's unary/binary phase split must converge a combined network."""
+        from model.constraints import Angle
+        sketch.add_line((0, 0), (10, 0))     # reference, anchored
+        sketch.add_line((0, 5), (3, 7))      # arbitrary
+        sketch.entities[0].anchored = [True, True]
+        sketch.add_constraint_object(Angle("PARALLEL", 0, 1), solve=False)
+        sketch.add_constraint_object(Length(1, 4.0))
+
+        line1 = sketch.entities[1]
+        # Should be ~ horizontal (parallel to line 0) AND ~4 units long
+        dy = line1.end[1] - line1.start[1]
+        assert abs(dy) < 0.2
+        assert _line_length(line1) == pytest.approx(4.0, abs=0.1)
+
+
+# ----- Coincident point-on-entity (second factory rule) --------------------
+
+class TestCoincidentPointOnEntity:
+    def test_point_pulled_to_circle_center(self, sketch):
+        """For Circles, COINCIDENT-with-entity drives the point to the circle's
+        center (the circle's "anchor"), not to the circumference. Documents the
+        current solver behavior — the second `_solve_coincident_pt_ent` rule."""
+        from model.geometry import Point
+        from model.constraints import Coincident
+        sketch.add_circle((5, 5), 3.0)
+        sketch.entities[0].anchored = [True]
+        sketch.entities.append(Point(0, 0))  # Point is index 1
+        sketch.add_constraint_object(Coincident(1, 0, 0, -1))
+        p = sketch.entities[1]
+        # Lands at center
+        assert tuple(p.pos) == pytest.approx((5.0, 5.0), abs=0.2)
+
+    def test_point_pulled_onto_line(self, sketch):
+        from model.geometry import Point
+        from model.constraints import Coincident
+        sketch.add_line((0, 0), (10, 0))
+        sketch.entities[0].anchored = [True, True]
+        sketch.entities.append(Point(5, 5))
+        sketch.add_constraint_object(Coincident(1, 0, 0, -1))
+        # Point should land on the horizontal line (y ~ 0)
+        assert sketch.entities[1].pos[1] == pytest.approx(0.0, abs=0.2)
+
+
+# ----- Driver update --------------------------------------------------------
+
+class TestDriverUpdate:
+    def test_sin_driver_modulates_length_value(self, sketch):
+        sketch.add_line((0, 0), (10, 0))
+        sketch.add_constraint_object(Length(0, 5.0), solve=False)
+        c = sketch.constraints[0]
+        c.driver = {"type": "sin", "amp": 2.0, "freq": 1.0, "phase": 0.0}
+        c.base_value = 5.0
+        c.base_time = 0.0
+        # At t=0.25 with freq=1, sin(2*pi*0.25) = 1.0, so value = 5 + 2*1 = 7
+        sketch.update_drivers(0.25)
+        assert c.value == pytest.approx(7.0, abs=0.01)
+
+    def test_lin_driver_advances_value_linearly(self, sketch):
+        sketch.add_line((0, 0), (10, 0))
+        sketch.add_constraint_object(Length(0, 5.0), solve=False)
+        c = sketch.constraints[0]
+        c.driver = {"type": "lin", "rate": 2.0}
+        c.base_value = 5.0
+        c.base_time = 0.0
+        sketch.update_drivers(3.0)  # 3s * 2 = 6 added
+        assert c.value == pytest.approx(11.0, abs=0.01)
+
+
+# ----- FixedAngle non-orthogonal --------------------------------------------
+
+class TestFixedAngleNonOrthogonal:
+    def test_thirty_degree_angle(self, sketch):
+        import math
+        sketch.add_line((0, 0), (10, 0))
+        sketch.add_line((0, 0), (5, 0))
+        sketch.entities[0].anchored = [True, True]
+        sketch.add_constraint_object(FixedAngle(0, 1, 30.0))
+        l1 = sketch.entities[1]
+        v1 = l1.end - l1.start
+        # Angle from horizontal should be ~30deg (or -30 / 150 / -150 — sign convention)
+        ang = math.degrees(math.atan2(v1[1], v1[0]))
+        # Allow either +30 or -30 depending on sign convention
+        candidates = [30.0, -30.0, 150.0, -150.0]
+        assert min(abs(ang - c) for c in candidates) < 5.0
+
+    def test_135_degree_angle(self, sketch):
+        import math
+        sketch.add_line((0, 0), (10, 0))
+        sketch.add_line((0, 0), (5, 0))
+        sketch.entities[0].anchored = [True, True]
+        sketch.add_constraint_object(FixedAngle(0, 1, 135.0))
+        l1 = sketch.entities[1]
+        v1 = l1.end - l1.start
+        ang = math.degrees(math.atan2(v1[1], v1[0]))
+        candidates = [135.0, -135.0, 45.0, -45.0]
+        assert min(abs(ang - c) for c in candidates) < 5.0

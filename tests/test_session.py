@@ -90,3 +90,57 @@ class TestClearInteractionState:
         session.placing_geo_data = {"foo": "bar"}
         session.clear_interaction_state()
         assert session.placing_geo_data is None
+
+
+class TestToolSwitchMidDrag:
+    def test_change_tool_deactivates_previous_even_during_drag(self, session):
+        """Switching tools mid-drag MUST call deactivate on the previous tool
+        so it can clean up interaction state. Otherwise: orphan drag state."""
+        import core.config as config
+        from core.session import InteractionState
+
+        class _MidDragTool:
+            def __init__(self):
+                self.deactivated = False
+                self.activated = False
+
+            def activate(self):
+                self.activated = True
+
+            def deactivate(self):
+                self.deactivated = True
+
+        a = _MidDragTool()
+        b = _MidDragTool()
+        session.tools[config.TOOL_LINE] = a
+        session.tools[config.TOOL_BRUSH] = b
+
+        session.change_tool(config.TOOL_LINE)
+        # Now simulate "mid-drag"
+        session.state = InteractionState.DRAGGING_GEOMETRY
+
+        session.change_tool(config.TOOL_BRUSH)
+        assert a.deactivated is True
+        assert b.activated is True
+
+
+class TestFocusedElementLifecycle:
+    def test_focused_element_assignment_and_clear(self, session):
+        """focused_element is plain attribute storage; cleanup via on_focus_lost
+        is the InputHandler's job. Verify the slot accepts and releases."""
+        class _StubFocusable:
+            def __init__(self):
+                self.focus_lost_calls = 0
+            def on_focus_lost(self):
+                self.focus_lost_calls += 1
+
+        target = _StubFocusable()
+        session.focused_element = target
+        assert session.focused_element is target
+
+        # Caller-driven release
+        old = session.focused_element
+        session.focused_element = None
+        old.on_focus_lost()
+        assert target.focus_lost_calls == 1
+        assert session.focused_element is None

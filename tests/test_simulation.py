@@ -210,3 +210,158 @@ class TestHasParticleNear:
     def test_returns_false_when_far(self, simulation):
         simulation._add_particle(0.0, 0.0)
         assert simulation.has_particle_near(50.0, 50.0, 1.0) is False
+
+
+# ----- Tether sync (anchors / static atom teleport) -------------------------
+
+class TestSnapTetheredAtomsToAnchors:
+    def test_snap_zeroes_velocity_and_force(self, simulation):
+        """After snap, tethered atoms must have zero vel/force (cold start
+        guarantee that prevents oscillation when an entity becomes dynamic)."""
+        line = Line((0.0, 0.0), (10.0, 0.0))
+        simulation.sync_entity_arrays([line])
+
+        idx = simulation._add_particle(50.0, 50.0)  # arbitrary initial pos
+        simulation.is_static[idx] = 3  # tethered
+        simulation.tether_entity_idx[idx] = 0
+        simulation.tether_local_pos[idx, 0] = 0.5
+        simulation.vel_x[idx] = 99.0
+        simulation.vel_y[idx] = 99.0
+        simulation.force_x[idx] = 99.0
+        simulation.force_y[idx] = 99.0
+
+        simulation.snap_tethered_atoms_to_anchors()
+
+        assert simulation.vel_x[idx] == 0.0
+        assert simulation.vel_y[idx] == 0.0
+        assert simulation.force_x[idx] == 0.0
+        assert simulation.force_y[idx] == 0.0
+
+    def test_snap_places_circle_atom_using_angle(self, simulation):
+        """Circles store theta in tether_local_pos[:, 0]; snap should compute
+        position with cos/sin (not lerp like Lines)."""
+        import math
+        circle = Circle((10.0, 10.0), 3.0)
+        simulation.sync_entity_arrays([circle])
+
+        idx = simulation._add_particle(0.0, 0.0)
+        simulation.is_static[idx] = 3
+        simulation.tether_entity_idx[idx] = 0
+        # theta = pi/2 (top of circle)
+        simulation.tether_local_pos[idx, 0] = math.pi / 2
+
+        simulation.snap_tethered_atoms_to_anchors()
+
+        # Should land at center + radius * (cos(pi/2), sin(pi/2)) = (10, 13)
+        assert simulation.pos_x[idx] == pytest.approx(10.0, abs=0.01)
+        assert simulation.pos_y[idx] == pytest.approx(13.0, abs=0.01)
+
+
+class TestStaticAtomTeleportCircles:
+    def test_circle_static_atoms_use_angle_not_t(self, simulation):
+        """sync_static_atoms_to_geometry must interpret tether_local_pos[:,0]
+        as theta for circles, not as a t parameter."""
+        import math
+        circle = Circle((0.0, 0.0), 5.0)
+        simulation.sync_entity_arrays([circle])
+
+        idx = simulation._add_particle(0.0, 0.0, is_static=1)
+        simulation.tether_entity_idx[idx] = 0
+        simulation.tether_local_pos[idx, 0] = 0.0  # theta=0 → +x axis
+
+        simulation.sync_static_atoms_to_geometry()
+        assert simulation.pos_x[idx] == pytest.approx(5.0, abs=0.01)
+        assert simulation.pos_y[idx] == pytest.approx(0.0, abs=0.01)
+
+        # Move the circle
+        circle.center[:] = [10, 10]
+        simulation.sync_entity_arrays([circle])
+        simulation.sync_static_atoms_to_geometry()
+        # Atom moves with the circle
+        assert simulation.pos_x[idx] == pytest.approx(15.0, abs=0.01)
+        assert simulation.pos_y[idx] == pytest.approx(10.0, abs=0.01)
+
+
+# ----- compact_arrays / _resize_arrays preserve all parallel arrays --------
+
+class TestCompactArrays:
+    def test_lockstep_compaction(self, simulation):
+        """compact_arrays must reorder every parallel array consistently."""
+        # Add 5 particles with distinct color, joint_id, tether linkage
+        for i in range(5):
+            idx = simulation._add_particle(float(i), 0.0)
+            simulation.atom_color[idx] = (i * 50, 0, 0)
+            simulation.joint_ids[idx] = i + 1
+            simulation.tether_entity_idx[idx] = i
+            simulation.tether_local_pos[idx, 0] = float(i) * 0.1
+            simulation.tether_stiffness[idx] = float(i) * 100.0
+
+        # Keep only every other one (0, 2, 4)
+        simulation.compact_arrays(np.array([0, 2, 4], dtype=np.int32))
+        assert simulation.count == 3
+        # All parallel arrays should reflect this reordering
+        assert int(simulation.joint_ids[0]) == 1
+        assert int(simulation.joint_ids[1]) == 3
+        assert int(simulation.joint_ids[2]) == 5
+        assert int(simulation.atom_color[1, 0]) == 100
+        assert simulation.tether_local_pos[2, 0] == pytest.approx(0.4, abs=0.001)
+        assert simulation.tether_stiffness[2] == pytest.approx(400.0, abs=0.001)
+        assert int(simulation.tether_entity_idx[2]) == 4
+
+
+class TestResizeArrays:
+    def test_resize_preserves_existing_data(self, simulation):
+        """_resize_arrays() must preserve all existing array contents."""
+        for i in range(10):
+            idx = simulation._add_particle(float(i), float(i))
+            simulation.atom_color[idx] = (i * 10, i * 5, 0)
+            simulation.joint_ids[idx] = i
+            simulation.tether_entity_idx[idx] = i
+            simulation.tether_stiffness[idx] = float(i)
+
+        old_capacity = simulation.capacity
+        simulation._resize_arrays()
+        assert simulation.capacity == old_capacity * 2
+
+        for i in range(10):
+            assert simulation.pos_x[i] == float(i)
+            assert int(simulation.atom_color[i, 0]) == i * 10
+            assert int(simulation.joint_ids[i]) == i
+            assert int(simulation.tether_entity_idx[i]) == i
+            assert simulation.tether_stiffness[i] == pytest.approx(float(i))
+
+    def test_new_slots_have_default_values(self, simulation):
+        """After resize, new slots must have correct defaults (esp. tether_entity_idx=-1)."""
+        # Add one particle, then force resize
+        simulation._add_particle(1.0, 1.0)
+        simulation._resize_arrays()
+        # Slots beyond count should have the manually-set defaults
+        assert int(simulation.tether_entity_idx[100]) == -1
+
+
+# ----- Latent bug: world-escape compaction orphans tethered/static atoms ----
+
+class TestWorldEscapeBug:
+    @pytest.mark.xfail(reason="Bug: Simulation.step() compacts atoms whose pos is outside world_size REGARDLESS of is_static. A tethered or static atom that drifts out (e.g., during a drag) gets removed, orphaning the tether linkage. The escape filter at the end of step() does not gate on is_static. Captured during CR-116 TU collaboration.", strict=True)
+    @pytest.mark.slow
+    def test_step_preserves_out_of_bounds_tethered_atom(self):
+        """A tethered atom pushed outside world bounds must NOT be removed by step()."""
+        sim = Simulation(skip_warmup=True)
+        sim.world_size = 10.0
+        # Add a tethered atom and push it outside world bounds
+        idx = sim._add_particle(15.0, 5.0)  # x > world_size
+        sim.is_static[idx] = 3
+        sim.tether_entity_idx[idx] = 0
+        sim.tether_local_pos[idx, 0] = 0.5
+        sim.tether_stiffness[idx] = 10000.0
+
+        # Need a corresponding entity for the tether kernel; just sync zero
+        sim.entity_count = 1
+        sim.entity_positions[0] = [0, 0, 10, 0]
+        sim.entity_types[0] = 0  # LINE
+
+        before = sim.count
+        sim.step(steps_to_run=1)
+        # Currently this fails: the atom is compacted out by the world-bounds filter
+        assert sim.count == before
+        assert int(sim.tether_entity_idx[0]) == 0  # tether linkage intact

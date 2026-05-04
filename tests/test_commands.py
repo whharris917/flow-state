@@ -379,3 +379,214 @@ class TestAddRectangleCommand:
         cmd.undo()
         assert sketch.entities == []
         assert sketch.constraints == []
+
+    def test_post_solve_geometry_is_closed_rectangle(self, sketch):
+        """After the single 500-iter solve, corners should be coincident
+        and sides should be axis-aligned."""
+        AddRectangleCommand(sketch, 0, 0, 10, 5).execute()
+        # 4 lines: 0=bottom, 1=right, 2=top, 3=left
+        bottom = sketch.entities[0]
+        right = sketch.entities[1]
+        top = sketch.entities[2]
+        left = sketch.entities[3]
+        # Corners should match within solver tolerance
+        assert tuple(bottom.end) == pytest.approx(tuple(right.start), abs=0.05)
+        assert tuple(right.end) == pytest.approx(tuple(top.start), abs=0.05)
+        assert tuple(top.end) == pytest.approx(tuple(left.start), abs=0.05)
+        assert tuple(left.end) == pytest.approx(tuple(bottom.start), abs=0.05)
+        # Bottom and top should be horizontal (start.y ≈ end.y)
+        assert bottom.start[1] == pytest.approx(bottom.end[1], abs=0.05)
+        assert top.start[1] == pytest.approx(top.end[1], abs=0.05)
+        # Left and right should be vertical
+        assert left.start[0] == pytest.approx(left.end[0], abs=0.05)
+        assert right.start[0] == pytest.approx(right.end[0], abs=0.05)
+
+    def test_undo_then_redo_is_clean(self, sketch):
+        """Undo→Redo→Undo cycles must not leak constraint commands across the boundary."""
+        cmd = AddRectangleCommand(sketch, 0, 0, 10, 5)
+        cmd.execute()
+        cmd.undo()
+        # Re-execute (the redo path) — must not double-apply constraints
+        cmd.execute()
+        # Should still have exactly 4 entities and 8 constraints
+        assert len(sketch.entities) == 4
+        assert len(sketch.constraints) == 8
+
+
+# ----- AddConstraintCommand: undo for various constraint types --------------
+
+class TestAddConstraintCommandUndoTypes:
+    def test_coincident_undo_removes_constraint_and_restores_geometry(self, sketch):
+        from model.constraints import Coincident
+        sketch.add_line((0, 0), (5, 0))
+        sketch.add_line((10, 10), (15, 10))
+        # Capture pre-state
+        pre1 = sketch.entities[1].start.copy()
+        cmd = AddConstraintCommand(sketch, Coincident(0, 1, 1, 0), solve=True)
+        cmd.execute()
+        # Solver moved geometry; constraint is in place
+        assert len(sketch.constraints) == 1
+        cmd.undo()
+        assert sketch.constraints == []
+        # Geometry should be back to original
+        assert tuple(sketch.entities[1].start) == tuple(pre1)
+
+    def test_parallel_undo_restores_geometry(self, sketch):
+        from model.constraints import Angle
+        sketch.add_line((0, 0), (10, 0))
+        sketch.add_line((0, 5), (3, 7))
+        sketch.entities[0].anchored = [True, True]
+        pre = sketch.entities[1].end.copy()
+        cmd = AddConstraintCommand(sketch, Angle("PARALLEL", 0, 1), solve=True)
+        cmd.execute()
+        cmd.undo()
+        assert sketch.constraints == []
+        assert tuple(sketch.entities[1].end) == tuple(pre)
+
+
+# ----- SetEntityGeometryCommand: types beyond Line --------------------------
+
+class TestSetEntityGeometryOnNonLines:
+    def test_circle_center_round_trip(self, sketch):
+        sketch.add_circle((0, 0), 5.0)
+        cmd = SetEntityGeometryCommand(
+            sketch, 0,
+            old_positions=[(0, 0)],
+            new_positions=[(10, 10)],
+        )
+        cmd.execute()
+        assert tuple(sketch.entities[0].center) == (10.0, 10.0)
+        cmd.undo()
+        assert tuple(sketch.entities[0].center) == (0.0, 0.0)
+
+    def test_point_round_trip(self, sketch):
+        from model.geometry import Point
+        sketch.entities.append(Point(1, 2))
+        cmd = SetEntityGeometryCommand(
+            sketch, 0,
+            old_positions=[(1, 2)],
+            new_positions=[(7, 8)],
+        )
+        cmd.execute()
+        assert tuple(sketch.entities[0].pos) == (7.0, 8.0)
+        cmd.undo()
+        assert tuple(sketch.entities[0].pos) == (1.0, 2.0)
+
+
+# ----- Merge guards ---------------------------------------------------------
+
+class TestMergeGuards:
+    def test_merge_does_not_cross_historize_boundaries(self, sketch):
+        """historize=False then historize=True moves on the same entity must
+        not merge — the queue must keep them as two separate stack entries
+        (well, only the historized one ends up on the stack, but the merge
+        must not happen)."""
+        sketch.add_line((0, 0), (1, 0))
+        q = CommandQueue()
+        q.execute(MoveEntityCommand(sketch, 0, 1.0, 0.0, historize=False))
+        q.execute(MoveEntityCommand(sketch, 0, 2.0, 0.0, historize=True))
+        # Only the historized command should be on the stack
+        assert len(q.undo_stack) == 1
+        # And it should NOT have been merged with the non-historized predecessor
+        cmd = q.undo_stack[0]
+        assert cmd.dx == 2.0  # not 3.0
+
+    def test_merge_does_not_cross_point_indices_mismatch(self, sketch):
+        sketch.add_line((0, 0), (1, 0))
+        q = CommandQueue()
+        q.execute(MoveEntityCommand(sketch, 0, 1.0, 0.0, point_indices=[0]))
+        q.execute(MoveEntityCommand(sketch, 0, 1.0, 0.0, point_indices=[1]))
+        # Different point_indices → must not merge
+        assert len(q.undo_stack) == 2
+
+    def test_set_point_merge_preserves_first_old_position(self, sketch):
+        from core.commands import SetPointCommand
+        sketch.add_line((0, 0), (10, 0))
+        q = CommandQueue()
+        # Drag sequence: each SetPointCommand sets new_position, but undo must
+        # restore the OLD_position from the very first execute, not the
+        # penultimate one.
+        q.execute(SetPointCommand(sketch, 0, 1, (11, 0)))
+        q.execute(SetPointCommand(sketch, 0, 1, (12, 0)))
+        q.execute(SetPointCommand(sketch, 0, 1, (15, 0)))
+        # All should merge into one stack entry
+        assert len(q.undo_stack) == 1
+        # Single undo should restore the original (10, 0)
+        q.undo()
+        assert tuple(sketch.entities[0].end) == (10.0, 0.0)
+
+    def test_move_multiple_merge_uses_set_equality(self, sketch):
+        sketch.add_line((0, 0), (1, 0))
+        sketch.add_line((2, 0), (3, 0))
+        q = CommandQueue()
+        # Same entities, different list order — should still merge
+        q.execute(MoveMultipleCommand(sketch, [0, 1], 1.0, 0.0))
+        q.execute(MoveMultipleCommand(sketch, [1, 0], 2.0, 0.0))
+        assert len(q.undo_stack) == 1
+        assert q.undo_stack[0].dx == 3.0
+
+
+class TestSupersedeEdgeCases:
+    def test_supersede_on_empty_stack(self, sketch):
+        """Supersede on an empty stack must not crash; the command still
+        executes and goes onto the stack as a normal entry."""
+        sketch.add_line((0, 0), (10, 0))
+        q = CommandQueue()
+        # An empty stack means nothing to undo; supersede should no-op the
+        # would-be pre-undo and just execute the command.
+        cmd = MoveEntityCommand(sketch, 0, 5.0, 0.0, supersede=True)
+        result = q.execute(cmd)
+        assert result is True
+        assert len(q.undo_stack) == 1
+
+
+class TestCircleRadiusCommandMerge:
+    def test_consecutive_radius_changes_merge(self, sketch):
+        from core.commands import SetCircleRadiusCommand
+        sketch.add_circle((0, 0), 1.0)
+        q = CommandQueue()
+        q.execute(SetCircleRadiusCommand(sketch, 0, 2.0))
+        q.execute(SetCircleRadiusCommand(sketch, 0, 3.0))
+        q.execute(SetCircleRadiusCommand(sketch, 0, 5.0))
+        assert len(q.undo_stack) == 1
+        # Single undo restores original radius
+        q.undo()
+        assert sketch.entities[0].radius == 1.0
+
+
+class TestMaxHistoryEviction:
+    def test_evicted_command_data_is_lost(self):
+        """When max_history is small, oldest commands are evicted permanently.
+        Their state cannot be undone."""
+        q = CommandQueue(max_history=3)
+        from tests.test_commands import _CountCommand
+        counter = [0]
+        cmds = [_CountCommand(counter, delta=1) for _ in range(5)]
+        for c in cmds:
+            q.execute(c)
+        assert counter[0] == 5
+        # Stack only retains last 3
+        assert len(q.undo_stack) == 3
+        # Undo all available — the first two are gone
+        q.undo()
+        q.undo()
+        q.undo()
+        assert counter[0] == 2  # only 3 of 5 deltas reversed
+        assert q.undo() is False
+
+
+class TestSetEntityGeometryDefensive:
+    def test_mismatched_lengths_does_not_crash(self, sketch):
+        """Defensive: command iterates min(len(old_positions), len(new_positions))
+        and shouldn't raise on length mismatch."""
+        sketch.add_line((0, 0), (10, 0))
+        # Pass one old, two new — should not crash
+        try:
+            cmd = SetEntityGeometryCommand(
+                sketch, 0,
+                old_positions=[(0, 0)],
+                new_positions=[(5, 5), (15, 5)],
+            )
+            cmd.execute()
+        except (IndexError, ValueError):
+            pytest.fail("Command should handle length mismatch gracefully")

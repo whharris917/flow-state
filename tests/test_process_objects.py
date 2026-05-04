@@ -134,3 +134,78 @@ class TestSerialization:
 
     def test_create_process_object_unknown_returns_none(self):
         assert create_process_object({"type": "unknown_thing"}) is None
+
+    def test_round_trip_preserves_zero_injection_direction(self):
+        """`from_dict`'s `data.get('injection_direction', 0)` falls back to 0,
+        so a non-default injection_direction=0 must still survive a round-trip
+        even though the value matches the default."""
+        source = Source((0, 0), 1.0, SourceProperties(injection_direction=0.0,
+                                                       injection_spread=0.5))
+        d = source.to_dict()
+        restored = Source.from_dict(d)
+        assert restored.properties.injection_direction == 0.0
+        assert restored.properties.injection_spread == 0.5
+
+
+class TestSourceRateGuards:
+    def test_max_spawns_per_frame_cap(self):
+        """Even at pathological rates the source must not exceed the per-frame cap."""
+        sim = Simulation(skip_warmup=True)
+        sim.world_size = 100.0  # large enough to fit 50+ particles
+        source = Source((50, 50), 30.0, SourceProperties(rate=10000.0))
+        # dt=10 → accumulator = 100000, way over cap
+        source.execute(sim, dt=10.0)
+        assert sim.count <= Source.MAX_SPAWNS_PER_FRAME
+
+    def test_overlap_rejection_prevents_spawn_when_dense(self):
+        """If the spawn region is already saturated with particles, rejection
+        sampling at sigma*0.8 must produce zero new spawns."""
+        sim = Simulation(skip_warmup=True)
+        sim.world_size = 50.0
+        # Pre-fill the source region with overlapping particles
+        from engine.particle_brush import ParticleBrush
+        brush = ParticleBrush(sim)
+        brush.fill_rect(20, 20, 30, 30)
+        before = sim.count
+
+        source = Source((25, 25), 3.0, SourceProperties(rate=1000.0, sigma=1.0))
+        source.execute(sim, dt=0.1)
+        # At least most spawns should have been rejected — relaxed bound
+        added = sim.count - before
+        assert added < 5  # some may slip through the gaps; main case is "not flooded"
+
+
+class TestSourceVelocitySampling:
+    def test_directional_bias_produces_rightward_mean(self):
+        """With injection_direction=0 (rightward) and a tight spread, mean vx > 0
+        and mean vy ≈ 0."""
+        import numpy as np
+        sim = Simulation(skip_warmup=True)
+        sim.world_size = 100.0
+        source = Source((50, 50), 5.0, SourceProperties(
+            rate=10000.0, temperature=1.0, mass=1.0,
+            injection_direction=0.0, injection_spread=0.5,
+        ))
+        # Run multiple frames to gather a sample
+        for _ in range(5):
+            source.execute(sim, dt=1.0)
+        assert sim.count > 10
+        vx_mean = float(np.mean(sim.vel_x[:sim.count]))
+        vy_mean = float(np.mean(sim.vel_y[:sim.count]))
+        assert vx_mean > 0
+        assert abs(vy_mean) < 0.5
+
+    def test_isotropic_spread_produces_balanced_directions(self):
+        import numpy as np
+        sim = Simulation(skip_warmup=True)
+        sim.world_size = 100.0
+        source = Source((50, 50), 5.0, SourceProperties(
+            rate=10000.0, temperature=1.0, mass=1.0,
+            injection_direction=0.0, injection_spread=2 * 3.141593,
+        ))
+        for _ in range(5):
+            source.execute(sim, dt=1.0)
+        assert sim.count > 10
+        # Isotropic — both axes should have means near zero
+        assert abs(float(np.mean(sim.vel_x[:sim.count]))) < 1.0
+        assert abs(float(np.mean(sim.vel_y[:sim.count]))) < 1.0

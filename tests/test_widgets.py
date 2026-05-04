@@ -271,3 +271,26 @@ class TestConfirmDialog:
         consumed = d.handle_event(make_event(pygame.KEYDOWN, key=pygame.K_a, unicode="a"))
         assert consumed is True
         assert d.done is False
+
+
+class TestDisabledButtonAbsorption:
+    def test_disabled_button_does_not_consume_mousedown(self):
+        """A disabled Button must NOT consume MOUSEBUTTONDOWN — clicks should
+        pass through to widgets behind it."""
+        btn = Button(0, 0, 100, 30, "Test")
+        btn.disabled = True
+        consumed = btn.handle_event(make_event(pygame.MOUSEBUTTONDOWN, pos=(50, 15), button=1))
+        # Disabled widgets early-return False; the click is not consumed
+        assert consumed is False
+
+
+class TestInputFieldFocusLoss:
+    def test_clicking_outside_active_field_deactivates_it(self):
+        """The current `on_focus_lost` lifecycle for InputField: clicking
+        outside while active flips active=False."""
+        f = InputField(0, 0, 100, 30, initial_text="foo")
+        f.active = True
+        f.handle_event(make_event(pygame.MOUSEBUTTONDOWN, pos=(500, 500), button=1))
+        assert f.active is False
+        # Text is preserved (no implicit revert)
+        assert f.text == "foo"

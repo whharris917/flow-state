@@ -54,3 +54,40 @@ class TestErase:
         brush.erase(25.0, 25.0, radius=5.0)
         assert simulation.count == 1
         assert simulation.is_static[0] == 3
+
+
+class TestSpray:
+    def test_spray_adds_particles(self, simulation):
+        brush = ParticleBrush(simulation)
+        added = brush.spray(25.0, 25.0, radius=2.0, density=1.0)
+        # density=1 over pi*r^2 = ~12.5 attempts; some succeed
+        assert added > 0
+        assert simulation.count == added
+
+    def test_spray_respects_world_bounds(self, simulation):
+        simulation.world_size = 10.0
+        brush = ParticleBrush(simulation)
+        # Spray at edge — radius extends out
+        brush.spray(9.5, 9.5, radius=5.0, density=1.0)
+        for i in range(simulation.count):
+            assert 0 < simulation.pos_x[i] < 10.0
+            assert 0 < simulation.pos_y[i] < 10.0
+
+
+class TestFillRect:
+    def test_fill_rect_fills_region(self, simulation):
+        brush = ParticleBrush(simulation)
+        added = brush.fill_rect(20.0, 20.0, 30.0, 30.0)
+        assert added > 0
+        # All particles should lie within the rectangle
+        for i in range(simulation.count):
+            assert 20.0 <= simulation.pos_x[i] <= 30.0
+            assert 20.0 <= simulation.pos_y[i] <= 30.0
+
+    def test_fill_rect_clamps_to_world_bounds(self, simulation):
+        simulation.world_size = 10.0
+        brush = ParticleBrush(simulation)
+        brush.fill_rect(-5, -5, 100, 100)  # extends way past world
+        for i in range(simulation.count):
+            assert 0 <= simulation.pos_x[i] <= 10.0
+            assert 0 <= simulation.pos_y[i] <= 10.0
