@@ -649,6 +649,88 @@ class TestResizeWorldCommand:
         assert scene.simulation.world_size == config.DEFAULT_WORLD_SIZE
 
 
+class TestResizeWorldInputFieldSync:
+    """The Resize-World input field must reflect sim.world_size after undo/redo.
+
+    Regression: ResizeWorldCommand correctly mutated sim.world_size on
+    undo/redo, but the input field next to the Resize World button was
+    never refreshed. After Ctrl+Z on a resize, the field continued to
+    show the typed value (the post-resize size) rather than the actual
+    (now-restored) world_size.
+    """
+
+    def _build_controller(self, fake_app, initial_text=None):
+        from app.app_controller import AppController
+        from ui.ui_widgets import InputField
+        sim = fake_app.scene.simulation
+        text = initial_text if initial_text is not None else f"{sim.world_size:.2f}"
+        fake_app.session.input_world = InputField(0, 0, 60, 25, text)
+        return AppController(fake_app)
+
+    def test_undo_of_resize_refreshes_input_field(self, fake_app):
+        from core.commands import ResizeWorldCommand
+        controller = self._build_controller(fake_app)
+        scene = fake_app.scene
+        sim = scene.simulation
+        original_size = sim.world_size
+
+        scene.execute(ResizeWorldCommand(scene, 75.0))
+        # Field is unchanged at this point (production wires the field via
+        # the action_resize_world / dialog flow); we are testing the undo
+        # refresh, not the create-time refresh.
+        controller.action_undo()
+
+        assert sim.world_size == original_size
+        assert float(fake_app.session.input_world.text) == original_size
+
+    def test_redo_of_resize_refreshes_input_field(self, fake_app):
+        from core.commands import ResizeWorldCommand
+        controller = self._build_controller(fake_app)
+        scene = fake_app.scene
+        sim = scene.simulation
+
+        scene.execute(ResizeWorldCommand(scene, 75.0))
+        controller.action_undo()
+        controller.action_redo()
+
+        assert sim.world_size == 75.0
+        assert float(fake_app.session.input_world.text) == 75.0
+
+    def test_focused_input_field_is_not_overwritten_on_undo(self, fake_app):
+        """If the user is mid-edit when an undo fires, the typed text wins.
+
+        InputField.set_value is gated on `not self.active`, so the helper
+        is a no-op while the field has focus. This protects mid-edit text
+        from being clobbered by an undo on an unrelated CAD command.
+        """
+        from core.commands import ResizeWorldCommand
+        controller = self._build_controller(fake_app)
+        scene = fake_app.scene
+
+        scene.execute(ResizeWorldCommand(scene, 75.0))
+        # User is now typing into the field
+        fake_app.session.input_world.active = True
+        fake_app.session.input_world.text = "120"
+
+        controller.action_undo()
+
+        # World was reverted but the typed text is preserved
+        assert fake_app.session.input_world.text == "120"
+
+    def test_undo_with_no_input_field_is_safe(self, fake_app):
+        """session.input_world starts as None; the helper must tolerate that."""
+        from app.app_controller import AppController
+        from core.commands import ResizeWorldCommand
+        controller = AppController(fake_app)
+        # session.input_world left at default None
+        scene = fake_app.scene
+        scene.execute(ResizeWorldCommand(scene, 75.0))
+        controller.action_undo()
+        # No exception; world correctly reverted
+        import core.config as config
+        assert scene.simulation.world_size == config.DEFAULT_WORLD_SIZE
+
+
 class TestSetEntityGeometryDefensive:
     def test_mismatched_lengths_round_trip_is_asymmetric(self, sketch):
         """Documents current asymmetric behavior of SetEntityGeometryCommand

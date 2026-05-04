@@ -149,6 +149,7 @@ class AppController:
                 self.session.status.set("Undo (particles)")
             else:
                 self.session.status.set("Nothing to undo")
+        self._sync_world_size_input()
         self.sound_manager.play_sound('click')
 
     def action_redo(self):
@@ -161,7 +162,19 @@ class AppController:
                 self.session.status.set("Redo (particles)")
             else:
                 self.session.status.set("Nothing to redo")
+        self._sync_world_size_input()
         self.sound_manager.play_sound('click')
+
+    def _sync_world_size_input(self):
+        """Push current sim.world_size into the Resize-World input field.
+
+        InputField.set_value is gated on `not self.active`, so this is
+        a no-op while the user is typing into the field — that's the
+        correct behavior. Called after undo/redo so a ResizeWorldCommand
+        being un/redone updates the displayed value to reflect reality.
+        """
+        if self.session.input_world is not None:
+            self.session.input_world.set_value(self.sim.world_size)
 
     # =========================================================================
     # Simulation Control
