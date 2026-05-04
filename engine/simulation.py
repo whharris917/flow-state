@@ -614,31 +614,37 @@ class Simulation:
     # Low-Level Particle Primitives (Used by ParticleBrush, Compiler, Sources)
     # =========================================================================
 
-    def _add_particle(self, x, y, vx=0.0, vy=0.0, is_static=0, sigma=None, epsilon=None):
+    def _add_particle(self, x, y, vx=0.0, vy=0.0, is_static=0, sigma=None, epsilon=None,
+                      color=(50, 150, 255)):
         """
         Add a single particle to the simulation.
-        
+
         This is a low-level primitive used by ParticleBrush, Compiler, and Sources.
         For brush operations, use ParticleBrush.paint() instead.
-        
+
         Args:
             x, y: Position
             vx, vy: Velocity (default 0)
             is_static: 0=dynamic, 1=static, 3=tethered
             sigma: Particle size (default: self.sigma)
             epsilon: LJ energy parameter (default: self.epsilon)
-            
+            color: RGB tuple for the atom's render color. Defaults to the
+                project's water-blue. The slot's previous color is otherwise
+                retained — Source emissions used to inherit residue from
+                whatever atom (often a wall) had previously occupied the
+                slot, which surfaced as wall-coloured "free" atoms.
+
         Returns:
             Index of the new particle, or -1 if failed
         """
         if self.count >= self.capacity:
             self._resize_arrays()
-        
+
         if sigma is None:
             sigma = self.sigma
         if epsilon is None:
             epsilon = self.epsilon
-        
+
         idx = self.count
         self.pos_x[idx] = x
         self.pos_y[idx] = y
@@ -647,9 +653,10 @@ class Simulation:
         self.is_static[idx] = is_static
         self.atom_sigma[idx] = sigma
         self.atom_eps_sqrt[idx] = math.sqrt(epsilon)
+        self.atom_color[idx] = color
         self.count += 1
         self.rebuild_next = True
-        
+
         return idx
 
     def _check_overlap(self, x, y, threshold):

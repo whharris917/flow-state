@@ -76,6 +76,36 @@ class TestParticleAddition:
         assert simulation.vel_y[idx] == 4.0
         assert simulation.is_static[idx] == 1
 
+    def test_add_particle_writes_default_color(self, simulation):
+        """Without an explicit color, _add_particle must still write a sensible
+        default — never leaving the slot's previous (possibly wall) colour in
+        place. Default is the project's water-blue."""
+        idx = simulation._add_particle(1.0, 1.0)
+        assert tuple(simulation.atom_color[idx]) == (50, 150, 255)
+
+    def test_add_particle_does_not_inherit_residual_slot_color(self, simulation):
+        """Regression: a Source spawning at a slot that previously held a wall
+        atom used to inherit the wall colour because the primitive only wrote
+        pos/vel/sigma/eps/is_static, never atom_color. Visible in-game as
+        wall-coloured 'free' atoms bouncing around inside a wall enclosure.
+
+        Reproduces by hand-staining the next-spawn slot with a wall colour,
+        then adding a particle and asserting the colour was overwritten.
+        """
+        next_slot = simulation.count
+        WALL_COLOR = (180, 180, 200)
+        simulation.atom_color[next_slot] = WALL_COLOR
+
+        idx = simulation._add_particle(2.0, 2.0)
+
+        assert idx == next_slot
+        assert tuple(simulation.atom_color[idx]) != WALL_COLOR
+        assert tuple(simulation.atom_color[idx]) == (50, 150, 255)
+
+    def test_add_particle_honours_explicit_color(self, simulation):
+        idx = simulation._add_particle(3.0, 3.0, color=(200, 50, 80))
+        assert tuple(simulation.atom_color[idx]) == (200, 50, 80)
+
 
 class TestEntitySync:
     def test_line_sync_writes_endpoints(self, simulation):
