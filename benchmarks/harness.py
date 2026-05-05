@@ -114,6 +114,7 @@ def run_bench(
     equilibration_substeps: int = 200,
     samples: int = 50,
     metadata: dict | None = None,
+    spatial_sort_once: bool = False,
 ) -> BenchResult:
     """
     Run a benchmark on a pre-built Simulation.
@@ -121,17 +122,24 @@ def run_bench(
     Calling convention:
       1. Run equilibration_substeps of physics with the thermostat on so the
          system relaxes to the target temperature. Discarded.
-      2. Run 3 priming step() calls equal in size to the timed call. Discarded.
+      2. (Optional) If spatial_sort_once is True, reorder all per-atom arrays
+         by spatial cell key so the LJ pair loop has improved cache locality.
+         This is an experimental knob — the benchmark measures whether
+         sorting is worthwhile before justifying an engine change.
+      3. Run 3 priming step() calls equal in size to the timed call. Discarded.
          The first call pays Numba's JIT compile; the next two cover the
          parallel-pool spin-up (thread creation is lazy and not always done in
          one call). One priming call is empirically not enough — first-sample
          outliers of ~500 ms have been observed without this triple-prime.
-      3. Run `samples` timed step(physics_steps) calls. Each call's wall time
+      4. Run `samples` timed step(physics_steps) calls. Each call's wall time
          AND its actual substep count (from sim.total_steps delta) are recorded.
 
     Returns a BenchResult; caller decides whether to print, persist, or compare.
     """
     _run_substeps(sim, equilibration_substeps)
+    if spatial_sort_once:
+        from benchmarks.experiments import external_spatial_sort
+        external_spatial_sort(sim)
     for _ in range(3):
         sim.step(steps_to_run=physics_steps)
 

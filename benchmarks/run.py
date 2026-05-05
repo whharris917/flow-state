@@ -76,6 +76,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="component-level timing per scenario (check_displacement, "
                              "build_neighbor_list, build_atom_neighbor_csr, integrate_n_steps, "
                              "apply_thermostat, escape_filter)")
+    parser.add_argument("--spatial-sort-once", action="store_true",
+                        help="experimental: reorder atoms by cell after equilibration "
+                             "(once, before priming) to test whether spatial sorting "
+                             "improves LJ pair-loop cache locality")
     args = parser.parse_args(argv)
 
     if args.scenario == "all":
@@ -136,6 +140,7 @@ def main(argv: list[str] | None = None) -> int:
                         equilibration_substeps=args.equilibration,
                         samples=args.samples,
                         metadata=metadata,
+                        spatial_sort_once=args.spatial_sort_once,
                     )
                     print(format_result(result))
                 all_results.append(result)
