@@ -20,7 +20,8 @@ import core.config as config
 
 from engine.physics_core import (
     integrate_n_steps, build_neighbor_list, check_displacement,
-    apply_thermostat, spatial_sort, apply_tether_forces_pbd
+    apply_thermostat, spatial_sort, apply_tether_forces_pbd,
+    build_atom_neighbor_csr,
 )
 
 # Entity type constants (must match physics kernel expectations)
@@ -92,6 +93,13 @@ class Simulation:
         self.pair_i = np.zeros(self.max_pairs, dtype=np.int32)
         self.pair_j = np.zeros(self.max_pairs, dtype=np.int32)
         self.pair_count = 0
+        # Atom-centric CSR view of the neighbour list, derived from the
+        # half-pair list each rebuild. Drives the parallel atom-centric
+        # LJ pair loop — each atom's neighbours live in
+        # nbr_idx[nbr_start[i] : nbr_start[i+1]]. nbr_idx is sized for the
+        # full pair list (each pair counted twice).
+        self.nbr_start = np.zeros(self.capacity + 1, dtype=np.int32)
+        self.nbr_idx = np.zeros(2 * self.max_pairs, dtype=np.int32)
         self.last_x = np.zeros(self.capacity, dtype=np.float32)
         self.last_y = np.zeros(self.capacity, dtype=np.float32)
         self.rebuild_next = False
@@ -145,18 +153,23 @@ class Simulation:
         self.atom_eps_sqrt[:2] = 1.0
         
         build_neighbor_list(
-            self.pos_x[:2], self.pos_y[:2], self.r_list2, 
+            self.pos_x[:2], self.pos_y[:2], self.r_list2,
             self.cell_size, self.world_size, self.pair_i, self.pair_j
         )
-        
+        # Build the atom-centric CSR view (input to the parallel LJ loop).
+        build_atom_neighbor_csr(
+            2, self.pair_i, self.pair_j, self.pair_count,
+            self.nbr_start[:3], self.nbr_idx,
+        )
+
         f32_vals = [
             np.float32(x) for x in [
-                config.ATOM_MASS, self.dt, self.gravity, 
-                self.r_cut_base**2, self.r_skin_sq_limit, 
+                config.ATOM_MASS, self.dt, self.gravity,
+                self.r_cut_base**2, self.r_skin_sq_limit,
                 self.world_size, self.damping
             ]
         ]
-        
+
         integrate_n_steps(
             1, self.pos_x[:2], self.pos_y[:2],
             self.vel_x[:2], self.vel_y[:2],
@@ -164,7 +177,8 @@ class Simulation:
             self.last_x[:2], self.last_y[:2],
             self.is_static[:2],
             self.atom_sigma[:2], self.atom_eps_sqrt[:2],
-            f32_vals[0], self.pair_i, self.pair_j, self.pair_count,
+            f32_vals[0],
+            self.nbr_start[:3], self.nbr_idx,
             self.tether_entity_idx[:2],  # For intra-entity exclusion
             self.joint_ids[:2],  # For coincident constraint LJ exclusion
             f32_vals[1], f32_vals[2], f32_vals[3], f32_vals[4],
@@ -728,14 +742,23 @@ class Simulation:
                     self.max_pairs *= 2
                     self.pair_i = np.zeros(self.max_pairs, dtype=np.int32)
                     self.pair_j = np.zeros(self.max_pairs, dtype=np.int32)
+                    self.nbr_idx = np.zeros(2 * self.max_pairs, dtype=np.int32)
                     continue
                 self.pair_count = count
                 break
-            
+
             self.last_x[:self.count] = self.pos_x[:self.count]
             self.last_y[:self.count] = self.pos_y[:self.count]
             self.rebuild_next = False
-        
+
+            # Convert the half-pair list to atom-centric CSR. Cheap
+            # (O(N + pair_count)) and only runs when the neighbour list
+            # is rebuilt — same cadence as the half-pair list itself.
+            build_atom_neighbor_csr(
+                self.count, self.pair_i, self.pair_j, self.pair_count,
+                self.nbr_start[:self.count + 1], self.nbr_idx,
+            )
+
         # Run integration
         if self.count > 0:
             steps_done = integrate_n_steps(
@@ -747,7 +770,7 @@ class Simulation:
                 self.is_static[:self.count],
                 self.atom_sigma[:self.count], self.atom_eps_sqrt[:self.count],
                 np.float32(config.ATOM_MASS),
-                self.pair_i, self.pair_j, self.pair_count,
+                self.nbr_start[:self.count + 1], self.nbr_idx,
                 self.tether_entity_idx[:self.count],  # For intra-entity exclusion
                 self.joint_ids[:self.count],  # For coincident constraint LJ exclusion
                 np.float32(self.dt), np.float32(self.gravity),
@@ -834,3 +857,8 @@ class Simulation:
         old_joint_ids = self.joint_ids
         self.joint_ids = np.zeros(self.capacity, dtype=np.int32)
         self.joint_ids[:len(old_joint_ids)] = old_joint_ids
+
+        # Atom-centric CSR neighbour view: nbr_start indexes by atom so it
+        # must grow with capacity. nbr_idx scales with max_pairs and is
+        # grown there (in step() during the build_neighbor_list overflow loop).
+        self.nbr_start = np.zeros(self.capacity + 1, dtype=np.int32)

@@ -515,3 +515,63 @@ class TestApplyThermostat:
         # Velocities still zero (would be NaN/inf if guard failed)
         assert np.all(vel_x == 0.0)
         assert np.all(vel_y == 0.0)
+
+
+class TestBuildAtomNeighborCSR:
+    """Pins the half-pair → atom-centric CSR converter.
+
+    Drives the parallel atom-centric LJ pair loop. For each pair (i,j) in
+    the input half-pair list, the output CSR must list j as a neighbour
+    of i AND i as a neighbour of j. nbr_start[i+1] - nbr_start[i] gives
+    atom i's neighbour count.
+    """
+
+    def _csr(self, n, pairs):
+        """Helper: build CSR from a list of (i,j) pairs."""
+        from engine.physics_core import build_atom_neighbor_csr
+        pair_i = np.array([p[0] for p in pairs], dtype=np.int32) if pairs else np.zeros(0, dtype=np.int32)
+        pair_j = np.array([p[1] for p in pairs], dtype=np.int32) if pairs else np.zeros(0, dtype=np.int32)
+        nbr_start = np.zeros(n + 1, dtype=np.int32)
+        nbr_idx = np.zeros(max(2 * len(pairs), 1), dtype=np.int32)
+        build_atom_neighbor_csr(n, pair_i, pair_j, len(pairs), nbr_start, nbr_idx)
+        return nbr_start, nbr_idx
+
+    def _neighbours_of(self, atom_idx, nbr_start, nbr_idx):
+        return sorted(nbr_idx[nbr_start[atom_idx]:nbr_start[atom_idx + 1]].tolist())
+
+    def test_empty_pair_list_yields_empty_csr(self):
+        nbr_start, _ = self._csr(5, [])
+        assert nbr_start.tolist() == [0, 0, 0, 0, 0, 0]
+
+    def test_single_pair_appears_in_both_neighbour_lists(self):
+        nbr_start, nbr_idx = self._csr(3, [(0, 2)])
+        assert self._neighbours_of(0, nbr_start, nbr_idx) == [2]
+        assert self._neighbours_of(1, nbr_start, nbr_idx) == []
+        assert self._neighbours_of(2, nbr_start, nbr_idx) == [0]
+
+    def test_complete_graph_three_atoms(self):
+        # All-pairs over {0,1,2}: (0,1), (0,2), (1,2). Each atom should
+        # neighbour the other two.
+        nbr_start, nbr_idx = self._csr(3, [(0, 1), (0, 2), (1, 2)])
+        assert self._neighbours_of(0, nbr_start, nbr_idx) == [1, 2]
+        assert self._neighbours_of(1, nbr_start, nbr_idx) == [0, 2]
+        assert self._neighbours_of(2, nbr_start, nbr_idx) == [0, 1]
+
+    def test_isolated_atoms_have_empty_neighbour_lists(self):
+        # 5 atoms, only atoms 1 and 3 are paired. 0, 2, 4 are isolated.
+        nbr_start, nbr_idx = self._csr(5, [(1, 3)])
+        assert self._neighbours_of(0, nbr_start, nbr_idx) == []
+        assert self._neighbours_of(1, nbr_start, nbr_idx) == [3]
+        assert self._neighbours_of(2, nbr_start, nbr_idx) == []
+        assert self._neighbours_of(3, nbr_start, nbr_idx) == [1]
+        assert self._neighbours_of(4, nbr_start, nbr_idx) == []
+
+    def test_nbr_start_is_monotonic(self):
+        """Property check: nbr_start must be non-decreasing (each entry's
+        difference equals atom i's degree)."""
+        pairs = [(0, 1), (0, 2), (0, 5), (1, 3), (2, 4), (3, 5)]
+        nbr_start, _ = self._csr(6, pairs)
+        diffs = np.diff(nbr_start)
+        assert (diffs >= 0).all()
+        # Sum of degrees = 2 * |E|
+        assert nbr_start[-1] == 2 * len(pairs)

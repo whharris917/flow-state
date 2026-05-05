@@ -96,6 +96,46 @@ def build_neighbor_list(pos_x, pos_y, r_list2, cell_size, world_size, pair_i, pa
                 i = next_idx[i]
     return count
 
+@njit(fastmath=True)
+def build_atom_neighbor_csr(N, pair_i, pair_j, pair_count, nbr_start, nbr_idx):
+    """Convert a half-pair list (i<j) into an atom-centric CSR neighbour list.
+
+    nbr_start has length N+1 and is filled with start offsets per atom.
+    nbr_idx has length >= 2*pair_count and is filled with each atom's
+    neighbour indices, contiguous per atom: atom i's neighbours are at
+    nbr_idx[nbr_start[i] : nbr_start[i+1]].
+
+    Used to drive the parallel atom-centric LJ pair loop in
+    integrate_n_steps. Each atom-iteration only writes to its own
+    force_x/force_y slot, so no atomic adds or race conditions.
+    """
+    # 1. Count degrees (slots [1..N], slot 0 stays zero so the prefix
+    #    sum below produces correct start offsets).
+    for i in range(N + 1):
+        nbr_start[i] = 0
+    for k in range(pair_count):
+        nbr_start[pair_i[k] + 1] += 1
+        nbr_start[pair_j[k] + 1] += 1
+
+    # 2. Prefix sum → start offsets.
+    for i in range(1, N + 1):
+        nbr_start[i] += nbr_start[i - 1]
+
+    # 3. Scatter both directions of each pair into the neighbour buckets.
+    #    write_pos[i] is the next free slot for atom i's bucket; we
+    #    advance it as we write. Stored on a transient stack array.
+    write_pos = np.empty(N, dtype=np.int32)
+    for i in range(N):
+        write_pos[i] = nbr_start[i]
+    for k in range(pair_count):
+        i = pair_i[k]
+        j = pair_j[k]
+        nbr_idx[write_pos[i]] = j
+        write_pos[i] += 1
+        nbr_idx[write_pos[j]] = i
+        write_pos[j] += 1
+
+
 @njit(fastmath=True, parallel=True)
 def integrate_n_steps(
     steps_to_run,
@@ -103,7 +143,7 @@ def integrate_n_steps(
     last_x, last_y,
     is_static,
     atom_sigma, atom_eps_sqrt, mass,
-    pair_i, pair_j, pair_count,
+    nbr_start, nbr_idx,             # atom-centric CSR neighbour list
     tether_entity_idx,  # For intra-entity force exclusion
     joint_ids,  # For coincident constraint LJ exclusion
     dt, gravity, r_cut2_base,
@@ -193,44 +233,54 @@ def integrate_n_steps(
                 force_x[i] = 0.0
                 force_y[i] = 0.0
 
-        # 3. Forces (Mixed Properties) - SERIAL
-        # NOTE: Cannot easily parallelize without atomic adds or race conditions.
-        for k in range(pair_count):
-            i = pair_i[k]
-            j = pair_j[k]
+        # 3. Forces (Mixed Properties) - PARALLEL atom-centric
+        # Each atom-iteration accumulates into its own force_x[i] / force_y[i]
+        # slot only — no race conditions, no atomic adds. The trade-off is
+        # that each pair (i,j) is now computed twice (once from i's view,
+        # once from j's). Newton's third law is preserved by sign flip via
+        # dx swapping when the pair is computed from j's side. Static atoms
+        # (is_static==1) are skipped because their forces are never used
+        # (positions and velocities are pinned).
+        for i in prange(N):
+            if is_static[i] == 1:
+                continue
+            fx_i = 0.0
+            fy_i = 0.0
+            sigma_i = atom_sigma[i]
+            eps_sqrt_i = atom_eps_sqrt[i]
+            jid_i = joint_ids[i]
+            ent_i = tether_entity_idx[i]
+            st_i_is_tethered = is_static[i] == 3
 
-            # Skip intra-entity forces: tethered atoms on the same rigid body
-            # should not exert LJ forces on each other
-            if is_static[i] == 3 and is_static[j] == 3:
-                ent_i = tether_entity_idx[i]
-                ent_j = tether_entity_idx[j]
-                if ent_i >= 0 and ent_i == ent_j:
+            for k in range(nbr_start[i], nbr_start[i + 1]):
+                j = nbr_idx[k]
+
+                # Skip intra-entity forces: tethered atoms on the same rigid
+                # body should not exert LJ forces on each other.
+                if st_i_is_tethered and is_static[j] == 3:
+                    if ent_i >= 0 and ent_i == tether_entity_idx[j]:
+                        continue
+
+                # Skip joint forces: atoms at coincident joints share the
+                # same non-zero joint_id and should not repel each other.
+                if jid_i != 0 and jid_i == joint_ids[j]:
                     continue
 
-            # Skip joint forces: atoms at coincident joints share the same
-            # non-zero joint_id and should not repel each other
-            jid_i = joint_ids[i]
-            if jid_i != 0 and jid_i == joint_ids[j]:
-                continue
+                dx = pos_x[i] - pos_x[j]
+                dy = pos_y[i] - pos_y[j]
+                r2 = dx * dx + dy * dy
 
-            dx = pos_x[i] - pos_x[j]
-            dy = pos_y[i] - pos_y[j]
-            r2 = dx*dx + dy*dy
+                if r2 < r_cut2_base:
+                    s_ij = 0.5 * (sigma_i + atom_sigma[j])
+                    s_ij2 = s_ij * s_ij
+                    e_24 = 24.0 * eps_sqrt_i * atom_eps_sqrt[j]
 
-            if r2 < r_cut2_base:
-                s_ij = 0.5 * (atom_sigma[i] + atom_sigma[j])
-                s_ij2 = s_ij * s_ij
-                e_ij = atom_eps_sqrt[i] * atom_eps_sqrt[j]
-                e_24 = 24.0 * e_ij
+                    f_scal = force_LJ_mixed(r2, s_ij2, e_24)
+                    fx_i += f_scal * dx
+                    fy_i += f_scal * dy
 
-                f_scal = force_LJ_mixed(r2, s_ij2, e_24)
-                fx = f_scal * dx
-                fy = f_scal * dy
-
-                force_x[i] += fx
-                force_y[i] += fy
-                force_x[j] -= fx
-                force_y[j] -= fy
+            force_x[i] += fx_i
+            force_y[i] += fy_i
 
         # 4. Integration (Half Vel for Dynamic & Tethered) - PARALLEL
         for i in prange(N):
