@@ -52,12 +52,29 @@ def lj_dense(N: int, **overrides) -> tuple[Simulation, dict]:
     )
 
 
+def lj_sweep(
+    N: int,
+    *,
+    rho_star: float = 0.7,
+    T_star: float = 1.0,
+    **overrides,
+) -> tuple[Simulation, dict]:
+    """Parametric scenario for sweeps. Defaults are the lj_liquid point but
+    every dial — rho*, T*, sigma, epsilon, dt, r_skin, physics_steps — is
+    individually overrideable. The CLI's --sweep flag iterates over values of
+    a single keyword through this builder."""
+    return _build_lj_scenario(
+        name="lj_sweep", N=N, rho_star=rho_star, T_star=T_star, **overrides
+    )
+
+
 # Registry exposed for the CLI. Insertion order is the recommended display
 # order (gas → liquid → dense reads as increasing density / decreasing T).
 SCENARIOS = {
     "lj_gas": lj_gas,
     "lj_liquid": lj_liquid,
     "lj_dense": lj_dense,
+    "lj_sweep": lj_sweep,
 }
 
 

@@ -15,13 +15,15 @@ geometry, no constraints. Pure `Simulation.step()` throughput.
 
 ```
 cd flow-state
-python -m benchmarks                                # lj_liquid at N=5000
-python -m benchmarks --scenario all                 # all 3 scenarios at N=5000
-python -m benchmarks -N 500,1000,5000               # comma-list of Ns
-python -m benchmarks -N grid                        # canonical grid (500..20k)
-python -m benchmarks --scenario all -N grid         # full matrix
-python -m benchmarks --baseline                     # write baselines/<host>.json
-python -m benchmarks --json out.json                # arbitrary JSON path
+python -m benchmarks                                       # lj_liquid at N=5000
+python -m benchmarks --scenario all                        # all 3 scenarios at N=5000
+python -m benchmarks -N 500,1000,5000                      # comma-list of Ns
+python -m benchmarks -N grid                               # canonical grid (500..20k)
+python -m benchmarks --scenario all -N grid                # full matrix
+python -m benchmarks --baseline                            # write baselines/<host>.json
+python -m benchmarks --compare                             # diff fresh run vs baseline
+python -m benchmarks --scenario lj_sweep --sweep r_skin=0.1,0.3,0.5
+python -m benchmarks --json out.json                       # arbitrary JSON path
 ```
 
 ## What is measured
@@ -57,8 +59,22 @@ Scenario presets (reduced LJ units, σ=ε=mass=1):
 | `lj_gas` | 0.05 | 2.0 | Dilute gas | Few neighbours/atom — neighbour-list bookkeeping cost dominates |
 | `lj_liquid` | 0.7 | 1.0 | Liquid | Realistic working point — production-like |
 | `lj_dense` | 0.85 | 0.7 | Dense liquid (near triple point) | Many pairs/atom — LJ force loop dominates |
+| `lj_sweep` | configurable | configurable | (parametric) | Used by `--sweep` to vary one numerical dial |
 
 The canonical N grid is `(500, 1000, 2000, 5000, 10000, 20000)`, selectable via `-N grid`.
+
+## Sweeps and comparisons
+
+`--sweep KEY=v1,v2,v3` iterates the chosen scenario over values of one
+numerical dial. Allowed keys: `rho_star`, `T_star`, `sigma`, `epsilon`,
+`dt`, `r_skin`, `physics_steps`. Use with `--scenario lj_sweep` if you also
+want to vary `rho_star` or `T_star` without the named-preset wrappers
+overriding them.
+
+`--compare` runs the configured benchmarks and diffs the fresh
+`ns_per_atom_substep` against the on-disk baseline for the same
+(scenario, N) pairs. Exits with code 1 if any pair regresses by more than
+`--regression-pct` (default 5%). Run `--baseline` first to seed the file.
 
 ## Baselines
 
