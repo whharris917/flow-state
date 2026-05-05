@@ -25,6 +25,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from benchmarks.breakdown import format_breakdown, run_breakdown
 from benchmarks.harness import run_bench, format_result
 from benchmarks.scenarios import SCENARIOS
 
@@ -71,6 +72,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--regression-pct", type=float, default=DEFAULT_REGRESSION_PCT,
                         help=f"--compare: %% increase in ns/atom-substep counted as a regression "
                              f"(default {DEFAULT_REGRESSION_PCT})")
+    parser.add_argument("--breakdown", action="store_true",
+                        help="component-level timing per scenario (check_displacement, "
+                             "build_neighbor_list, build_atom_neighbor_csr, integrate_n_steps, "
+                             "apply_thermostat, escape_filter)")
     args = parser.parse_args(argv)
 
     if args.scenario == "all":
@@ -113,15 +118,26 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 # The harness reads physics_steps off the call args, not metadata.
                 steps = metadata.get("physics_steps", args.physics_steps)
-                result = run_bench(
-                    scenario_name=scenario_name,
-                    sim=sim,
-                    physics_steps=steps,
-                    equilibration_substeps=args.equilibration,
-                    samples=args.samples,
-                    metadata=metadata,
-                )
-                print(format_result(result))
+                if args.breakdown:
+                    result = run_breakdown(
+                        scenario_name=scenario_name,
+                        sim=sim,
+                        physics_steps=steps,
+                        equilibration_substeps=args.equilibration,
+                        samples=args.samples,
+                        metadata=metadata,
+                    )
+                    print(format_breakdown(result))
+                else:
+                    result = run_bench(
+                        scenario_name=scenario_name,
+                        sim=sim,
+                        physics_steps=steps,
+                        equilibration_substeps=args.equilibration,
+                        samples=args.samples,
+                        metadata=metadata,
+                    )
+                    print(format_result(result))
                 all_results.append(result)
 
     if args.compare:
