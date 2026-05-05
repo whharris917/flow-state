@@ -24,3 +24,6 @@ archive/
 ui_folly/
 
 prompt.txt
+
+# Benchmark baselines are per-machine and shouldn't pollute the repo
+benchmarks/baselines/

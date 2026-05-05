@@ -23,23 +23,67 @@ import numpy as np
 from engine.simulation import Simulation
 
 
-def lj_liquid(
-    N: int,
+# ---------------------------------------------------------------------------
+# Named scenario presets
+# ---------------------------------------------------------------------------
+
+
+def lj_gas(N: int, **overrides) -> tuple[Simulation, dict]:
+    """Dilute gas point: rho* = 0.05, T* = 2.0. Few neighbours per atom; the
+    neighbour-list bookkeeping cost is the dominant term."""
+    return _build_lj_scenario(
+        name="lj_gas", N=N, rho_star=0.05, T_star=2.0, **overrides
+    )
+
+
+def lj_liquid(N: int, **overrides) -> tuple[Simulation, dict]:
+    """Liquid point: rho* = 0.7, T* = 1.0. Realistic working point — the
+    canonical 'production-like' benchmark."""
+    return _build_lj_scenario(
+        name="lj_liquid", N=N, rho_star=0.7, T_star=1.0, **overrides
+    )
+
+
+def lj_dense(N: int, **overrides) -> tuple[Simulation, dict]:
+    """Dense liquid near the triple point: rho* = 0.85, T* = 0.7. Many pairs
+    per atom; the LJ force loop dominates."""
+    return _build_lj_scenario(
+        name="lj_dense", N=N, rho_star=0.85, T_star=0.7, **overrides
+    )
+
+
+# Registry exposed for the CLI. Insertion order is the recommended display
+# order (gas → liquid → dense reads as increasing density / decreasing T).
+SCENARIOS = {
+    "lj_gas": lj_gas,
+    "lj_liquid": lj_liquid,
+    "lj_dense": lj_dense,
+}
+
+
+# ---------------------------------------------------------------------------
+# Underlying builder
+# ---------------------------------------------------------------------------
+
+
+def _build_lj_scenario(
     *,
+    name: str,
+    N: int,
+    rho_star: float,
+    T_star: float,
     seed: int = 0,
-    rho_star: float = 0.7,
-    T_star: float = 1.0,
     sigma: float = 1.0,
     epsilon: float = 1.0,
     dt: float = 0.002,
     r_skin: float = 0.3,
     physics_steps: int = 10,
 ) -> tuple[Simulation, dict]:
-    """
-    Liquid-phase LJ point: rho* = 0.7, T* = 1.0.
+    """Build a Simulation at the given (rho*, T*) point with the documented
+    benchmark conventions. Returns (sim, metadata).
 
-    Returns (Simulation, metadata). Metadata records every controlled variable
-    so a benchmark report can reproduce the run exactly.
+    `name` is propagated into metadata.scenario so the harness reports it
+    consistently regardless of which preset wrapper invoked the builder.
     """
     L = math.sqrt(N / rho_star) * sigma
     sim = _build_lj_sim(
@@ -53,6 +97,7 @@ def lj_liquid(
         r_skin=r_skin,
     )
     metadata = {
+        "scenario": name,
         "rho_star": rho_star,
         "T_star": T_star,
         "world_size": L,
