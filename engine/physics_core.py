@@ -45,56 +45,157 @@ def check_displacement(pos_x, pos_y, last_x, last_y, limit_sq):
         
     return max_d2 > limit_sq
 
-@njit(fastmath=True)
+@njit(fastmath=True, parallel=True)
 def build_neighbor_list(pos_x, pos_y, r_list2, cell_size, world_size, pair_i, pair_j):
-    # NOTE: Kept serial because writing to the linked list 'head' array 
-    # creates race conditions that are hard to solve without a full algorithm rewrite.
+    """Cell-list neighbour search, parallelised across atoms.
+
+    The previous implementation used a linked-list cell layout (head + next_idx)
+    that couldn't be parallelised because per-cell head writes raced. This
+    version replaces the linked list with a counting-sort CSR cell layout
+    (cell_start + cell_atoms) so each cell's atoms live in a contiguous range
+    and parallel readers don't conflict.
+
+    Pair generation is also two-pass to avoid an atomic counter on pair_i/j:
+      1. Each atom counts its own pairs (j > i within r_list).
+      2. Prefix-sum the per-atom counts to get write offsets.
+      3. Each atom writes its pairs to its dedicated segment.
+    Each pair condition is evaluated TWICE per pair location (once during
+    count, once during fill) — same pattern as build_atom_neighbor_csr's
+    consumer (integrate_n_steps' atom-centric LJ loop). Net win comes from
+    full data-parallelism and no atomic adds.
+
+    Returns the total number of pairs found. If the total exceeds
+    pair_i.shape[0] no pairs are written and the caller is expected to
+    resize and retry — same contract as the previous serial version.
+    """
     N = pos_x.shape[0]
     n_cells = int(world_size // cell_size) + 1
-    
-    head = np.full((n_cells, n_cells), -1, dtype=np.int32)
-    next_idx = np.full(N, -1, dtype=np.int32)
-    
-    inv_cell = 1.0 / cell_size
-    for i in range(N):
+    n_cells2 = n_cells * n_cells
+    inv_cell = np.float32(1.0 / cell_size)
+    max_pairs = pair_i.shape[0]
+
+    # Phase 1: each atom computes its cell key (parallel)
+    atom_cell = np.empty(N, dtype=np.int32)
+    for i in prange(N):
         cx = int(pos_x[i] * inv_cell)
         cy = int(pos_y[i] * inv_cell)
-        if cx < 0: cx = 0
-        elif cx >= n_cells: cx = n_cells - 1
-        if cy < 0: cy = 0
-        elif cy >= n_cells: cy = n_cells - 1
-        
-        next_idx[i] = head[cx, cy]
-        head[cx, cy] = i
-        
-    count = 0
-    max_pairs = pair_i.shape[0]
-    
-    for cx in range(n_cells):
-        for cy in range(n_cells):
-            i = head[cx, cy]
-            while i != -1:
-                for dx in (-1, 0, 1):
-                    nx = cx + dx
-                    if nx < 0 or nx >= n_cells: continue
-                    for dy in (-1, 0, 1):
-                        ny = cy + dy
-                        if ny < 0 or ny >= n_cells: continue
-                        
-                        j = head[nx, ny]
-                        while j != -1:
-                            if i < j:
-                                px = pos_x[i] - pos_x[j]
-                                py = pos_y[i] - pos_y[j]
-                                r2 = px*px + py*py
-                                if r2 < r_list2:
-                                    if count < max_pairs:
-                                        pair_i[count] = i
-                                        pair_j[count] = j
-                                        count += 1
-                            j = next_idx[j]
-                i = next_idx[i]
-    return count
+        if cx < 0:
+            cx = 0
+        elif cx >= n_cells:
+            cx = n_cells - 1
+        if cy < 0:
+            cy = 0
+        elif cy >= n_cells:
+            cy = n_cells - 1
+        atom_cell[i] = cy * n_cells + cx
+
+    # Phase 2: per-cell occupancy via counting sort (sequential — O(N + n_cells²))
+    cell_start = np.zeros(n_cells2 + 1, dtype=np.int32)
+    for i in range(N):
+        cell_start[atom_cell[i] + 1] += 1
+    for c in range(1, n_cells2 + 1):
+        cell_start[c] += cell_start[c - 1]
+    # cell_start[c] is now the start offset of cell c; cell_start[c+1] is its end.
+
+    # Scatter atoms into cell-sorted array (sequential — O(N))
+    write_pos = np.empty(n_cells2, dtype=np.int32)
+    for c in range(n_cells2):
+        write_pos[c] = cell_start[c]
+    cell_atoms = np.empty(N, dtype=np.int32)
+    for i in range(N):
+        c = atom_cell[i]
+        cell_atoms[write_pos[c]] = i
+        write_pos[c] += 1
+
+    # Phase 3: each atom counts its pairs (j > i, within r_list) — parallel, no writes shared
+    pair_count_per_atom = np.zeros(N, dtype=np.int32)
+    for i in prange(N):
+        cx = int(pos_x[i] * inv_cell)
+        cy = int(pos_y[i] * inv_cell)
+        if cx < 0:
+            cx = 0
+        elif cx >= n_cells:
+            cx = n_cells - 1
+        if cy < 0:
+            cy = 0
+        elif cy >= n_cells:
+            cy = n_cells - 1
+
+        cnt = 0
+        xi = pos_x[i]
+        yi = pos_y[i]
+        for dx in range(-1, 2):
+            nx = cx + dx
+            if nx < 0 or nx >= n_cells:
+                continue
+            for dy in range(-1, 2):
+                ny = cy + dy
+                if ny < 0 or ny >= n_cells:
+                    continue
+                nc = ny * n_cells + nx
+                k_start = cell_start[nc]
+                k_end = cell_start[nc + 1]
+                for k in range(k_start, k_end):
+                    j = cell_atoms[k]
+                    if i < j:
+                        px = xi - pos_x[j]
+                        py = yi - pos_y[j]
+                        r2 = px * px + py * py
+                        if r2 < r_list2:
+                            cnt += 1
+        pair_count_per_atom[i] = cnt
+
+    # Phase 4: prefix-sum per-atom counts → write offsets (sequential — O(N))
+    atom_pair_start = np.empty(N + 1, dtype=np.int32)
+    total = 0
+    for i in range(N):
+        atom_pair_start[i] = total
+        total += pair_count_per_atom[i]
+    atom_pair_start[N] = total
+
+    # Overflow contract: caller resizes pair_i/pair_j and retries. No partial writes.
+    if total > max_pairs:
+        return total
+
+    # Phase 5: each atom writes its pairs to its dedicated segment (parallel, no atomics)
+    for i in prange(N):
+        cx = int(pos_x[i] * inv_cell)
+        cy = int(pos_y[i] * inv_cell)
+        if cx < 0:
+            cx = 0
+        elif cx >= n_cells:
+            cx = n_cells - 1
+        if cy < 0:
+            cy = 0
+        elif cy >= n_cells:
+            cy = n_cells - 1
+
+        wp = atom_pair_start[i]
+        xi = pos_x[i]
+        yi = pos_y[i]
+        for dx in range(-1, 2):
+            nx = cx + dx
+            if nx < 0 or nx >= n_cells:
+                continue
+            for dy in range(-1, 2):
+                ny = cy + dy
+                if ny < 0 or ny >= n_cells:
+                    continue
+                nc = ny * n_cells + nx
+                k_start = cell_start[nc]
+                k_end = cell_start[nc + 1]
+                for k in range(k_start, k_end):
+                    j = cell_atoms[k]
+                    if i < j:
+                        px = xi - pos_x[j]
+                        py = yi - pos_y[j]
+                        r2 = px * px + py * py
+                        if r2 < r_list2:
+                            pair_i[wp] = i
+                            pair_j[wp] = j
+                            wp += 1
+
+    return total
 
 @njit(fastmath=True)
 def build_atom_neighbor_csr(N, pair_i, pair_j, pair_count, nbr_start, nbr_idx):
