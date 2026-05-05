@@ -4,6 +4,14 @@ Benchmark harness — timing and statistics for Simulation.step() calls.
 Reports the canonical metric ns/atom-substep, plus ms/step() and MASPS, with
 median, p10, p90, min, max over k samples. Equilibrates and primes the Numba
 JIT before the timed loop so first-call compile time never enters the sample.
+
+Important correctness note: Simulation.step(physics_steps=k) internally calls
+integrate_n_steps(steps_to_run=k), which can RETURN EARLY when the displacement
+safety check (every SUBSTEP_SAFETY_CHECK_FREQ substeps) detects atoms have
+drifted past the skin limit. The kernel's return value is the number of
+substeps that actually ran. We track sim.total_steps before/after each timed
+call and use the *actual* substep count, not the requested one — otherwise
+ns/atom-substep is artificially low at high physics_steps.
 """
 
 from __future__ import annotations
@@ -17,10 +25,16 @@ from statistics import median
 class BenchResult:
     scenario: str
     N: int
-    physics_steps: int
+    physics_steps_requested: int
     samples: int
     times_ms: list[float] = field(default_factory=list)
+    actual_substeps_per_call: list[int] = field(default_factory=list)
     metadata: dict = field(default_factory=dict)
+
+    # Backwards-compatible alias for code/tests that reference physics_steps.
+    @property
+    def physics_steps(self) -> int:
+        return self.physics_steps_requested
 
     @property
     def median_ms(self) -> float:
@@ -43,12 +57,40 @@ class BenchResult:
         return _percentile(self.times_ms, 90)
 
     @property
+    def trimmed_mean_ms(self) -> float:
+        """Mean of the middle 60% of samples — robust to rebuild-induced outliers."""
+        if not self.times_ms:
+            return 0.0
+        s = sorted(self.times_ms)
+        n = len(s)
+        k = max(1, int(n * 0.2))  # drop top and bottom 20%
+        trimmed = s[k:n - k] if n - k > k else s
+        return sum(trimmed) / len(trimmed)
+
+    @property
+    def median_actual_substeps(self) -> float:
+        """Median of how many substeps integrate_n_steps actually ran per call.
+        When this is less than physics_steps_requested, the kernel was exiting
+        early via the displacement safety check."""
+        if not self.actual_substeps_per_call:
+            return float(self.physics_steps_requested)
+        return median(self.actual_substeps_per_call)
+
+    @property
     def ns_per_atom_substep(self) -> float:
-        return self.median_ms * 1e6 / (self.N * self.physics_steps)
+        """Nanoseconds per atom-substep, using actual substeps run (not requested)."""
+        substeps = self.median_actual_substeps
+        if substeps <= 0:
+            return float("inf")
+        return self.median_ms * 1e6 / (self.N * substeps)
 
     @property
     def masps(self) -> float:
-        return (self.N * self.physics_steps) / (self.median_ms * 1e3)
+        """Million atom-substeps per second, using actual substeps."""
+        substeps = self.median_actual_substeps
+        if substeps <= 0:
+            return 0.0
+        return (self.N * substeps) / (self.median_ms * 1e3)
 
     def as_dict(self) -> dict:
         d = asdict(self)
@@ -57,6 +99,8 @@ class BenchResult:
         d["max_ms"] = self.max_ms
         d["p10_ms"] = self.p10_ms
         d["p90_ms"] = self.p90_ms
+        d["trimmed_mean_ms"] = self.trimmed_mean_ms
+        d["median_actual_substeps"] = self.median_actual_substeps
         d["ns_per_atom_substep"] = self.ns_per_atom_substep
         d["masps"] = self.masps
         return d
@@ -82,7 +126,8 @@ def run_bench(
          parallel-pool spin-up (thread creation is lazy and not always done in
          one call). One priming call is empirically not enough — first-sample
          outliers of ~500 ms have been observed without this triple-prime.
-      3. Run `samples` timed step(physics_steps) calls. Recorded.
+      3. Run `samples` timed step(physics_steps) calls. Each call's wall time
+         AND its actual substep count (from sim.total_steps delta) are recorded.
 
     Returns a BenchResult; caller decides whether to print, persist, or compare.
     """
@@ -91,18 +136,23 @@ def run_bench(
         sim.step(steps_to_run=physics_steps)
 
     times_ms: list[float] = []
+    actual_substeps: list[int] = []
     for _ in range(samples):
+        before_total = sim.total_steps
         t0 = time.perf_counter()
         sim.step(steps_to_run=physics_steps)
         t1 = time.perf_counter()
+        after_total = sim.total_steps
         times_ms.append((t1 - t0) * 1e3)
+        actual_substeps.append(after_total - before_total)
 
     return BenchResult(
         scenario=scenario_name,
         N=sim.count,
-        physics_steps=physics_steps,
+        physics_steps_requested=physics_steps,
         samples=samples,
         times_ms=times_ms,
+        actual_substeps_per_call=actual_substeps,
         metadata=metadata or {},
     )
 
@@ -132,12 +182,18 @@ def _percentile(values: list[float], pct: float) -> float:
 def format_result(r: BenchResult) -> str:
     """Single-line human-readable summary of a result.
 
-    Scenario metadata (rho*, T*, dt, r_skin, ...) is intentionally not printed
-    here — the caller owns that header so it's printed once, not once per row.
+    Reports actual median substeps if it differs from requested — surfaces the
+    early-exit safety check that would otherwise be invisible.
     """
+    actual = r.median_actual_substeps
+    requested = r.physics_steps_requested
+    if abs(actual - requested) > 0.5:
+        steps_field = f"{int(actual)}/{requested}"
+    else:
+        steps_field = f"{requested}"
     return (
-        f"{r.scenario:<14} N={r.N:>6}  steps={r.physics_steps:>3}  "
+        f"{r.scenario:<14} N={r.N:>6}  steps={steps_field:>5}  "
         f"ns/atom-substep={r.ns_per_atom_substep:>7.2f}  "
         f"ms/step={r.median_ms:>7.3f} (p10={r.p10_ms:.3f}, p90={r.p90_ms:.3f})  "
-        f"MASPS={r.masps:>6.2f}"
+        f"trim_mean={r.trimmed_mean_ms:>6.3f}  MASPS={r.masps:>6.2f}"
     )
