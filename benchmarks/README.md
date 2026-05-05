@@ -16,7 +16,7 @@ geometry, no constraints. Pure `Simulation.step()` throughput.
 ```
 cd flow-state
 python -m benchmarks                                       # lj_liquid at N=5000
-python -m benchmarks --scenario all                        # all 3 scenarios at N=5000
+python -m benchmarks --scenario all                        # 4 scenarios at N=5000
 python -m benchmarks -N 500,1000,5000                      # comma-list of Ns
 python -m benchmarks -N grid                               # canonical grid (500..20k)
 python -m benchmarks --scenario all -N grid                # full matrix
@@ -30,36 +30,41 @@ python -m benchmarks --json out.json                       # arbitrary JSON path
 
 Three numbers per scenario, primary first:
 
-1. **`ns_per_atom_substep`** — `(median_ms × 1e6) / (N × physics_steps)`.
+1. **`ns_per_atom_substep`** — `(median_ms × 1e6) / (N × actual_substeps)`.
    Cross-N comparable. Watch this for regressions.
 2. **`median_ms` per `step()` call** — what the user feels per frame in the
-   running app. `step(physics_steps=k)` runs `k` substeps internally.
-3. **MASPS** — million-atom-substeps-per-second. Inverse of #1, headline-friendly.
+   running app.
+3. **MASPS** — million atom-substeps-per-second. Inverse of #1, headline-friendly.
 
-Reported alongside: `min_ms`, `max_ms`, `p10_ms`, `p90_ms`, sample count.
+Reported alongside: `min_ms`, `max_ms`, `p10_ms`, `p90_ms`, 20%-trimmed mean,
+and `median_actual_substeps` (see "actual vs requested substeps" below).
 
 ## Methodology
 
 | Variable | Default | Reason |
 |---|---|---|
 | Boundary | reflecting walls (`use_boundaries=True`) | Only stable BC for free LJ at constant N. Open-world bleeds atoms via the per-step escape filter; PBC isn't implemented. |
-| Gravity | 0 | We're benchmarking LJ, not falling. |
-| Thermostat | Berendsen, on, mix=0.1, target=T* | Pins temperature so kinetic energy doesn't drift between runs. |
-| Wall damping | 1.0 (elastic) | Diverges from production default (0.99). Avoids a hidden energy sink that would fight the thermostat at the boundary. Documented divergence. |
+| Gravity | 0 (controlled scenarios), `config.DEFAULT_GRAVITY` (lj_production) | Controlled scenarios isolate LJ throughput from gravitational drift; lj_production includes it. |
+| Thermostat | Berendsen on, mix=0.1, target=T* (controlled); off (lj_production) | Pins T in controlled runs so kinetic energy doesn't drift between runs. lj_production omits it because production omits it. |
+| Wall damping | 1.0 elastic (controlled); `config.DEFAULT_DAMPING` (lj_production) | Avoids a hidden energy sink fighting the thermostat in controlled runs. |
 | Initial layout | perturbed square lattice (5% jitter), fixed seed | Avoids LJ overlap on startup; deterministic. |
 | Initial velocities | Maxwell-Boltzmann at T*, fixed seed, zero net momentum, rescaled to exact target KE | Deterministic, no spurious drift, lands at the target temperature on substep 0. |
-| Equilibration | 200 substeps before timing | Discards the relaxation transient. |
+| Equilibration | 200 substeps before timing | Discards the relaxation transient. Increase for production scenarios (gravity not at steady state). |
 | JIT priming | 3 untimed `step(physics_steps)` calls | Pays Numba compile and parallel-pool spin-up before timing starts. One call is empirically not enough. |
 | Samples | 50 timed `step()` calls, median reported | Cheap, robust to one-off jitter. |
+| Numerical defaults | `dt`, `r_skin` read from `shared.config` | Benchmarks track production tuning automatically. |
 
-Scenario presets (reduced LJ units, σ=ε=mass=1):
+## Scenarios
 
-| Scenario | ρ* | T* | Phase | What it stresses |
-|---|---|---|---|---|
-| `lj_gas` | 0.05 | 2.0 | Dilute gas | Few neighbours/atom — neighbour-list bookkeeping cost dominates |
-| `lj_liquid` | 0.7 | 1.0 | Liquid | Realistic working point — production-like |
-| `lj_dense` | 0.85 | 0.7 | Dense liquid (near triple point) | Many pairs/atom — LJ force loop dominates |
-| `lj_sweep` | configurable | configurable | (parametric) | Used by `--sweep` to vary one numerical dial |
+Reduced LJ units throughout (σ=ε=mass=1):
+
+| Scenario | ρ* | T* | Gravity | Thermostat | Wall damping | What it stresses |
+|---|---|---|---|---|---|---|
+| `lj_gas` | 0.05 | 2.0 | 0 | on | 1.0 | Few neighbours/atom — neighbour-list bookkeeping cost dominates |
+| `lj_liquid` | 0.7 | 1.0 | 0 | on | 1.0 | Realistic working point in controlled conditions |
+| `lj_dense` | 0.85 | 0.7 | 0 | on | 1.0 | Many pairs/atom — LJ force loop dominates |
+| `lj_production` | 0.7 | 1.0 | `config.DEFAULT_GRAVITY` | off | `config.DEFAULT_DAMPING` | Mirrors actual production conditions |
+| `lj_sweep` | configurable | configurable | configurable | configurable | configurable | Used by `--sweep` to vary one numerical dial |
 
 The canonical N grid is `(500, 1000, 2000, 5000, 10000, 20000)`, selectable via `-N grid`.
 
@@ -67,8 +72,8 @@ The canonical N grid is `(500, 1000, 2000, 5000, 10000, 20000)`, selectable via 
 
 `--sweep KEY=v1,v2,v3` iterates the chosen scenario over values of one
 numerical dial. Allowed keys: `rho_star`, `T_star`, `sigma`, `epsilon`,
-`dt`, `r_skin`, `physics_steps`. Use with `--scenario lj_sweep` if you also
-want to vary `rho_star` or `T_star` without the named-preset wrappers
+`dt`, `r_skin`, `physics_steps`. Use with `--scenario lj_sweep` if you want
+to vary `rho_star` or `T_star` without the named-preset wrappers
 overriding them.
 
 `--compare` runs the configured benchmarks and diffs the fresh
@@ -78,27 +83,68 @@ overriding them.
 
 ## Baselines
 
-`--baseline` writes `benchmarks/baselines/<hostname>.json` for the current run.
-The directory is `.gitignored` — baselines are per-machine and shouldn't pollute
-the repo, since absolute timings aren't comparable across hardware. Workflow:
+`--baseline` writes `benchmarks/baselines/<hostname>.json` for the current
+run. The directory is `.gitignored` — baselines are per-machine and shouldn't
+pollute the repo, since absolute timings aren't comparable across hardware.
 
-1. Establish a baseline before a perf-suspect change: `python -m benchmarks --scenario all -N grid --baseline`
-2. Make the change, re-run with `--baseline` to overwrite.
-3. (EI-3) `--compare` will diff a fresh run against the on-disk baseline.
+## Actual vs requested substeps
+
+`Simulation.step(physics_steps=k)` calls `integrate_n_steps(steps_to_run=k)`,
+which **can return early** when its periodic displacement-safety check (every
+`SUBSTEP_SAFETY_CHECK_FREQ`=20 substeps) detects atoms have drifted past
+`r_skin/2`. The kernel returns the actual count via `sim.total_steps`.
+
+The harness records actual substeps per call and reports throughput based on
+those, not the requested count. When the two diverge, `format_result` shows
+`actual/requested` so the early exit is visible.
+
+This matters: at high `physics_steps` (50, 100), the kernel saturates at ~20
+substeps per call regardless. A naive harness would report inflated throughput
+and falsely suggest raising `DEFAULT_DRAW_M`.
+
+## Worked example: r_skin tuning
+
+This is the suite's first real-world story.
+
+Under `lj_liquid` controlled conditions at N=5000, an `r_skin` sweep showed:
+
+| r_skin | ns/atom-substep | vs default 0.3 |
+|---|---|---|
+| 0.3 (current default) | 49.9 | — |
+| 0.5 | 35.7 | -28% |
+| 0.7 | 32.4 (best) | -35% |
+
+Looked like a clear win. But running the same sweep under `lj_production`
+(gravity on, no thermostat) showed:
+
+| r_skin | ns/atom-substep | vs default 0.3 |
+|---|---|---|
+| 0.3 | 87.6 | — |
+| 0.5 | 103.9 | **+19% worse** |
+
+The controlled-conditions optimization didn't transfer. Gravity-driven motion
+keeps atoms drifting fast enough that a larger r_skin doesn't reduce rebuild
+frequency proportionally to the larger pair list. The current default 0.3 is
+correct for production; do not change it.
+
+This is what the suite is for: catching false-positive optimizations before
+they ship.
 
 ## Known limitations
 
 - **No PBC.** Reflecting walls are the only stable BC. Wall reflections are a
-  non-physical interaction surface; their effect is bounded but real. When PBC
-  ships, add periodic scenarios alongside the reflecting ones.
+  non-physical interaction surface; their effect is bounded but real. When
+  PBC ships, add periodic scenarios alongside the reflecting ones.
 - **No component breakdown.** Only whole-`step()` time is measured. When a
-  regression appears, diagnosis requires manual instrumentation. Add
-  `--breakdown` in a follow-up if needed.
+  regression appears, diagnosis requires manual instrumentation.
 - **No CI gating.** Per-machine, manual-run only.
 - **Dispersion at higher N.** p90/p10 ratio is ~2-3× because of intermittent
   neighbour-list rebuilds (rebuilds happen when an atom drifts > r_skin/2).
-  The median is robust; if you need tighter regression detection consider
-  `--samples 200` or report a trimmed mean.
+  The median is robust; the trimmed mean is a useful corroboration. For
+  tighter regression detection use `--samples 200` or larger.
+- **Run-to-run variance ~5-10%** even on the same machine, depending on
+  background load. The 5% default `--regression-pct` is borderline against
+  this noise floor.
 
 ## Layout
 
@@ -107,8 +153,8 @@ benchmarks/
 ├── __init__.py
 ├── __main__.py     # `python -m benchmarks` entry
 ├── README.md       # this file
-├── harness.py      # timing + statistics
-├── scenarios.py    # lj_gas, lj_liquid, lj_dense + SCENARIOS registry
-├── run.py          # CLI
+├── harness.py      # timing + statistics + actual-substep tracking
+├── scenarios.py    # 5 scenario builders + SCENARIOS registry
+├── run.py          # CLI: --scenario, -N, --sweep, --baseline, --compare
 └── baselines/      # per-host JSON baselines (gitignored)
 ```
