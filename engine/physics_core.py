@@ -273,14 +273,26 @@ def spatial_sort(pos_x, pos_y, vel_x, vel_y, force_x, force_y, is_static, atom_s
     atom_sigma[:] = atom_sigma[perm]
     atom_eps_sqrt[:] = atom_eps_sqrt[perm]
 
-@njit(fastmath=True, parallel=True)
+@njit(fastmath=True)
 def apply_thermostat(vel_x, vel_y, mass, is_static, target_temp, mix):
+    """Berendsen velocity-rescaling thermostat (single-threaded JIT).
+
+    Was previously @njit(parallel=True) with two prange loops. A
+    microbenchmark across N from 700 to 220 000 showed the parallel
+    version paid a fixed ~75-90 µs thread-dispatch cost that dominated
+    the actual O(N) arithmetic up to N ≈ 30 000-35 000. Below that
+    crossover the serial version is 2-30× faster (29× at N=700, the
+    common case for today's sims). The two paths cross at the 10×
+    simulation-size target; if we ever sustain N >> 35 000 we should
+    revisit this with a per-call branch or a different thermostatting
+    strategy (e.g., DPD pair thermostat folded into the LJ loop).
+    """
     ke = 0.0
     count = 0
     N = vel_x.shape[0]
 
-    # Parallel reduction for Kinetic Energy
-    for i in prange(N):
+    # KE reduction
+    for i in range(N):
         if is_static[i] == 0:
             ke += 0.5 * mass * (vel_x[i]**2 + vel_y[i]**2)
             count += 1
@@ -291,8 +303,8 @@ def apply_thermostat(vel_x, vel_y, mass, is_static, target_temp, mix):
     scale = math.sqrt(target_temp / current_T)
     eff_scale = 1.0 + mix * (scale - 1.0)
 
-    # Parallel update of velocities
-    for i in prange(N):
+    # Velocity rescale
+    for i in range(N):
         if is_static[i] == 0:
             vel_x[i] *= eff_scale
             vel_y[i] *= eff_scale

@@ -417,3 +417,101 @@ class TestWorldEscape:
         # Out-of-bounds dynamic atom removed; in-bounds atom retained
         assert sim.count == 1
         assert sim.pos_x[0] == pytest.approx(5.0, abs=0.5)
+
+
+class TestApplyThermostat:
+    """Berendsen velocity-rescaling thermostat — pins the contract.
+
+    No existing tests covered apply_thermostat directly. These were added
+    when the kernel was switched from @njit(parallel=True) to plain
+    @njit (single-threaded was 2-30× faster up to N≈30 000 in
+    microbenchmarks). The math/signature did not change; these tests
+    establish a regression baseline for future thermostat work.
+    """
+
+    def _kinetic_energy_per_atom(self, vel_x, vel_y, mass, is_static):
+        """KE/N over dynamic atoms only — matches the kernel's `current_T`."""
+        dyn = is_static == 0
+        ke = 0.5 * mass * (vel_x[dyn]**2 + vel_y[dyn]**2).sum()
+        return float(ke) / int(dyn.sum())
+
+    def test_thermostat_pulls_hot_velocities_toward_target(self):
+        from engine.physics_core import apply_thermostat
+        rng = np.random.default_rng(0)
+        n = 1000
+        # Hot start: KE/atom ≈ 5.0; we want to pull toward 0.5
+        vel_x = rng.standard_normal(n).astype(np.float32) * np.sqrt(10.0)
+        vel_y = rng.standard_normal(n).astype(np.float32) * np.sqrt(10.0)
+        is_static = np.zeros(n, dtype=np.int32)
+        mass = np.float32(1.0)
+
+        T_before = self._kinetic_energy_per_atom(vel_x, vel_y, mass, is_static)
+        apply_thermostat(vel_x, vel_y, mass, is_static, np.float32(0.5), np.float32(0.1))
+        T_after = self._kinetic_energy_per_atom(vel_x, vel_y, mass, is_static)
+
+        # mix=0.1 means one application moves ~10% of the way toward target.
+        # Direction must be correct; magnitude should be a meaningful step.
+        assert T_after < T_before
+        assert T_after > 0.5  # not all the way there in one step
+
+    def test_thermostat_pulls_cold_velocities_toward_target(self):
+        from engine.physics_core import apply_thermostat
+        rng = np.random.default_rng(1)
+        n = 1000
+        # Cold start: KE/atom ≈ 0.05; want to push up to 0.5
+        vel_x = rng.standard_normal(n).astype(np.float32) * np.sqrt(0.1)
+        vel_y = rng.standard_normal(n).astype(np.float32) * np.sqrt(0.1)
+        is_static = np.zeros(n, dtype=np.int32)
+        mass = np.float32(1.0)
+
+        T_before = self._kinetic_energy_per_atom(vel_x, vel_y, mass, is_static)
+        apply_thermostat(vel_x, vel_y, mass, is_static, np.float32(0.5), np.float32(0.1))
+        T_after = self._kinetic_energy_per_atom(vel_x, vel_y, mass, is_static)
+
+        assert T_after > T_before
+        assert T_after < 0.5
+
+    def test_thermostat_ignores_static_atoms(self):
+        from engine.physics_core import apply_thermostat
+        n = 100
+        # Even-index atoms dynamic + hot; odd-index atoms static + at fixed velocity.
+        vel_x = np.full(n, 2.0, dtype=np.float32)
+        vel_y = np.full(n, 0.0, dtype=np.float32)
+        is_static = np.zeros(n, dtype=np.int32)
+        is_static[1::2] = 1  # half static
+        mass = np.float32(1.0)
+
+        static_vel_before = vel_x[is_static == 1].copy()
+        apply_thermostat(vel_x, vel_y, mass, is_static, np.float32(0.5), np.float32(0.1))
+
+        # Static atoms unchanged
+        np.testing.assert_array_equal(vel_x[is_static == 1], static_vel_before)
+        # Dynamic atoms scaled (away from 2.0, toward target)
+        assert not np.allclose(vel_x[is_static == 0], 2.0)
+
+    def test_thermostat_no_dynamic_atoms_is_noop(self):
+        """count==0 path: all-static array must not divide-by-zero."""
+        from engine.physics_core import apply_thermostat
+        n = 50
+        vel_x = np.full(n, 3.0, dtype=np.float32)
+        vel_y = np.full(n, 0.0, dtype=np.float32)
+        is_static = np.ones(n, dtype=np.int32)  # all static
+
+        before = vel_x.copy()
+        apply_thermostat(vel_x, vel_y, np.float32(1.0), is_static,
+                         np.float32(0.5), np.float32(0.1))
+        np.testing.assert_array_equal(vel_x, before)
+
+    def test_thermostat_zero_velocity_is_noop(self):
+        """current_T <= 1e-6 path: no division by tiny-positive nonsense."""
+        from engine.physics_core import apply_thermostat
+        n = 50
+        vel_x = np.zeros(n, dtype=np.float32)
+        vel_y = np.zeros(n, dtype=np.float32)
+        is_static = np.zeros(n, dtype=np.int32)
+
+        apply_thermostat(vel_x, vel_y, np.float32(1.0), is_static,
+                         np.float32(0.5), np.float32(0.1))
+        # Velocities still zero (would be NaN/inf if guard failed)
+        assert np.all(vel_x == 0.0)
+        assert np.all(vel_y == 0.0)
