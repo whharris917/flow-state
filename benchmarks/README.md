@@ -102,6 +102,29 @@ This matters: at high `physics_steps` (50, 100), the kernel saturates at ~20
 substeps per call regardless. A naive harness would report inflated throughput
 and falsely suggest raising `DEFAULT_DRAW_M`.
 
+## Component-level breakdown (`--breakdown`)
+
+`--breakdown` runs a phase-instrumented harness that mirrors `Simulation.step()`
+and times each kernel separately:
+
+```
+benchmarks/breakdown.py     → run_breakdown(scenario, sim, ...)
+                            → format_breakdown(result)
+```
+
+Phases reported (means across all calls, not medians — so phases that only
+run on a fraction of calls amortize correctly):
+
+1. `check_displacement` — every call
+2. `build_neighbor_list` — only on rebuild
+3. `build_atom_neighbor_csr` — only on rebuild
+4. `integrate_n_steps` — every call
+5. `apply_thermostat` — only if thermostat is on
+6. `escape_filter` — every call
+
+Rebuild phases also report per-rebuild cost. Use this to diagnose
+regressions: when whole-step time moves, breakdown tells you which kernel.
+
 ## Worked example: r_skin tuning
 
 This is the suite's first real-world story.
@@ -146,6 +169,31 @@ they ship.
   background load. The 5% default `--regression-pct` is borderline against
   this noise floor.
 
+## Worked example #2: spatial sort
+
+A second story showing the same shape. Classical MD wisdom says sorting
+atoms by spatial cell improves LJ pair-loop cache locality. The suite
+includes an experiment harness for this:
+`benchmarks/experiments.py::external_spatial_sort(sim)` permutes all 16
+per-atom arrays by cell key without touching engine code, and the CLI
+exposes it as `--spatial-sort-once`.
+
+Result at N=5000:
+
+| Scenario | Baseline | Sorted | Delta |
+|---|---|---|---|
+| lj_gas | 15.91 | 15.79 | -0.7% (noise) |
+| lj_liquid | 42.12 | 54.44 | **+29% worse** |
+| lj_dense | 42.41 | 41.45 | -2% (noise) |
+| lj_production | 68.83 | 72.15 | +5% (noise) |
+
+Same result at N=10k and N=20k (deltas within noise floor). Spatial sort
+is **not** a perf lever in this Flow State configuration. The Numba
+parallel atom-centric pair loop already has good locality without explicit
+reordering. The experiment harness stays in the suite to document the
+negative result and let future engineers re-test if the kernel architecture
+changes.
+
 ## Layout
 
 ```
@@ -155,6 +203,9 @@ benchmarks/
 ├── README.md       # this file
 ├── harness.py      # timing + statistics + actual-substep tracking
 ├── scenarios.py    # 5 scenario builders + SCENARIOS registry
-├── run.py          # CLI: --scenario, -N, --sweep, --baseline, --compare
+├── breakdown.py    # phase-instrumented harness (--breakdown)
+├── experiments.py  # spatial-sort and other engine-change experiments
+├── run.py          # CLI: --scenario, -N, --sweep, --baseline, --compare,
+│                   #      --breakdown, --spatial-sort-once
 └── baselines/      # per-host JSON baselines (gitignored)
 ```
