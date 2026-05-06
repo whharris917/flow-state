@@ -709,10 +709,15 @@ class Renderer:
     # =========================================================================
 
     def _draw_stats(self, session, sim, layout):
-        metric_x = layout['LEFT_X'] + 15
-        stats_y = config.WINDOW_HEIGHT - 80
+        # Anchor inside the simulation viewport (MID_X), not at the left edge
+        # of the screen — LEFT_X is 0 in production layout, which would put the
+        # text under the left panel that the UI tree paints on top after this.
+        # Use the live layout height too, not config.WINDOW_HEIGHT — that's a
+        # hardcoded design value and falls out of sync after a window resize.
+        metric_x = layout['MID_X'] + 15
+        stats_y = layout['H'] - 80
         curr_t = calculate_current_temp(sim.vel_x, sim.vel_y, sim.count, config.ATOM_MASS)
-        
+
         self.screen.blit(self.big_font.render(f"Particles: {sim.count}", True, (255, 255, 255)), (metric_x, stats_y))
         self.screen.blit(self.font.render(f"Pairs: {sim.pair_count} | T: {curr_t:.3f}", True, (180, 180, 180)), (metric_x, stats_y + 30))
         self.screen.blit(self.font.render(f"SPS: {int(sim.sps)}", True, (100, 255, 100)), (metric_x, stats_y + 50))
