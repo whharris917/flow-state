@@ -68,7 +68,7 @@ class Renderer:
         self.screen.set_clip(None)
         
         if session.mode == config.MODE_SIM:
-            self._draw_stats(session, sim, layout)
+            self._draw_stats(app, session, sim, layout)
         
         # Draw UI Tree (Panels, Buttons, Menus, Status Bar)
         for el in ui_list:
@@ -708,23 +708,32 @@ class Renderer:
     # Stats & Status
     # =========================================================================
 
-    def _draw_stats(self, session, sim, layout):
+    def _draw_stats(self, app, session, sim, layout):
         # Anchor inside the simulation viewport (MID_X), not at the left edge
         # of the screen — LEFT_X is 0 in production layout, which would put the
         # text under the left panel that the UI tree paints on top after this.
         # Use the live layout height too, not config.WINDOW_HEIGHT — that's a
         # hardcoded design value and falls out of sync after a window resize.
         # Subtract the status-bar reservation (config.scale(30); see
-        # ui_manager.py:111) so the bottom-most line (SPS) doesn't get painted
+        # ui_manager.py:111) so the bottom-most line doesn't get painted
         # over by the StatusBar widget.
         status_bar_h = config.scale(30)
         metric_x = layout['MID_X'] + 15
-        stats_y = layout['H'] - status_bar_h - 80
+        stats_y = layout['H'] - status_bar_h - 130
         curr_t = calculate_current_temp(sim.vel_x, sim.vel_y, sim.count, config.ATOM_MASS)
+
+        # Live rate metrics. SPS is updated by Simulation.step; FPS comes from
+        # pygame's Clock. physics_steps tracks the speed slider that drives it
+        # each frame in update_physics.
+        fps = app.clock.get_fps()
+        physics_steps = int(app.ui.sliders['speed'].val) if 'speed' in app.ui.sliders else 0
+        sim_per_real = sim.sps * sim.dt  # simulated seconds per real second
 
         self.screen.blit(self.big_font.render(f"Particles: {sim.count}", True, (255, 255, 255)), (metric_x, stats_y))
         self.screen.blit(self.font.render(f"Pairs: {sim.pair_count} | T: {curr_t:.3f}", True, (180, 180, 180)), (metric_x, stats_y + 30))
-        self.screen.blit(self.font.render(f"SPS: {int(sim.sps)}", True, (100, 255, 100)), (metric_x, stats_y + 50))
+        self.screen.blit(self.font.render(f"SPS: {int(sim.sps)} | FPS: {int(fps)}", True, (100, 255, 100)), (metric_x, stats_y + 50))
+        self.screen.blit(self.font.render(f"steps/frame: {physics_steps} | dt: {sim.dt:.4f}", True, (180, 180, 180)), (metric_x, stats_y + 70))
+        self.screen.blit(self.font.render(f"sim time: {sim_per_real:.2f}x real", True, (180, 200, 220)), (metric_x, stats_y + 90))
 
     # =========================================================================
     # Tool Overlay Helpers
