@@ -714,8 +714,12 @@ class Renderer:
         # text under the left panel that the UI tree paints on top after this.
         # Use the live layout height too, not config.WINDOW_HEIGHT — that's a
         # hardcoded design value and falls out of sync after a window resize.
+        # Subtract the status-bar reservation (config.scale(30); see
+        # ui_manager.py:111) so the bottom-most line (SPS) doesn't get painted
+        # over by the StatusBar widget.
+        status_bar_h = config.scale(30)
         metric_x = layout['MID_X'] + 15
-        stats_y = layout['H'] - 80
+        stats_y = layout['H'] - status_bar_h - 80
         curr_t = calculate_current_temp(sim.vel_x, sim.vel_y, sim.count, config.ATOM_MASS)
 
         self.screen.blit(self.big_font.render(f"Particles: {sim.count}", True, (255, 255, 255)), (metric_x, stats_y))
