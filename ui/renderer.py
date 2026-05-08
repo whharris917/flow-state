@@ -719,7 +719,7 @@ class Renderer:
         # over by the StatusBar widget.
         status_bar_h = config.scale(30)
         metric_x = layout['MID_X'] + 15
-        stats_y = layout['H'] - status_bar_h - 130
+        stats_y = layout['H'] - status_bar_h - 150
         curr_t = calculate_current_temp(sim.vel_x, sim.vel_y, sim.count, config.ATOM_MASS)
 
         # Live rate metrics. SPS is updated by Simulation.step; FPS comes from
@@ -729,11 +729,21 @@ class Renderer:
         physics_steps = int(app.ui.sliders['speed'].val) if 'speed' in app.ui.sliders else 0
         sim_per_real = sim.sps * sim.dt  # simulated seconds per real second
 
+        from engine.physics_core import (
+            BOUNDARY_OPEN, BOUNDARY_REFLECTING, BOUNDARY_PERIODIC,
+        )
+        bdry_label = {
+            BOUNDARY_OPEN: "Open",
+            BOUNDARY_REFLECTING: "Reflecting",
+            BOUNDARY_PERIODIC: "Periodic",
+        }.get(sim.boundary_mode, "?")
+
         self.screen.blit(self.big_font.render(f"Particles: {sim.count}", True, (255, 255, 255)), (metric_x, stats_y))
         self.screen.blit(self.font.render(f"Pairs: {sim.pair_count} | T: {curr_t:.3f}", True, (180, 180, 180)), (metric_x, stats_y + 30))
         self.screen.blit(self.font.render(f"SPS: {int(sim.sps)} | FPS: {int(fps)}", True, (100, 255, 100)), (metric_x, stats_y + 50))
         self.screen.blit(self.font.render(f"steps/frame: {physics_steps} | dt: {sim.dt:.4f}", True, (180, 180, 180)), (metric_x, stats_y + 70))
         self.screen.blit(self.font.render(f"sim time: {sim_per_real:.2f}x real", True, (180, 200, 220)), (metric_x, stats_y + 90))
+        self.screen.blit(self.font.render(f"bounds: {bdry_label}  [F8 to cycle]", True, (200, 200, 160)), (metric_x, stats_y + 110))
 
     # =========================================================================
     # Tool Overlay Helpers

@@ -198,6 +198,27 @@ class InputHandler:
                 self.controller.change_tool(config.TOOL_SOURCE)
                 return True
 
+            # Boundary mode cycle (F8)
+            if event.key == pygame.K_F8:
+                from engine.physics_core import (
+                    BOUNDARY_OPEN, BOUNDARY_REFLECTING, BOUNDARY_PERIODIC,
+                )
+                sim = self.controller.scene.simulation
+                new_mode = sim.cycle_boundary_mode()
+                # Keep the "Bounds" toggle button in sync — flow_state_app
+                # writes button.active back into use_boundaries every frame,
+                # which would otherwise reset PERIODIC to OPEN. The button is
+                # binary, so we treat any non-OPEN mode as "active".
+                if 'boundaries' in self.ui.buttons:
+                    self.ui.buttons['boundaries'].active = (new_mode != BOUNDARY_OPEN)
+                label = {
+                    BOUNDARY_OPEN: "Open",
+                    BOUNDARY_REFLECTING: "Reflecting",
+                    BOUNDARY_PERIODIC: "Periodic",
+                }[new_mode]
+                self.session.status.set(f"Boundaries: {label}")
+                return True
+
             # Solver Benchmarking Controls (F9/F10/F11)
             sketch = self.controller.scene.sketch
 

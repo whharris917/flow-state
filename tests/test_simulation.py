@@ -575,3 +575,243 @@ class TestBuildAtomNeighborCSR:
         assert (diffs >= 0).all()
         # Sum of degrees = 2 * |E|
         assert nbr_start[-1] == 2 * len(pairs)
+
+
+# ===========================================================================
+# Boundary modes — OPEN / REFLECTING / PERIODIC
+# ===========================================================================
+
+from engine.physics_core import (
+    BOUNDARY_OPEN, BOUNDARY_REFLECTING, BOUNDARY_PERIODIC,
+)
+
+
+class TestBoundaryModeProperty:
+    """The bool ``use_boundaries`` is a backward-compat alias over the canonical
+    int ``boundary_mode``. The UI Bounds button writes ``use_boundaries`` every
+    frame, so the setter must not downgrade an active PERIODIC mode."""
+
+    def test_default_mode_is_open(self, simulation):
+        assert simulation.boundary_mode == BOUNDARY_OPEN
+        assert simulation.use_boundaries is False
+
+    def test_setter_true_from_open_promotes_to_reflecting(self, simulation):
+        simulation.use_boundaries = True
+        assert simulation.boundary_mode == BOUNDARY_REFLECTING
+
+    def test_setter_false_resets_to_open(self, simulation):
+        simulation.boundary_mode = BOUNDARY_REFLECTING
+        simulation.use_boundaries = False
+        assert simulation.boundary_mode == BOUNDARY_OPEN
+
+    def test_setter_true_does_not_downgrade_periodic(self, simulation):
+        simulation.boundary_mode = BOUNDARY_PERIODIC
+        simulation.use_boundaries = True
+        assert simulation.boundary_mode == BOUNDARY_PERIODIC
+
+    def test_use_boundaries_reads_truthy_under_periodic(self, simulation):
+        simulation.boundary_mode = BOUNDARY_PERIODIC
+        assert simulation.use_boundaries is True
+
+    def test_reset_restores_open(self, simulation):
+        simulation.boundary_mode = BOUNDARY_PERIODIC
+        simulation.reset()
+        assert simulation.boundary_mode == BOUNDARY_OPEN
+
+    def test_cycle_advances_open_to_reflecting(self, simulation):
+        assert simulation.boundary_mode == BOUNDARY_OPEN
+        assert simulation.cycle_boundary_mode() == BOUNDARY_REFLECTING
+
+    def test_cycle_full_loop(self, simulation):
+        # default world is large enough for PBC
+        assert simulation.cycle_boundary_mode() == BOUNDARY_REFLECTING
+        assert simulation.cycle_boundary_mode() == BOUNDARY_PERIODIC
+        assert simulation.cycle_boundary_mode() == BOUNDARY_OPEN
+
+    def test_cycle_skips_periodic_when_world_too_small(self, simulation):
+        # cell_size = r_cut + skin = 2.8. n_cells = floor(L/cs) + 1 must be
+        # >= 3 for PBC. L = 5 → n_cells = 2 → unsafe → cycle skips PERIODIC.
+        simulation.world_size = 5.0
+        simulation._update_derived_params()
+        simulation.boundary_mode = BOUNDARY_REFLECTING
+        nxt = simulation.cycle_boundary_mode()
+        assert nxt == BOUNDARY_OPEN  # skipped PERIODIC, jumped to OPEN
+
+    def test_pbc_safe_at_default_world(self, simulation):
+        assert simulation._pbc_safe() is True
+
+    def test_pbc_unsafe_below_three_cells(self, simulation):
+        simulation.world_size = 5.0
+        simulation._update_derived_params()
+        assert simulation._pbc_safe() is False
+
+
+class TestPeriodicWrap:
+    """Position-update wrap behaviour for dynamic atoms under PBC."""
+
+    def test_atom_past_right_edge_wraps_left(self, simulation):
+        simulation.boundary_mode = BOUNDARY_PERIODIC
+        simulation.dt = 0.01
+        simulation.gravity = 0.0
+        L = simulation.world_size
+        idx = simulation._add_particle(L - 0.01, L / 2, vx=10.0, is_static=0)
+        simulation.step(steps_to_run=1)
+        # New x ≈ L + 0.09 → wrapped to ≈ 0.09
+        assert 0.0 <= simulation.pos_x[idx] < 1.0
+
+    def test_atom_past_left_edge_wraps_right(self, simulation):
+        simulation.boundary_mode = BOUNDARY_PERIODIC
+        simulation.dt = 0.01
+        simulation.gravity = 0.0
+        L = simulation.world_size
+        idx = simulation._add_particle(0.01, L / 2, vx=-10.0, is_static=0)
+        simulation.step(steps_to_run=1)
+        # New x ≈ -0.09 → wrapped to ≈ L - 0.09
+        assert L - 1.0 < simulation.pos_x[idx] <= L
+
+    def test_atom_past_top_edge_wraps_bottom(self, simulation):
+        simulation.boundary_mode = BOUNDARY_PERIODIC
+        simulation.dt = 0.01
+        simulation.gravity = 0.0
+        L = simulation.world_size
+        idx = simulation._add_particle(L / 2, L - 0.01, vy=10.0, is_static=0)
+        simulation.step(steps_to_run=1)
+        assert 0.0 <= simulation.pos_y[idx] < 1.0
+
+    def test_atom_past_bottom_edge_wraps_top(self, simulation):
+        simulation.boundary_mode = BOUNDARY_PERIODIC
+        simulation.dt = 0.01
+        simulation.gravity = 0.0
+        L = simulation.world_size
+        idx = simulation._add_particle(L / 2, 0.01, vy=-10.0, is_static=0)
+        simulation.step(steps_to_run=1)
+        assert L - 1.0 < simulation.pos_y[idx] <= L
+
+    def test_atom_does_not_wrap_under_open(self, simulation):
+        # Under OPEN, the post-step escape filter removes atoms that left
+        # the [0, world_size]^2 domain.
+        simulation.boundary_mode = BOUNDARY_OPEN
+        simulation.dt = 0.01
+        simulation.gravity = 0.0
+        L = simulation.world_size
+        simulation._add_particle(L - 0.01, L / 2, vx=10.0, is_static=0)
+        simulation.step(steps_to_run=1)
+        assert simulation.count == 0
+
+    def test_atom_reflects_under_reflecting(self, simulation):
+        simulation.boundary_mode = BOUNDARY_REFLECTING
+        simulation.dt = 0.01
+        simulation.gravity = 0.0
+        L = simulation.world_size
+        idx = simulation._add_particle(L - 0.01, L / 2, vx=10.0, is_static=0)
+        simulation.step(steps_to_run=1)
+        # Reflecting: position bounces back inside [0, L] and vel_x flips.
+        assert 0.0 <= simulation.pos_x[idx] <= L
+        assert simulation.vel_x[idx] < 0
+
+
+class TestPeriodicNoEscape:
+    """Under PBC the post-step escape filter must not remove dynamic atoms."""
+
+    def test_count_constant_when_atoms_cross_each_boundary(self, simulation):
+        simulation.boundary_mode = BOUNDARY_PERIODIC
+        simulation.dt = 0.01
+        simulation.gravity = 0.0
+        L = simulation.world_size
+        # Four atoms, each pushed across a different wall this step.
+        simulation._add_particle(L - 0.01, L / 2, vx=20.0, is_static=0)
+        simulation._add_particle(0.01, L / 2, vx=-20.0, is_static=0)
+        simulation._add_particle(L / 2, L - 0.01, vy=20.0, is_static=0)
+        simulation._add_particle(L / 2, 0.01, vy=-20.0, is_static=0)
+        n_before = simulation.count
+        for _ in range(5):
+            simulation.step(steps_to_run=1)
+        assert simulation.count == n_before
+        assert ((simulation.pos_x[:n_before] >= 0)
+                & (simulation.pos_x[:n_before] <= L)).all()
+        assert ((simulation.pos_y[:n_before] >= 0)
+                & (simulation.pos_y[:n_before] <= L)).all()
+
+
+class TestPeriodicNeighbourList:
+    """Cell list with PBC must include cross-boundary pairs via wrap and use
+    the minimum-image convention when checking pair distance."""
+
+    def _build(self, simulation):
+        from engine.physics_core import build_neighbor_list
+        n = simulation.count
+        return build_neighbor_list(
+            simulation.pos_x[:n], simulation.pos_y[:n],
+            simulation.r_list2, simulation.cell_size, simulation.world_size,
+            simulation.pair_i, simulation.pair_j,
+            np.int32(simulation.boundary_mode),
+        )
+
+    def test_atoms_across_right_boundary_are_neighbours_under_pbc(self, simulation):
+        L = simulation.world_size
+        simulation._add_particle(0.5, L / 2, is_static=0)
+        simulation._add_particle(L - 0.5, L / 2, is_static=0)
+        simulation.boundary_mode = BOUNDARY_PERIODIC
+        # Min-image dx = ±1.0, well within r_list ≈ 2.8 → exactly one pair.
+        assert self._build(simulation) == 1
+
+    def test_atoms_across_right_boundary_not_neighbours_under_open(self, simulation):
+        L = simulation.world_size
+        simulation._add_particle(0.5, L / 2, is_static=0)
+        simulation._add_particle(L - 0.5, L / 2, is_static=0)
+        simulation.boundary_mode = BOUNDARY_OPEN
+        # Direct distance L - 1 ≫ r_list → no pair.
+        assert self._build(simulation) == 0
+
+    def test_atoms_across_corner_diagonally_are_neighbours_under_pbc(self, simulation):
+        L = simulation.world_size
+        simulation._add_particle(0.5, 0.5, is_static=0)
+        simulation._add_particle(L - 0.5, L - 0.5, is_static=0)
+        simulation.boundary_mode = BOUNDARY_PERIODIC
+        # Min-image distance = √2, well within r_list. Direct distance
+        # ≈ √2(L-1) ≈ 70 — far beyond r_list.
+        assert self._build(simulation) == 1
+
+    def test_no_double_counting_under_pbc(self, simulation):
+        """Each (i, j) pair must be emitted exactly once even when reachable
+        from both the direct neighbour cell and a wrapped neighbour cell.
+        At default world_size n_cells ≈ 17 so no atom is reached via both."""
+        L = simulation.world_size
+        simulation._add_particle(L / 2, L / 2, is_static=0)
+        simulation._add_particle(L / 2 + 0.5, L / 2, is_static=0)
+        simulation._add_particle(L / 2, L / 2 + 0.5, is_static=0)
+        simulation.boundary_mode = BOUNDARY_PERIODIC
+        assert self._build(simulation) == 3
+
+
+class TestPeriodicForceMinimumImage:
+    """Two atoms on opposite sides of the periodic boundary must feel an
+    LJ force pulling them across the wrap (and away from each other in the
+    minimum-image direction at sub-equilibrium separation)."""
+
+    def test_force_across_right_boundary_repels_via_minimum_image(self, simulation):
+        # σ = 1, ε = 1 — equilibrium at r ≈ 1.122. At r = 1.0 (sub-equilibrium)
+        # the LJ force is repulsive. With min-image dx_A = +1.0 (across the
+        # wrap), F on A is in +x; F on B is in -x.
+        L = simulation.world_size
+        simulation.boundary_mode = BOUNDARY_PERIODIC
+        simulation.gravity = 0.0
+        simulation.dt = 0.001
+        idx_a = simulation._add_particle(0.5, L / 2, is_static=0)
+        idx_b = simulation._add_particle(L - 0.5, L / 2, is_static=0)
+        simulation.step(steps_to_run=1)
+        assert simulation.vel_x[idx_a] > 0
+        assert simulation.vel_x[idx_b] < 0
+
+    def test_no_force_between_far_atoms_under_open(self, simulation):
+        L = simulation.world_size
+        simulation.boundary_mode = BOUNDARY_OPEN
+        simulation.gravity = 0.0
+        simulation.dt = 0.001
+        idx_a = simulation._add_particle(0.5, L / 2, is_static=0)
+        idx_b = simulation._add_particle(L - 0.5, L / 2, is_static=0)
+        simulation.step(steps_to_run=1)
+        # Direct distance L - 1 ≫ r_cut → no pair force. With gravity off
+        # nothing pushes the atoms; velocities remain exactly zero.
+        assert simulation.vel_x[idx_a] == 0.0
+        assert simulation.vel_x[idx_b] == 0.0

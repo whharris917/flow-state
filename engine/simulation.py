@@ -22,6 +22,7 @@ from engine.physics_core import (
     integrate_n_steps, build_neighbor_list, check_displacement,
     apply_thermostat, spatial_sort, apply_tether_forces_pbd,
     build_atom_neighbor_csr,
+    BOUNDARY_OPEN, BOUNDARY_REFLECTING, BOUNDARY_PERIODIC,
 )
 
 # Entity type constants (must match physics kernel expectations)
@@ -43,7 +44,10 @@ class Simulation:
         
         # --- Physics Parameters ---
         self.world_size = config.DEFAULT_WORLD_SIZE
-        self.use_boundaries = False
+        # Boundary mode: BOUNDARY_OPEN / REFLECTING / PERIODIC. Canonical
+        # attribute; the bool `use_boundaries` is a backward-compat property
+        # that toggles between OPEN and REFLECTING for the existing UI button.
+        self.boundary_mode = BOUNDARY_OPEN
         self.sigma = config.ATOM_SIGMA
         self.epsilon = config.ATOM_EPSILON
         self.skin_distance = config.DEFAULT_SKIN_DISTANCE
@@ -141,6 +145,45 @@ class Simulation:
         self.r_skin_sq_limit = (0.5 * self.skin_distance)**2
         self.cell_size = self.r_list
 
+    # ---- Backward-compat boundary toggle ----------------------------------
+    # The "Bounds" UI button (and any other binary-state caller) reads/writes
+    # `use_boundaries` as a bool. The canonical attribute is `boundary_mode`
+    # (int, 0/1/2). This property maps the bool onto OPEN/REFLECTING and
+    # treats PERIODIC as truthy on read so a UI showing "boundaries on" stays
+    # consistent. To switch into PERIODIC, callers set `boundary_mode`
+    # directly or use `cycle_boundary_mode()`.
+    @property
+    def use_boundaries(self):
+        return self.boundary_mode != BOUNDARY_OPEN
+
+    @use_boundaries.setter
+    def use_boundaries(self, value):
+        if value:
+            # Don't downgrade an active PERIODIC mode to REFLECTING when the
+            # bool stays True (e.g., the UI button writes True every frame).
+            if self.boundary_mode == BOUNDARY_OPEN:
+                self.boundary_mode = BOUNDARY_REFLECTING
+        else:
+            self.boundary_mode = BOUNDARY_OPEN
+
+    def cycle_boundary_mode(self):
+        """Cycle OPEN → REFLECTING → PERIODIC → OPEN. Refuses PERIODIC if the
+        domain is too small for a PBC cell list (n_cells < 3) and skips that
+        mode in the cycle."""
+        next_mode = (self.boundary_mode + 1) % 3
+        if next_mode == BOUNDARY_PERIODIC and not self._pbc_safe():
+            print("PBC unavailable: world_size too small for cell list "
+                  "(need world_size >= 3 * cell_size). Skipping PERIODIC.")
+            next_mode = BOUNDARY_OPEN
+        self.boundary_mode = next_mode
+        return self.boundary_mode
+
+    def _pbc_safe(self):
+        """True iff the cell list has at least 3 cells along each axis, the
+        minimum for non-double-counting cell-neighbour walks under PBC."""
+        n_cells = int(self.world_size // self.cell_size) + 1
+        return n_cells >= 3
+
     def _warmup_compiler(self):
         """Pre-compile Numba functions with dummy data."""
         print("Warming up Numba compiler...")
@@ -154,7 +197,8 @@ class Simulation:
         
         build_neighbor_list(
             self.pos_x[:2], self.pos_y[:2], self.r_list2,
-            self.cell_size, self.world_size, self.pair_i, self.pair_j
+            self.cell_size, self.world_size, self.pair_i, self.pair_j,
+            np.int32(self.boundary_mode),
         )
         # Build the atom-centric CSR view (input to the parallel LJ loop).
         build_atom_neighbor_csr(
@@ -182,7 +226,7 @@ class Simulation:
             self.tether_entity_idx[:2],  # For intra-entity exclusion
             self.joint_ids[:2],  # For coincident constraint LJ exclusion
             f32_vals[1], f32_vals[2], f32_vals[3], f32_vals[4],
-            f32_vals[5], self.use_boundaries, f32_vals[6]
+            f32_vals[5], np.int32(self.boundary_mode), f32_vals[6]
         )
         
         spatial_sort(
@@ -321,7 +365,7 @@ class Simulation:
         self.gravity = config.DEFAULT_GRAVITY
         self.target_temp = 0.5
         self.damping = config.DEFAULT_DAMPING
-        self.use_boundaries = False
+        self.boundary_mode = BOUNDARY_OPEN
         self.sigma = config.ATOM_SIGMA
         self.epsilon = config.ATOM_EPSILON
         self.skin_distance = config.DEFAULT_SKIN_DISTANCE
@@ -732,11 +776,13 @@ class Simulation:
         
         # Rebuild neighbor list if needed
         if should_rebuild and self.count > 0:
+            mode_arg = np.int32(self.boundary_mode)
             while True:
                 count = build_neighbor_list(
                     self.pos_x[:self.count], self.pos_y[:self.count],
                     self.r_list2, self.cell_size, self.world_size,
-                    self.pair_i, self.pair_j
+                    self.pair_i, self.pair_j,
+                    mode_arg,
                 )
                 if count >= self.max_pairs:
                     self.max_pairs *= 2
@@ -775,7 +821,7 @@ class Simulation:
                 self.joint_ids[:self.count],  # For coincident constraint LJ exclusion
                 np.float32(self.dt), np.float32(self.gravity),
                 np.float32(self.r_cut_base**2), np.float32(self.r_skin_sq_limit),
-                np.float32(self.world_size), self.use_boundaries,
+                np.float32(self.world_size), np.int32(self.boundary_mode),
                 np.float32(self.damping)
             )
             
@@ -806,17 +852,23 @@ class Simulation:
             # tethered (3) atoms must be retained because their positions are
             # managed by the Compiler and sync_static_atoms_to_geometry path,
             # and removing them would orphan tether linkage indices.
-            active_x = self.pos_x[:self.count]
-            active_y = self.pos_y[:self.count]
-            active_static = self.is_static[:self.count]
-            w = self.world_size
-            is_inside = (active_x >= 0) & (active_x <= w) & (active_y >= 0) & (active_y <= w)
-            keep = is_inside | (active_static != 0)
+            #
+            # Under PERIODIC boundaries dynamic atoms wrap inside the kernel
+            # and never legitimately fall outside [0, world_size]. The escape
+            # filter is skipped (any straggler outside the box from a borderline
+            # float landed mid-step is not a leak — the next substep wraps it).
+            if self.boundary_mode != BOUNDARY_PERIODIC:
+                active_x = self.pos_x[:self.count]
+                active_y = self.pos_y[:self.count]
+                active_static = self.is_static[:self.count]
+                w = self.world_size
+                is_inside = (active_x >= 0) & (active_x <= w) & (active_y >= 0) & (active_y <= w)
+                keep = is_inside | (active_static != 0)
 
-            if not np.all(keep):
-                keep_indices = np.where(keep)[0]
-                self.compact_arrays(keep_indices)
-                self.rebuild_next = True
+                if not np.all(keep):
+                    keep_indices = np.where(keep)[0]
+                    self.compact_arrays(keep_indices)
+                    self.rebuild_next = True
 
     # =========================================================================
     # Array Management

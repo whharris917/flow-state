@@ -9,6 +9,18 @@ SUBSTEP_SAFETY_CHECK_FREQ = config.SUBSTEP_SAFETY_CHECK_FREQ
 TETHER_DAMPING = config.TETHER_DAMPING
 MAX_TETHER_FORCE = config.MAX_TETHER_FORCE
 
+# Boundary modes — passed as int to JIT kernels.
+# OPEN: dynamic atoms can leave [0, world_size]^2 (escape filter trims them in step()).
+# REFLECTING: dynamic + tethered atoms reflect off the world walls with wall_damping.
+# PERIODIC: dynamic atoms wrap; pair distances use minimum-image; cell list wraps.
+#           Requires n_cells >= 3 along each axis (i.e. world_size >= 3 * cell_size)
+#           to avoid the cell-list double-counting same pair via wrap and direct
+#           neighbour. Tethered atoms (is_static==3) do NOT wrap under PERIODIC —
+#           their positions are driven by spring forces toward in-domain anchors.
+BOUNDARY_OPEN = 0
+BOUNDARY_REFLECTING = 1
+BOUNDARY_PERIODIC = 2
+
 @njit(fastmath=True)
 def force_LJ_mixed(r2, s_ij2, e_24):
     """
@@ -46,7 +58,7 @@ def check_displacement(pos_x, pos_y, last_x, last_y, limit_sq):
     return max_d2 > limit_sq
 
 @njit(fastmath=True, parallel=True)
-def build_neighbor_list(pos_x, pos_y, r_list2, cell_size, world_size, pair_i, pair_j):
+def build_neighbor_list(pos_x, pos_y, r_list2, cell_size, world_size, pair_i, pair_j, boundary_mode):
     """Cell-list neighbour search, parallelised across atoms.
 
     The previous implementation used a linked-list cell layout (head + next_idx)
@@ -67,12 +79,20 @@ def build_neighbor_list(pos_x, pos_y, r_list2, cell_size, world_size, pair_i, pa
     Returns the total number of pairs found. If the total exceeds
     pair_i.shape[0] no pairs are written and the caller is expected to
     resize and retry — same contract as the previous serial version.
+
+    boundary_mode: BOUNDARY_OPEN/REFLECTING (0/1) — neighbour cells are clipped
+    at the domain edge. BOUNDARY_PERIODIC (2) — neighbour cells wrap and pair
+    distances use the minimum-image convention. Caller must ensure
+    n_cells >= 3 along each axis when using PERIODIC, otherwise a single
+    neighbour cell can be reached from two (dx, dy) offsets and pairs will
+    be double-counted.
     """
     N = pos_x.shape[0]
     n_cells = int(world_size // cell_size) + 1
     n_cells2 = n_cells * n_cells
     inv_cell = np.float32(1.0 / cell_size)
     max_pairs = pair_i.shape[0]
+    half_world = np.float32(0.5 * world_size)
 
     # Phase 1: each atom computes its cell key (parallel)
     atom_cell = np.empty(N, dtype=np.int32)
@@ -126,11 +146,21 @@ def build_neighbor_list(pos_x, pos_y, r_list2, cell_size, world_size, pair_i, pa
         yi = pos_y[i]
         for dx in range(-1, 2):
             nx = cx + dx
-            if nx < 0 or nx >= n_cells:
+            if boundary_mode == BOUNDARY_PERIODIC:
+                if nx < 0:
+                    nx += n_cells
+                elif nx >= n_cells:
+                    nx -= n_cells
+            elif nx < 0 or nx >= n_cells:
                 continue
             for dy in range(-1, 2):
                 ny = cy + dy
-                if ny < 0 or ny >= n_cells:
+                if boundary_mode == BOUNDARY_PERIODIC:
+                    if ny < 0:
+                        ny += n_cells
+                    elif ny >= n_cells:
+                        ny -= n_cells
+                elif ny < 0 or ny >= n_cells:
                     continue
                 nc = ny * n_cells + nx
                 k_start = cell_start[nc]
@@ -140,6 +170,15 @@ def build_neighbor_list(pos_x, pos_y, r_list2, cell_size, world_size, pair_i, pa
                     if i < j:
                         px = xi - pos_x[j]
                         py = yi - pos_y[j]
+                        if boundary_mode == BOUNDARY_PERIODIC:
+                            if px > half_world:
+                                px -= world_size
+                            elif px < -half_world:
+                                px += world_size
+                            if py > half_world:
+                                py -= world_size
+                            elif py < -half_world:
+                                py += world_size
                         r2 = px * px + py * py
                         if r2 < r_list2:
                             cnt += 1
@@ -175,11 +214,21 @@ def build_neighbor_list(pos_x, pos_y, r_list2, cell_size, world_size, pair_i, pa
         yi = pos_y[i]
         for dx in range(-1, 2):
             nx = cx + dx
-            if nx < 0 or nx >= n_cells:
+            if boundary_mode == BOUNDARY_PERIODIC:
+                if nx < 0:
+                    nx += n_cells
+                elif nx >= n_cells:
+                    nx -= n_cells
+            elif nx < 0 or nx >= n_cells:
                 continue
             for dy in range(-1, 2):
                 ny = cy + dy
-                if ny < 0 or ny >= n_cells:
+                if boundary_mode == BOUNDARY_PERIODIC:
+                    if ny < 0:
+                        ny += n_cells
+                    elif ny >= n_cells:
+                        ny -= n_cells
+                elif ny < 0 or ny >= n_cells:
                     continue
                 nc = ny * n_cells + nx
                 k_start = cell_start[nc]
@@ -189,6 +238,15 @@ def build_neighbor_list(pos_x, pos_y, r_list2, cell_size, world_size, pair_i, pa
                     if i < j:
                         px = xi - pos_x[j]
                         py = yi - pos_y[j]
+                        if boundary_mode == BOUNDARY_PERIODIC:
+                            if px > half_world:
+                                px -= world_size
+                            elif px < -half_world:
+                                px += world_size
+                            if py > half_world:
+                                py -= world_size
+                            elif py < -half_world:
+                                py += world_size
                         r2 = px * px + py * py
                         if r2 < r_list2:
                             pair_i[wp] = i
@@ -250,16 +308,27 @@ def integrate_n_steps(
     dt, gravity, r_cut2_base,
     skin_limit_sq,
     world_size,
-    use_boundaries,
+    boundary_mode,
     wall_damping
 ):
+    """Verlet integrator with cell-list LJ pair forces.
+
+    boundary_mode: 0=open (no wall, escapes filtered post-step),
+                   1=reflecting walls (existing behaviour, wall_damping applied),
+                   2=periodic — dynamic atoms wrap the [0, world_size]^2 domain
+                   and pair distances use minimum-image. Tethered atoms
+                   (is_static==3) are NOT wrapped under PBC; they continue to
+                   reflect under mode 1 because their positions are driven by
+                   spring forces toward in-domain anchors.
+    """
     N = pos_x.shape[0]
     half_dt = 0.5 * dt
     dt2_2m = 0.5 * dt * dt / mass
     inv_mass = 1.0 / mass
-    
+    half_world = 0.5 * world_size
+
     steps_done = 0
-    
+
     for step in range(steps_to_run):
         # 0. Safety Check
         if step > 0 and step % SUBSTEP_SAFETY_CHECK_FREQ == 0:
@@ -273,9 +342,9 @@ def integrate_n_steps(
                 # Dynamic Particle Integration
                 xi = pos_x[i] + vel_x[i] * dt + force_x[i] * dt2_2m
                 yi = pos_y[i] + vel_y[i] * dt + force_y[i] * dt2_2m
-                
+
                 # Boundaries
-                if use_boundaries:
+                if boundary_mode == BOUNDARY_REFLECTING:
                     if xi >= world_size:
                         xi = 2.0 * world_size - xi
                         vel_x[i] = -vel_x[i] * wall_damping
@@ -288,7 +357,19 @@ def integrate_n_steps(
                     elif yi < 0.0:
                         yi = -yi
                         vel_y[i] = -vel_y[i] * wall_damping
-                
+                elif boundary_mode == BOUNDARY_PERIODIC:
+                    # Wrap (single subtraction is enough when atom motion per
+                    # substep stays below world_size; the safety-check above
+                    # rebuilds the neighbour list before larger displacements).
+                    if xi >= world_size:
+                        xi -= world_size
+                    elif xi < 0.0:
+                        xi += world_size
+                    if yi >= world_size:
+                        yi -= world_size
+                    elif yi < 0.0:
+                        yi += world_size
+
                 pos_x[i] = xi
                 pos_y[i] = yi
                 vel_x[i] += force_x[i] * inv_mass * half_dt
@@ -296,12 +377,13 @@ def integrate_n_steps(
 
             elif st == 3:
                 # Tethered Particle Integration (bound to geometry via spring)
-                # Integrates like dynamic but no gravity (follows geometry)
+                # Integrates like dynamic but no gravity (follows geometry).
+                # Tethered atoms reflect under REFLECTING but do not wrap under
+                # PERIODIC — their anchors live at fixed in-domain positions.
                 xi = pos_x[i] + vel_x[i] * dt + force_x[i] * dt2_2m
                 yi = pos_y[i] + vel_y[i] * dt + force_y[i] * dt2_2m
 
-                # Boundaries
-                if use_boundaries:
+                if boundary_mode == BOUNDARY_REFLECTING:
                     if xi >= world_size:
                         xi = 2.0 * world_size - xi
                         vel_x[i] = -vel_x[i] * wall_damping
@@ -369,6 +451,17 @@ def integrate_n_steps(
 
                 dx = pos_x[i] - pos_x[j]
                 dy = pos_y[i] - pos_y[j]
+                if boundary_mode == BOUNDARY_PERIODIC:
+                    # Minimum-image: shorten any component greater than L/2
+                    # so the pair force matches the closest periodic image.
+                    if dx > half_world:
+                        dx -= world_size
+                    elif dx < -half_world:
+                        dx += world_size
+                    if dy > half_world:
+                        dy -= world_size
+                    elif dy < -half_world:
+                        dy += world_size
                 r2 = dx * dx + dy * dy
 
                 if r2 < r_cut2_base:
