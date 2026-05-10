@@ -147,6 +147,7 @@ class ToolContext:
             'name': mat.name,
             'sigma': mat.sigma,
             'epsilon': mat.epsilon,
+            'mass': mat.mass,
             'color': mat.color,
         }
 

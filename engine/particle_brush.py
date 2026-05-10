@@ -49,6 +49,7 @@ class ParticleBrush:
     
     def paint(self, x: float, y: float, radius: float,
               sigma: float = None, epsilon: float = None,
+              mass: float = None,
               color: tuple = None) -> int:
         """
         Add particles in a circular brush pattern using hexagonal packing.
@@ -59,6 +60,9 @@ class ParticleBrush:
             radius: Brush radius in world units
             sigma: Particle size (uses sim.sigma if None)
             epsilon: Interaction strength (uses sim.epsilon if None)
+            mass: Particle mass (uses config.ATOM_MASS via Sim._add_particle
+                if None). Per-particle so painting a dense material gives
+                heavier atoms than the default.
             color: RGB tuple for particle color (uses default blue if None)
 
         Returns:
@@ -101,14 +105,14 @@ class ParticleBrush:
 
         for px, py in positions:
             if not self._check_overlap(px, py, overlap_threshold):
-                self._add_particle(px, py, sigma, epsilon, color)
+                self._add_particle(px, py, sigma, epsilon, color, mass)
                 added += 1
 
         if added > 0:
             sim.rebuild_next = True
 
         return added
-    
+
     def erase(self, x: float, y: float, radius: float) -> int:
         """
         Remove dynamic particles within a circular brush area.
@@ -152,7 +156,7 @@ class ParticleBrush:
         return len(indices_to_remove)
     
     def _add_particle(self, x: float, y: float, sigma: float, epsilon: float,
-                      color: tuple = (50, 150, 255)):
+                      color: tuple = (50, 150, 255), mass: float = None):
         """
         Add a single dynamic particle to the simulation.
 
@@ -161,8 +165,14 @@ class ParticleBrush:
             sigma: Particle size parameter
             epsilon: Interaction strength parameter
             color: RGB tuple for particle color
+            mass: Particle mass (None falls back to config.ATOM_MASS so the
+                slot has a non-zero mass and won't divide-by-zero in the
+                integrator).
         """
+        import core.config as config
         sim = self.sim
+        if mass is None:
+            mass = config.ATOM_MASS
 
         # Ensure capacity
         if sim.count >= sim.capacity:
@@ -176,6 +186,7 @@ class ParticleBrush:
         sim.is_static[idx] = 0  # Dynamic
         sim.atom_sigma[idx] = sigma
         sim.atom_eps_sqrt[idx] = math.sqrt(epsilon)
+        sim.atom_mass[idx] = mass
         sim.atom_color[idx] = color
         sim.count += 1
     

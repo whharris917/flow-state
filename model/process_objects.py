@@ -374,13 +374,15 @@ class Source(ProcessObject):
         # Sample velocity from Maxwell-Boltzmann with optional direction bias
         vx, vy = self._sample_velocity(material.mass)
 
-        # Add the particle — color follows the material so emitted particles
-        # visually match other atoms of the same material.
+        # Add the particle — color, sigma, epsilon, AND mass follow the
+        # material so the integrator uses the right inertia per particle
+        # (e.g. Mercury atoms feel ~13× more inertia than Water atoms).
         simulation._add_particle(
             x=x, y=y, vx=vx, vy=vy,
             is_static=0,
             sigma=material.sigma,
             epsilon=material.epsilon,
+            mass=material.mass,
             color=material.color,
         )
 

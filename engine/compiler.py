@@ -194,10 +194,10 @@ class Compiler:
             if w.dynamic:
                 # Tethered atom for two-way coupling
                 self._add_tethered_atom(pos, entity_idx, t, tether_k,
-                                        mat.sigma, math.sqrt(mat.epsilon), atom_color)
+                                        mat.sigma, math.sqrt(mat.epsilon), mat.mass, atom_color)
             else:
                 # Static atom (with tether data for position sync)
-                self._add_static_atom(pos, mat.sigma, math.sqrt(mat.epsilon),
+                self._add_static_atom(pos, mat.sigma, math.sqrt(mat.epsilon), mat.mass,
                                       entity_idx=entity_idx, local_t=t, color=atom_color)
 
             # Track start (pt_idx=0) and end (pt_idx=1) atoms for coincident joints
@@ -240,19 +240,20 @@ class Compiler:
             if w.dynamic:
                 # Tethered atom - local_pos stores angle
                 self._add_tethered_atom(pos, entity_idx, angle, tether_k,
-                                        mat.sigma, math.sqrt(mat.epsilon), atom_color)
+                                        mat.sigma, math.sqrt(mat.epsilon), mat.mass, atom_color)
             else:
                 # Static atom (with tether data for position sync)
-                self._add_static_atom(pos, mat.sigma, math.sqrt(mat.epsilon),
+                self._add_static_atom(pos, mat.sigma, math.sqrt(mat.epsilon), mat.mass,
                                       entity_idx=entity_idx, local_t=angle, color=atom_color)
 
-    def _add_tethered_atom(self, pos, entity_idx, local_t, stiffness, sig, eps_sqrt, color):
+    def _add_tethered_atom(self, pos, entity_idx, local_t, stiffness, sig, eps_sqrt, mass, color):
         """
         Add a tethered atom for two-way coupling.
 
         Tethered atoms (is_static=3) are bound to geometry via spring forces.
         They can drift from their anchor point, generating restoring forces
-        that affect both the atom and the parent entity.
+        that affect both the atom and the parent entity. Mass is per-material
+        so heavier-material tethered atoms feel proportionally less acceleration.
 
         Args:
             pos: Initial world position [x, y]
@@ -261,6 +262,7 @@ class Compiler:
             stiffness: Spring constant k for tether
             sig: LJ sigma parameter
             eps_sqrt: Square root of LJ epsilon
+            mass: Particle mass (from the material)
             color: RGB tuple for atom color
         """
         idx = self.sim.count
@@ -271,6 +273,7 @@ class Compiler:
         self.sim.is_static[idx] = 3  # Tethered type
         self.sim.atom_sigma[idx] = sig
         self.sim.atom_eps_sqrt[idx] = eps_sqrt
+        self.sim.atom_mass[idx] = mass
         self.sim.atom_color[idx] = color
 
         # Tether data
@@ -281,14 +284,20 @@ class Compiler:
 
         self.sim.count += 1
 
-    def _add_static_atom(self, pos, sig, eps_sqrt, entity_idx=-1, local_t=0.0, color=(100, 100, 120)):
+    def _add_static_atom(self, pos, sig, eps_sqrt, mass, entity_idx=-1, local_t=0.0, color=(100, 100, 120)):
         """
         Add a single static atom to the simulation.
+
+        Static atoms' positions are pinned, so atom_mass is functionally
+        unused by the integrator — but we set it from the material anyway
+        so the array is consistent and the slot has a real value if the
+        atom is ever converted to dynamic.
 
         Args:
             pos: World position [x, y]
             sig: LJ sigma parameter
             eps_sqrt: Square root of LJ epsilon
+            mass: Particle mass (from the material)
             entity_idx: Index of parent entity (-1 if none, used for static sync)
             local_t: Local coordinate on entity (t for lines, angle for circles)
             color: RGB tuple for atom color
@@ -302,6 +311,7 @@ class Compiler:
 
         self.sim.atom_sigma[idx] = sig
         self.sim.atom_eps_sqrt[idx] = eps_sqrt
+        self.sim.atom_mass[idx] = mass
         self.sim.atom_color[idx] = color
 
         # Record tether data for static atom sync (used to teleport atoms when geometry moves)

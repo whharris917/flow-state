@@ -64,6 +64,7 @@ class Simulation:
         self.is_static = np.zeros(self.capacity, dtype=np.int32)
         self.atom_sigma = np.zeros(self.capacity, dtype=np.float32)
         self.atom_eps_sqrt = np.zeros(self.capacity, dtype=np.float32)
+        self.atom_mass = np.full(self.capacity, config.ATOM_MASS, dtype=np.float32)
         self.atom_color = np.zeros((self.capacity, 3), dtype=np.uint8)  # RGB per particle
 
         # --- Tether Arrays (for Dynamic Two-Way Coupling) ---
@@ -219,6 +220,7 @@ class Simulation:
         self.count = 2
         self.atom_sigma[:2] = 1.0
         self.atom_eps_sqrt[:2] = 1.0
+        self.atom_mass[:2] = config.ATOM_MASS
         
         build_neighbor_list(
             self.pos_x[:2], self.pos_y[:2], self.r_list2,
@@ -246,7 +248,7 @@ class Simulation:
             self.last_x[:2], self.last_y[:2],
             self.is_static[:2],
             self.atom_sigma[:2], self.atom_eps_sqrt[:2],
-            f32_vals[0],
+            self.atom_mass[:2],
             self.nbr_start[:3], self.nbr_idx,
             self.tether_entity_idx[:2],  # For intra-entity exclusion
             self.joint_ids[:2],  # For coincident constraint LJ exclusion
@@ -257,7 +259,7 @@ class Simulation:
         spatial_sort(
             self.pos_x[:2], self.pos_y[:2], self.vel_x[:2], self.vel_y[:2],
             self.force_x[:2], self.force_y[:2], self.is_static[:2],
-            self.atom_sigma[:2], self.atom_eps_sqrt[:2],
+            self.atom_sigma[:2], self.atom_eps_sqrt[:2], self.atom_mass[:2],
             self.world_size, self.cell_size
         )
         
@@ -282,6 +284,7 @@ class Simulation:
             'is_static': np.copy(self.is_static[:self.count]),
             'atom_sigma': np.copy(self.atom_sigma[:self.count]),
             'atom_eps_sqrt': np.copy(self.atom_eps_sqrt[:self.count]),
+            'atom_mass': np.copy(self.atom_mass[:self.count]),
             'atom_color': np.copy(self.atom_color[:self.count]),
             'world_size': self.world_size
         }
@@ -305,6 +308,8 @@ class Simulation:
         self.is_static[:self.count] = state['is_static']
         self.atom_sigma[:self.count] = state['atom_sigma']
         self.atom_eps_sqrt[:self.count] = state['atom_eps_sqrt']
+        if 'atom_mass' in state:
+            self.atom_mass[:self.count] = state['atom_mass']
         if 'atom_color' in state:
             self.atom_color[:self.count] = state['atom_color']
         self.world_size = state['world_size']
@@ -340,6 +345,7 @@ class Simulation:
             'is_static': np.copy(self.is_static[:self.count]),
             'atom_sigma': np.copy(self.atom_sigma[:self.count]),
             'atom_eps_sqrt': np.copy(self.atom_eps_sqrt[:self.count]),
+            'atom_mass': np.copy(self.atom_mass[:self.count]),
             'atom_color': np.copy(self.atom_color[:self.count]),
             'world_size': self.world_size
         }
@@ -413,6 +419,7 @@ class Simulation:
             'is_static': self.is_static[:self.count].tolist(),
             'atom_sigma': self.atom_sigma[:self.count].tolist(),
             'atom_eps_sqrt': self.atom_eps_sqrt[:self.count].tolist(),
+            'atom_mass': self.atom_mass[:self.count].tolist(),
             'atom_color': self.atom_color[:self.count].tolist(),
         }
 
@@ -440,6 +447,8 @@ class Simulation:
             self.atom_sigma[:self.count] = np.array(data['atom_sigma'], dtype=np.float32)
         if 'atom_eps_sqrt' in data:
             self.atom_eps_sqrt[:self.count] = np.array(data['atom_eps_sqrt'], dtype=np.float32)
+        if 'atom_mass' in data:
+            self.atom_mass[:self.count] = np.array(data['atom_mass'], dtype=np.float32)
         # Guard against the count==0 case: np.array([], dtype=uint8) has shape (0,)
         # which doesn't broadcast into atom_color[:0] of shape (0, 3).
         if 'atom_color' in data and self.count > 0:
@@ -681,6 +690,7 @@ class Simulation:
         self.is_static[:new_count] = self.is_static[indices]
         self.atom_sigma[:new_count] = self.atom_sigma[indices]
         self.atom_eps_sqrt[:new_count] = self.atom_eps_sqrt[indices]
+        self.atom_mass[:new_count] = self.atom_mass[indices]
         self.atom_color[:new_count] = self.atom_color[indices]
 
         # Tether arrays
@@ -698,7 +708,7 @@ class Simulation:
     # =========================================================================
 
     def _add_particle(self, x, y, vx=0.0, vy=0.0, is_static=0, sigma=None, epsilon=None,
-                      color=(50, 150, 255)):
+                      mass=None, color=(50, 150, 255)):
         """
         Add a single particle to the simulation.
 
@@ -711,6 +721,9 @@ class Simulation:
             is_static: 0=dynamic, 1=static, 3=tethered
             sigma: Particle size (default: self.sigma)
             epsilon: LJ energy parameter (default: self.epsilon)
+            mass: Particle mass (default: config.ATOM_MASS). Per-particle so
+                mixed-material scenes (Mercury vs Water) integrate with the
+                correct inertia per atom.
             color: RGB tuple for the atom's render color. Defaults to the
                 project's water-blue. The slot's previous color is otherwise
                 retained — Source emissions used to inherit residue from
@@ -727,6 +740,8 @@ class Simulation:
             sigma = self.sigma
         if epsilon is None:
             epsilon = self.epsilon
+        if mass is None:
+            mass = config.ATOM_MASS
 
         idx = self.count
         self.pos_x[idx] = x
@@ -736,6 +751,7 @@ class Simulation:
         self.is_static[idx] = is_static
         self.atom_sigma[idx] = sigma
         self.atom_eps_sqrt[idx] = math.sqrt(epsilon)
+        self.atom_mass[idx] = mass
         self.atom_color[idx] = color
         self.count += 1
         self.rebuild_next = True
@@ -842,7 +858,7 @@ class Simulation:
                     self.last_x[:self.count], self.last_y[:self.count],
                     self.is_static[:self.count],
                     self.atom_sigma[:self.count], self.atom_eps_sqrt[:self.count],
-                    np.float32(config.ATOM_MASS),
+                    self.atom_mass[:self.count],
                     self.pair_i, self.pair_j, self.pair_count,
                     self.tether_entity_idx[:self.count],
                     self.joint_ids[:self.count],
@@ -862,7 +878,7 @@ class Simulation:
                     self.last_x[:self.count], self.last_y[:self.count],
                     self.is_static[:self.count],
                     self.atom_sigma[:self.count], self.atom_eps_sqrt[:self.count],
-                    np.float32(config.ATOM_MASS),
+                    self.atom_mass[:self.count],
                     self.nbr_start[:self.count + 1], self.nbr_idx,
                     self.tether_entity_idx[:self.count],  # For intra-entity exclusion
                     self.joint_ids[:self.count],  # For coincident constraint LJ exclusion
@@ -890,7 +906,7 @@ class Simulation:
             if self.use_thermostat:
                 apply_thermostat(
                     self.vel_x[:self.count], self.vel_y[:self.count],
-                    np.float32(config.ATOM_MASS), self.is_static[:self.count],
+                    self.atom_mass[:self.count], self.is_static[:self.count],
                     np.float32(self.target_temp), np.float32(0.1)
                 )
             
@@ -935,6 +951,11 @@ class Simulation:
         self.is_static = np.resize(self.is_static, self.capacity)
         self.atom_sigma = np.resize(self.atom_sigma, self.capacity)
         self.atom_eps_sqrt = np.resize(self.atom_eps_sqrt, self.capacity)
+        # New slots inherit config.ATOM_MASS so unset entries don't divide
+        # by zero in the integrator.
+        old_mass = self.atom_mass
+        self.atom_mass = np.full(self.capacity, config.ATOM_MASS, dtype=np.float32)
+        self.atom_mass[:len(old_mass)] = old_mass
         old_color = self.atom_color
         self.atom_color = np.zeros((self.capacity, 3), dtype=np.uint8)
         self.atom_color[:len(old_color)] = old_color

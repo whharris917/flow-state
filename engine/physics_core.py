@@ -301,7 +301,7 @@ def integrate_n_steps(
     pos_x, pos_y, vel_x, vel_y, force_x, force_y,
     last_x, last_y,
     is_static,
-    atom_sigma, atom_eps_sqrt, mass,
+    atom_sigma, atom_eps_sqrt, atom_mass,
     nbr_start, nbr_idx,             # atom-centric CSR neighbour list
     tether_entity_idx,  # For intra-entity force exclusion
     joint_ids,  # For coincident constraint LJ exclusion
@@ -313,6 +313,9 @@ def integrate_n_steps(
 ):
     """Verlet integrator with cell-list LJ pair forces.
 
+    atom_mass: per-particle mass array (matches atom_sigma / atom_eps_sqrt).
+        Each particle's integration uses its own mass; previously a scalar.
+
     boundary_mode: 0=open (no wall, escapes filtered post-step),
                    1=reflecting walls (existing behaviour, wall_damping applied),
                    2=periodic — dynamic atoms wrap the [0, world_size]^2 domain
@@ -323,8 +326,7 @@ def integrate_n_steps(
     """
     N = pos_x.shape[0]
     half_dt = 0.5 * dt
-    dt2_2m = 0.5 * dt * dt / mass
-    inv_mass = 1.0 / mass
+    half_dt2 = 0.5 * dt * dt
     half_world = 0.5 * world_size
 
     steps_done = 0
@@ -340,8 +342,10 @@ def integrate_n_steps(
             st = is_static[i]
             if st == 0:
                 # Dynamic Particle Integration
-                xi = pos_x[i] + vel_x[i] * dt + force_x[i] * dt2_2m
-                yi = pos_y[i] + vel_y[i] * dt + force_y[i] * dt2_2m
+                inv_mi = 1.0 / atom_mass[i]
+                dt2_2m_i = half_dt2 * inv_mi
+                xi = pos_x[i] + vel_x[i] * dt + force_x[i] * dt2_2m_i
+                yi = pos_y[i] + vel_y[i] * dt + force_y[i] * dt2_2m_i
 
                 # Boundaries
                 if boundary_mode == BOUNDARY_REFLECTING:
@@ -372,16 +376,18 @@ def integrate_n_steps(
 
                 pos_x[i] = xi
                 pos_y[i] = yi
-                vel_x[i] += force_x[i] * inv_mass * half_dt
-                vel_y[i] += force_y[i] * inv_mass * half_dt
+                vel_x[i] += force_x[i] * inv_mi * half_dt
+                vel_y[i] += force_y[i] * inv_mi * half_dt
 
             elif st == 3:
                 # Tethered Particle Integration (bound to geometry via spring)
                 # Integrates like dynamic but no gravity (follows geometry).
                 # Tethered atoms reflect under REFLECTING but do not wrap under
                 # PERIODIC — their anchors live at fixed in-domain positions.
-                xi = pos_x[i] + vel_x[i] * dt + force_x[i] * dt2_2m
-                yi = pos_y[i] + vel_y[i] * dt + force_y[i] * dt2_2m
+                inv_mi = 1.0 / atom_mass[i]
+                dt2_2m_i = half_dt2 * inv_mi
+                xi = pos_x[i] + vel_x[i] * dt + force_x[i] * dt2_2m_i
+                yi = pos_y[i] + vel_y[i] * dt + force_y[i] * dt2_2m_i
 
                 if boundary_mode == BOUNDARY_REFLECTING:
                     if xi >= world_size:
@@ -399,8 +405,8 @@ def integrate_n_steps(
 
                 pos_x[i] = xi
                 pos_y[i] = yi
-                vel_x[i] += force_x[i] * inv_mass * half_dt
-                vel_y[i] += force_y[i] * inv_mass * half_dt
+                vel_x[i] += force_x[i] * inv_mi * half_dt
+                vel_y[i] += force_y[i] * inv_mi * half_dt
 
         # 2. Reset Forces - PARALLEL
         # All forces reset here. Tether forces were already used in Section 1.
@@ -408,9 +414,9 @@ def integrate_n_steps(
         for i in prange(N):
             st = is_static[i]
             if st == 0:
-                # Dynamic: reset and apply gravity
+                # Dynamic: reset and apply per-particle gravity (F = m·g)
                 force_x[i] = 0.0
-                force_y[i] = mass * gravity
+                force_y[i] = atom_mass[i] * gravity
             else:
                 # Static/Tethered: reset to zero (no gravity)
                 force_x[i] = 0.0
@@ -480,13 +486,15 @@ def integrate_n_steps(
         for i in prange(N):
             st = is_static[i]
             if st == 0:
-                vel_x[i] += force_x[i] * inv_mass * half_dt
-                vel_y[i] += force_y[i] * inv_mass * half_dt
+                inv_mi = 1.0 / atom_mass[i]
+                vel_x[i] += force_x[i] * inv_mi * half_dt
+                vel_y[i] += force_y[i] * inv_mi * half_dt
             elif st == 3:
                 # Tethered: complete velocity update then apply damping
                 # Damping prevents spring oscillation
-                vel_x[i] += force_x[i] * inv_mass * half_dt
-                vel_y[i] += force_y[i] * inv_mass * half_dt
+                inv_mi = 1.0 / atom_mass[i]
+                vel_x[i] += force_x[i] * inv_mi * half_dt
+                vel_y[i] += force_y[i] * inv_mi * half_dt
                 vel_x[i] *= TETHER_DAMPING
                 vel_y[i] *= TETHER_DAMPING
 
@@ -501,7 +509,7 @@ def integrate_n_steps_newton3(
     pos_x, pos_y, vel_x, vel_y, force_x, force_y,
     last_x, last_y,
     is_static,
-    atom_sigma, atom_eps_sqrt, mass,
+    atom_sigma, atom_eps_sqrt, atom_mass,
     pair_i, pair_j, pair_count,    # half-pair list (i < j); each pair appears once
     tether_entity_idx, joint_ids,
     dt, gravity, r_cut2_base,
@@ -538,8 +546,7 @@ def integrate_n_steps_newton3(
     N = pos_x.shape[0]
     T = local_force_x.shape[0]
     half_dt = 0.5 * dt
-    dt2_2m = 0.5 * dt * dt / mass
-    inv_mass = 1.0 / mass
+    half_dt2 = 0.5 * dt * dt
     half_world = 0.5 * world_size
 
     steps_done = 0
@@ -554,8 +561,10 @@ def integrate_n_steps_newton3(
         for i in prange(N):
             st = is_static[i]
             if st == 0:
-                xi = pos_x[i] + vel_x[i] * dt + force_x[i] * dt2_2m
-                yi = pos_y[i] + vel_y[i] * dt + force_y[i] * dt2_2m
+                inv_mi = 1.0 / atom_mass[i]
+                dt2_2m_i = half_dt2 * inv_mi
+                xi = pos_x[i] + vel_x[i] * dt + force_x[i] * dt2_2m_i
+                yi = pos_y[i] + vel_y[i] * dt + force_y[i] * dt2_2m_i
 
                 if boundary_mode == BOUNDARY_REFLECTING:
                     if xi >= world_size:
@@ -582,12 +591,14 @@ def integrate_n_steps_newton3(
 
                 pos_x[i] = xi
                 pos_y[i] = yi
-                vel_x[i] += force_x[i] * inv_mass * half_dt
-                vel_y[i] += force_y[i] * inv_mass * half_dt
+                vel_x[i] += force_x[i] * inv_mi * half_dt
+                vel_y[i] += force_y[i] * inv_mi * half_dt
 
             elif st == 3:
-                xi = pos_x[i] + vel_x[i] * dt + force_x[i] * dt2_2m
-                yi = pos_y[i] + vel_y[i] * dt + force_y[i] * dt2_2m
+                inv_mi = 1.0 / atom_mass[i]
+                dt2_2m_i = half_dt2 * inv_mi
+                xi = pos_x[i] + vel_x[i] * dt + force_x[i] * dt2_2m_i
+                yi = pos_y[i] + vel_y[i] * dt + force_y[i] * dt2_2m_i
 
                 if boundary_mode == BOUNDARY_REFLECTING:
                     if xi >= world_size:
@@ -605,8 +616,8 @@ def integrate_n_steps_newton3(
 
                 pos_x[i] = xi
                 pos_y[i] = yi
-                vel_x[i] += force_x[i] * inv_mass * half_dt
-                vel_y[i] += force_y[i] * inv_mass * half_dt
+                vel_x[i] += force_x[i] * inv_mi * half_dt
+                vel_y[i] += force_y[i] * inv_mi * half_dt
 
         # 2. Zero thread-local force buffers in parallel (per-thread strip).
         for t in prange(T):
@@ -681,7 +692,7 @@ def integrate_n_steps_newton3(
                 force_y[i] = 0.0
                 continue
             fx_sum = 0.0
-            fy_sum = mass * gravity if st == 0 else 0.0
+            fy_sum = atom_mass[i] * gravity if st == 0 else 0.0
             for t in range(T):
                 fx_sum += local_force_x[t, i]
                 fy_sum += local_force_y[t, i]
@@ -692,11 +703,13 @@ def integrate_n_steps_newton3(
         for i in prange(N):
             st = is_static[i]
             if st == 0:
-                vel_x[i] += force_x[i] * inv_mass * half_dt
-                vel_y[i] += force_y[i] * inv_mass * half_dt
+                inv_mi = 1.0 / atom_mass[i]
+                vel_x[i] += force_x[i] * inv_mi * half_dt
+                vel_y[i] += force_y[i] * inv_mi * half_dt
             elif st == 3:
-                vel_x[i] += force_x[i] * inv_mass * half_dt
-                vel_y[i] += force_y[i] * inv_mass * half_dt
+                inv_mi = 1.0 / atom_mass[i]
+                vel_x[i] += force_x[i] * inv_mi * half_dt
+                vel_y[i] += force_y[i] * inv_mi * half_dt
                 vel_x[i] *= TETHER_DAMPING
                 vel_y[i] *= TETHER_DAMPING
 
@@ -706,7 +719,8 @@ def integrate_n_steps_newton3(
 
 
 @njit(fastmath=True)
-def spatial_sort(pos_x, pos_y, vel_x, vel_y, force_x, force_y, is_static, atom_sigma, atom_eps_sqrt, world_size, cell_size):
+def spatial_sort(pos_x, pos_y, vel_x, vel_y, force_x, force_y, is_static,
+                 atom_sigma, atom_eps_sqrt, atom_mass, world_size, cell_size):
     # Sorting is usually fast enough in serial, and parallel sort is complex to implement.
     N = pos_x.shape[0]
     n_cells = int(world_size // cell_size) + 1
@@ -727,9 +741,10 @@ def spatial_sort(pos_x, pos_y, vel_x, vel_y, force_x, force_y, is_static, atom_s
     is_static[:] = is_static[perm]
     atom_sigma[:] = atom_sigma[perm]
     atom_eps_sqrt[:] = atom_eps_sqrt[perm]
+    atom_mass[:] = atom_mass[perm]
 
 @njit(fastmath=True)
-def apply_thermostat(vel_x, vel_y, mass, is_static, target_temp, mix):
+def apply_thermostat(vel_x, vel_y, atom_mass, is_static, target_temp, mix):
     """Berendsen velocity-rescaling thermostat (single-threaded JIT).
 
     Was previously @njit(parallel=True) with two prange loops. A
@@ -746,10 +761,10 @@ def apply_thermostat(vel_x, vel_y, mass, is_static, target_temp, mix):
     count = 0
     N = vel_x.shape[0]
 
-    # KE reduction
+    # KE reduction — per-particle mass so mixed-mass scenes thermostat correctly
     for i in range(N):
         if is_static[i] == 0:
-            ke += 0.5 * mass * (vel_x[i]**2 + vel_y[i]**2)
+            ke += 0.5 * atom_mass[i] * (vel_x[i]**2 + vel_y[i]**2)
             count += 1
 
     if count == 0: return

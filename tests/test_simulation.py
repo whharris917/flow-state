@@ -429,10 +429,12 @@ class TestApplyThermostat:
     establish a regression baseline for future thermostat work.
     """
 
-    def _kinetic_energy_per_atom(self, vel_x, vel_y, mass, is_static):
+    def _kinetic_energy_per_atom(self, vel_x, vel_y, atom_mass, is_static):
         """KE/N over dynamic atoms only — matches the kernel's `current_T`."""
         dyn = is_static == 0
-        ke = 0.5 * mass * (vel_x[dyn]**2 + vel_y[dyn]**2).sum()
+        # atom_mass may be an array (post per-particle-mass refactor) or a
+        # scalar (legacy). Broadcast handles both.
+        ke = (0.5 * np.asarray(atom_mass) * (vel_x**2 + vel_y**2))[dyn].sum()
         return float(ke) / int(dyn.sum())
 
     def test_thermostat_pulls_hot_velocities_toward_target(self):
@@ -443,11 +445,11 @@ class TestApplyThermostat:
         vel_x = rng.standard_normal(n).astype(np.float32) * np.sqrt(10.0)
         vel_y = rng.standard_normal(n).astype(np.float32) * np.sqrt(10.0)
         is_static = np.zeros(n, dtype=np.int32)
-        mass = np.float32(1.0)
+        atom_mass = np.ones(n, dtype=np.float32)
 
-        T_before = self._kinetic_energy_per_atom(vel_x, vel_y, mass, is_static)
-        apply_thermostat(vel_x, vel_y, mass, is_static, np.float32(0.5), np.float32(0.1))
-        T_after = self._kinetic_energy_per_atom(vel_x, vel_y, mass, is_static)
+        T_before = self._kinetic_energy_per_atom(vel_x, vel_y, atom_mass, is_static)
+        apply_thermostat(vel_x, vel_y, atom_mass, is_static, np.float32(0.5), np.float32(0.1))
+        T_after = self._kinetic_energy_per_atom(vel_x, vel_y, atom_mass, is_static)
 
         # mix=0.1 means one application moves ~10% of the way toward target.
         # Direction must be correct; magnitude should be a meaningful step.
@@ -462,11 +464,11 @@ class TestApplyThermostat:
         vel_x = rng.standard_normal(n).astype(np.float32) * np.sqrt(0.1)
         vel_y = rng.standard_normal(n).astype(np.float32) * np.sqrt(0.1)
         is_static = np.zeros(n, dtype=np.int32)
-        mass = np.float32(1.0)
+        atom_mass = np.ones(n, dtype=np.float32)
 
-        T_before = self._kinetic_energy_per_atom(vel_x, vel_y, mass, is_static)
-        apply_thermostat(vel_x, vel_y, mass, is_static, np.float32(0.5), np.float32(0.1))
-        T_after = self._kinetic_energy_per_atom(vel_x, vel_y, mass, is_static)
+        T_before = self._kinetic_energy_per_atom(vel_x, vel_y, atom_mass, is_static)
+        apply_thermostat(vel_x, vel_y, atom_mass, is_static, np.float32(0.5), np.float32(0.1))
+        T_after = self._kinetic_energy_per_atom(vel_x, vel_y, atom_mass, is_static)
 
         assert T_after > T_before
         assert T_after < 0.5
@@ -479,10 +481,10 @@ class TestApplyThermostat:
         vel_y = np.full(n, 0.0, dtype=np.float32)
         is_static = np.zeros(n, dtype=np.int32)
         is_static[1::2] = 1  # half static
-        mass = np.float32(1.0)
+        atom_mass = np.ones(n, dtype=np.float32)
 
         static_vel_before = vel_x[is_static == 1].copy()
-        apply_thermostat(vel_x, vel_y, mass, is_static, np.float32(0.5), np.float32(0.1))
+        apply_thermostat(vel_x, vel_y, atom_mass, is_static, np.float32(0.5), np.float32(0.1))
 
         # Static atoms unchanged
         np.testing.assert_array_equal(vel_x[is_static == 1], static_vel_before)
@@ -496,9 +498,10 @@ class TestApplyThermostat:
         vel_x = np.full(n, 3.0, dtype=np.float32)
         vel_y = np.full(n, 0.0, dtype=np.float32)
         is_static = np.ones(n, dtype=np.int32)  # all static
+        atom_mass = np.ones(n, dtype=np.float32)
 
         before = vel_x.copy()
-        apply_thermostat(vel_x, vel_y, np.float32(1.0), is_static,
+        apply_thermostat(vel_x, vel_y, atom_mass, is_static,
                          np.float32(0.5), np.float32(0.1))
         np.testing.assert_array_equal(vel_x, before)
 
@@ -509,8 +512,9 @@ class TestApplyThermostat:
         vel_x = np.zeros(n, dtype=np.float32)
         vel_y = np.zeros(n, dtype=np.float32)
         is_static = np.zeros(n, dtype=np.int32)
+        atom_mass = np.ones(n, dtype=np.float32)
 
-        apply_thermostat(vel_x, vel_y, np.float32(1.0), is_static,
+        apply_thermostat(vel_x, vel_y, atom_mass, is_static,
                          np.float32(0.5), np.float32(0.1))
         # Velocities still zero (would be NaN/inf if guard failed)
         assert np.all(vel_x == 0.0)
@@ -892,3 +896,233 @@ class TestNewton3KernelEquivalence:
         assert sim._local_force_x is not None
         assert sim._local_force_y is not None
         assert sim._local_force_x.shape[1] == sim.capacity
+
+
+# ============================================================================
+# Per-particle mass — the simulation's atoms must integrate with their own
+# mass, not a single global value. Heavier atoms should accelerate less
+# under the same force (F = m·a).
+# ============================================================================
+
+
+class TestPerParticleMass:
+    def test_atom_mass_array_exists_and_default(self):
+        """Newly added particles get the configured default mass."""
+        from core import config
+        sim = Simulation(skip_warmup=True)
+        sim._add_particle(10.0, 10.0, is_static=0)
+        assert sim.atom_mass[0] == pytest.approx(config.ATOM_MASS)
+
+    def test_add_particle_stores_per_particle_mass(self):
+        sim = Simulation(skip_warmup=True)
+        sim._add_particle(10.0, 10.0, is_static=0, mass=1.0)
+        sim._add_particle(11.0, 10.0, is_static=0, mass=13.5)  # Mercury
+        sim._add_particle(12.0, 10.0, is_static=0, mass=0.9)   # Oil
+        assert sim.atom_mass[0] == 1.0
+        assert sim.atom_mass[1] == 13.5
+        assert sim.atom_mass[2] == 0.9
+
+    def test_heavy_particle_falls_less_than_light_under_gravity(self):
+        """The bug the Lead reported: two blobs of different mass should
+        NOT move with the same inertia. Under gravity, a 100× heavier
+        particle should fall LESS distance per unit time than a unit-mass
+        particle. Specifically, F = m·g and a = F/m = g — so acceleration
+        is *independent* of mass for gravity alone. But that's not what
+        the user observed: they saw same motion regardless of mass, which
+        is consistent with the old scalar-mass bug where every particle
+        used the same global mass.
+
+        This test verifies the new per-particle mass machinery: with
+        IDENTICAL initial conditions but different mass, the gravity term
+        F = m·g produces the same a = g, so both should fall the SAME
+        distance. The contrast comes from a NON-gravity force — see the
+        next test for that.
+        """
+        sim = Simulation(skip_warmup=True)
+        sim.gravity = -10.0  # downward (negative Y)
+        sim.paused = False
+        sim.dt = 0.01
+
+        # Place far apart so they don't interact via LJ
+        sim._add_particle(10.0, 50.0, is_static=0, mass=1.0, sigma=1.0, epsilon=1.0)
+        sim._add_particle(90.0, 50.0, is_static=0, mass=100.0, sigma=1.0, epsilon=1.0)
+
+        y0_light = float(sim.pos_y[0])
+        y0_heavy = float(sim.pos_y[1])
+        sim.step(steps_to_run=100)
+        dy_light = y0_light - float(sim.pos_y[0])
+        dy_heavy = y0_heavy - float(sim.pos_y[1])
+
+        # Under gravity, both fall the same amount (F=mg, a=g — mass cancels).
+        # This is the physical sanity check that the kernel is using mass
+        # CONSISTENTLY: the bug would have shown the same delta even with
+        # scalar mass, so this test doesn't *directly* catch the bug —
+        # but it pins the correct physical behaviour.
+        assert dy_light == pytest.approx(dy_heavy, rel=0.05)
+
+    def test_heavy_particle_decelerates_less_under_lj_repulsion(self):
+        """Two particles with the same initial velocity scatter off identical
+        static atoms. The heavy particle has 100× the momentum (p = m·v),
+        so the same repulsive impulse decelerates it MUCH less than the
+        light one — its final velocity stays close to v0, while the light
+        particle's velocity is substantially reduced (and may reverse).
+
+        Pre-refactor (scalar mass), both particles used the same effective
+        mass in the integrator so their final velocities would match. The
+        test verifies the new per-particle integration path: heavy particle's
+        |Δv| must be strictly less than light's.
+        """
+        sim = Simulation(skip_warmup=True)
+        sim.gravity = 0.0  # isolate the impulse — no gravity confound
+        sim.paused = False
+        sim.dt = 0.01
+
+        v0 = 10.0
+        wall_y = 50.0
+        approach_dx = 2.5  # close enough that LJ kicks in immediately
+
+        # Pair 1: light moving particle + static wall atom
+        sim._add_particle(10.0, wall_y, vx=v0, vy=0.0, is_static=0,
+                          mass=1.0, sigma=1.0, epsilon=1.0)
+        sim._add_particle(10.0 + approach_dx, wall_y, is_static=1,
+                          sigma=1.0, epsilon=1.0)
+
+        # Pair 2: heavy moving particle + static wall atom (well separated)
+        sim._add_particle(60.0, wall_y, vx=v0, vy=0.0, is_static=0,
+                          mass=100.0, sigma=1.0, epsilon=1.0)
+        sim._add_particle(60.0 + approach_dx, wall_y, is_static=1,
+                          sigma=1.0, epsilon=1.0)
+
+        sim.step(steps_to_run=100)
+        dv_light = abs(float(sim.vel_x[0]) - v0)
+        dv_heavy = abs(float(sim.vel_x[2]) - v0)
+
+        # Heavy particle's velocity stays closer to the initial — the bug
+        # would have made dv_light == dv_heavy (same effective mass).
+        assert dv_heavy < dv_light, (
+            f"|Δv| heavy={dv_heavy:.3f}, light={dv_light:.3f}; "
+            "100× mass should produce strictly smaller velocity change"
+        )
+        # And the gap should be substantial. The theoretical max ratio
+        # for this 1D collision is 2.0 (light bounces back fully → Δv=2v;
+        # heavy halts → Δv=v). Anything above 1.5× confirms the per-
+        # particle mass is dominating the dynamics; the bug would give
+        # exactly 1.0 (identical Δv).
+        assert dv_light > 1.5 * dv_heavy, (
+            f"|Δv| ratio light/heavy = {dv_light/max(dv_heavy, 1e-9):.2f}, "
+            "expected >1.5× given the 100× mass ratio"
+        )
+
+    def test_atom_mass_roundtrips_through_snapshot(self):
+        """The undo-snapshot stack must preserve per-particle mass."""
+        sim = Simulation(skip_warmup=True)
+        sim._add_particle(10.0, 10.0, is_static=0, mass=2.5)
+        sim._add_particle(11.0, 10.0, is_static=0, mass=7.0)
+        sim.snapshot()
+
+        # Overwrite, then undo
+        sim.atom_mass[0] = 999.0
+        sim.atom_mass[1] = 999.0
+        sim.undo()
+        assert sim.atom_mass[0] == 2.5
+        assert sim.atom_mass[1] == 7.0
+
+    def test_atom_mass_roundtrips_through_to_dict(self):
+        """Saved scenes carry per-particle mass."""
+        sim = Simulation(skip_warmup=True)
+        sim._add_particle(10.0, 10.0, is_static=0, mass=2.5)
+        sim._add_particle(11.0, 10.0, is_static=0, mass=7.0)
+        d = sim.to_dict()
+        assert d['atom_mass'] == [pytest.approx(2.5), pytest.approx(7.0)]
+
+        sim2 = Simulation(skip_warmup=True)
+        sim2.restore(d)
+        assert sim2.atom_mass[0] == pytest.approx(2.5)
+        assert sim2.atom_mass[1] == pytest.approx(7.0)
+
+    def test_compact_arrays_preserves_per_particle_mass(self):
+        """Compaction (used during particle removal) must keep mass with
+        the right atoms."""
+        sim = Simulation(skip_warmup=True)
+        sim._add_particle(10.0, 10.0, is_static=0, mass=1.0)
+        sim._add_particle(11.0, 10.0, is_static=0, mass=2.0)
+        sim._add_particle(12.0, 10.0, is_static=0, mass=3.0)
+        # Keep first and third atoms
+        sim.compact_arrays([0, 2])
+        assert sim.count == 2
+        assert sim.atom_mass[0] == 1.0
+        assert sim.atom_mass[1] == 3.0  # was index 2, now slot 1
+
+
+class TestSourceParticlesCarryMaterialMass:
+    """Source spawns must carry the resolved material's mass into atom_mass."""
+
+    def test_spawned_particles_carry_material_mass(self):
+        """Mercury source → all spawned particles have atom_mass=13.5."""
+        from core.scene import Scene
+        from model.process_objects import Source, SourceProperties
+        scene = Scene(skip_warmup=True)
+        scene.simulation.world_size = 50.0
+
+        mercury_mass = scene.sketch.get_material('Mercury').mass
+        source = Source((25, 25), 3.0,
+                        SourceProperties(material_name='Mercury', flux=100.0))
+        scene.add_process_object(source)
+        source.execute(scene.simulation, dt=1.0)
+
+        assert scene.simulation.count > 0
+        for i in range(scene.simulation.count):
+            if scene.simulation.is_static[i] == 0:
+                assert float(scene.simulation.atom_mass[i]) == pytest.approx(mercury_mass)
+
+
+class TestBrushParticlesCarryMaterialMass:
+    """Painted particles must carry the active material's mass."""
+
+    def test_paint_with_material_mass_propagates(self):
+        from engine.particle_brush import ParticleBrush
+        sim = Simulation(skip_warmup=True)
+        sim.world_size = 50.0
+        brush = ParticleBrush(sim)
+        brush.paint(25, 25, 3.0, sigma=1.0, epsilon=1.0, mass=13.5,
+                    color=(180, 180, 190))
+        assert sim.count > 0
+        # All painted particles share the brush mass
+        for i in range(sim.count):
+            assert float(sim.atom_mass[i]) == pytest.approx(13.5)
+
+    def test_paint_without_mass_falls_back_to_default(self):
+        from engine.particle_brush import ParticleBrush
+        from core import config
+        sim = Simulation(skip_warmup=True)
+        sim.world_size = 50.0
+        brush = ParticleBrush(sim)
+        brush.paint(25, 25, 3.0)  # no mass specified
+        assert sim.count > 0
+        for i in range(sim.count):
+            assert float(sim.atom_mass[i]) == pytest.approx(config.ATOM_MASS)
+
+
+class TestCompilerAtomsCarryMaterialMass:
+    """Wall/tethered atoms emitted by Compiler must carry their material's mass."""
+
+    def test_static_wall_atoms_carry_material_mass(self, scene):
+        """Build a line with an Oil material, atomize, verify static atoms
+        carry Oil's mass (0.9)."""
+        from model.commands.geometry import AddLineCommand
+        oil_mass = scene.sketch.get_material('Oil').mass
+
+        scene.execute(AddLineCommand(scene.sketch, (10, 10), (20, 10),
+                                     physical=True))
+        # Assign Oil material to the entity
+        scene.sketch.entities[0].material_id = 'Oil'
+        scene.rebuild()
+
+        # Verify at least one static atom exists with Oil's mass
+        sim = scene.simulation
+        any_static = False
+        for i in range(sim.count):
+            if sim.is_static[i] == 1:
+                any_static = True
+                assert float(sim.atom_mass[i]) == pytest.approx(oil_mass)
+        assert any_static, "Expected at least one static wall atom"

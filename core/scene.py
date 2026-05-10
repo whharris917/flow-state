@@ -470,7 +470,8 @@ class Scene:
                 world_x, world_y, radius,
                 sigma=material.get('sigma'),
                 epsilon=material.get('epsilon'),
-                color=material.get('color')
+                mass=material.get('mass'),
+                color=material.get('color'),
             )
         return self._brush.paint(world_x, world_y, radius)
 
