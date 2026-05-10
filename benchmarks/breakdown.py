@@ -146,6 +146,7 @@ def _instrumented_step(sim, physics_steps: int, *, record: dict | None) -> bool:
                 sim.pos_x[:sim.count], sim.pos_y[:sim.count],
                 sim.r_list2, sim.cell_size, sim.world_size,
                 sim.pair_i, sim.pair_j,
+                sim.boundary_mode,
             )
             if count >= sim.max_pairs:
                 sim.max_pairs *= 2
@@ -187,7 +188,7 @@ def _instrumented_step(sim, physics_steps: int, *, record: dict | None) -> bool:
             sim.joint_ids[:sim.count],
             np.float32(sim.dt), np.float32(sim.gravity),
             np.float32(sim.r_cut_base**2), np.float32(sim.r_skin_sq_limit),
-            np.float32(sim.world_size), sim.use_boundaries,
+            np.float32(sim.world_size), sim.boundary_mode,
             np.float32(sim.damping),
         )
         if record is not None:
