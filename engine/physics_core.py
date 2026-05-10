@@ -483,12 +483,22 @@ def integrate_n_steps(
             force_y[i] += fy_i
 
         # 4. Integration (Half Vel for Dynamic & Tethered) - PARALLEL
+        # Dynamic atoms also take a per-substep medium-drag multiplier
+        # (wall_damping). Previously this was applied ONLY at wall bounces,
+        # so particles in free flight saw no deceleration regardless of
+        # the slider value — making damping=0.999 look perfectly elastic.
+        # The slider value now controls actual medium drag: v *= damping
+        # every substep, so damping<1 produces visible deceleration.
+        # Tethered atoms keep TETHER_DAMPING (spring-oscillation suppressor)
+        # and are NOT subject to the medium-drag term.
         for i in prange(N):
             st = is_static[i]
             if st == 0:
                 inv_mi = 1.0 / atom_mass[i]
                 vel_x[i] += force_x[i] * inv_mi * half_dt
                 vel_y[i] += force_y[i] * inv_mi * half_dt
+                vel_x[i] *= wall_damping
+                vel_y[i] *= wall_damping
             elif st == 3:
                 # Tethered: complete velocity update then apply damping
                 # Damping prevents spring oscillation
@@ -700,12 +710,15 @@ def integrate_n_steps_newton3(
             force_y[i] = fy_sum
 
         # 5. Integration (Half Vel for Dynamic & Tethered) — verbatim from classic.
+        # Dynamic atoms also take wall_damping as per-substep medium drag.
         for i in prange(N):
             st = is_static[i]
             if st == 0:
                 inv_mi = 1.0 / atom_mass[i]
                 vel_x[i] += force_x[i] * inv_mi * half_dt
                 vel_y[i] += force_y[i] * inv_mi * half_dt
+                vel_x[i] *= wall_damping
+                vel_y[i] *= wall_damping
             elif st == 3:
                 inv_mi = 1.0 / atom_mass[i]
                 vel_x[i] += force_x[i] * inv_mi * half_dt

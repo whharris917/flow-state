@@ -940,6 +940,7 @@ class TestPerParticleMass:
         """
         sim = Simulation(skip_warmup=True)
         sim.gravity = -10.0  # downward (negative Y)
+        sim.damping = 1.0    # no medium drag — gravity-only test
         sim.paused = False
         sim.dt = 0.01
 
@@ -974,6 +975,7 @@ class TestPerParticleMass:
         """
         sim = Simulation(skip_warmup=True)
         sim.gravity = 0.0  # isolate the impulse — no gravity confound
+        sim.damping = 1.0  # isolate mass — no medium drag
         sim.paused = False
         sim.dt = 0.01
 
@@ -1052,6 +1054,109 @@ class TestPerParticleMass:
         assert sim.count == 2
         assert sim.atom_mass[0] == 1.0
         assert sim.atom_mass[1] == 3.0  # was index 2, now slot 1
+
+
+class TestPerSubstepDamping:
+    """The "Damping" slider applies as a per-substep velocity multiplier
+    (general medium drag). Pre-fix it was only applied at wall bounces,
+    so free-flying particles saw no deceleration regardless of slider
+    value — making damping=0.999 look perfectly elastic. This class pins
+    the new behaviour.
+    """
+
+    def test_damping_lt_one_reduces_velocity_over_time(self):
+        """Free-flying particle with damping<1.0 loses velocity each substep.
+        Pre-fix, damping was wall-only so this never happened in free flight.
+        """
+        sim = Simulation(skip_warmup=True)
+        sim.world_size = 200.0  # large so the particle stays well in-bounds
+        sim.gravity = 0.0
+        sim.paused = False
+        sim.dt = 0.005
+        sim.damping = 0.99  # 1% velocity loss per substep
+        sim.use_boundaries = False  # OPEN — no wall interaction at all
+        sim._add_particle(100.0, 100.0, vx=10.0, vy=0.0, is_static=0)
+
+        # Use a single substep to bypass the displacement-safety check
+        # that bails out of long inner loops; assert each call multiplies
+        # velocity by damping.
+        v0 = float(sim.vel_x[0])
+        sim.step(steps_to_run=1)
+        v1 = float(sim.vel_x[0])
+        assert v1 == pytest.approx(v0 * 0.99, rel=1e-3)
+
+        # And cumulative: 5 more substeps, expect 0.99^6 of original.
+        for _ in range(5):
+            sim.step(steps_to_run=1)
+        v6 = float(sim.vel_x[0])
+        assert v6 == pytest.approx(v0 * (0.99 ** 6), rel=1e-3)
+
+    def test_damping_equal_one_preserves_velocity(self):
+        """damping=1.0 → no medium drag → free particle keeps velocity."""
+        sim = Simulation(skip_warmup=True)
+        sim.world_size = 200.0
+        sim.gravity = 0.0
+        sim.paused = False
+        sim.dt = 0.005
+        sim.damping = 1.0
+        sim.use_boundaries = False
+        sim._add_particle(100.0, 100.0, vx=10.0, vy=0.0, is_static=0)
+
+        v0 = float(sim.vel_x[0])
+        for _ in range(20):
+            sim.step(steps_to_run=1)
+        v1 = float(sim.vel_x[0])
+        assert v1 == pytest.approx(v0, rel=1e-5)
+
+    def test_damping_mass_independent(self):
+        """Drag is a velocity multiplier, not a force — mass doesn't enter.
+        Heavy and light particles should damp at the SAME relative rate."""
+        sim = Simulation(skip_warmup=True)
+        sim.world_size = 200.0
+        sim.gravity = 0.0
+        sim.paused = False
+        sim.dt = 0.005
+        sim.damping = 0.95  # aggressive — easy to see
+        sim.use_boundaries = False
+
+        # Two particles far apart so they don't interact via LJ
+        sim._add_particle(50.0, 100.0, vx=10.0, vy=0.0, is_static=0,
+                          mass=1.0, sigma=1.0, epsilon=1.0)
+        sim._add_particle(150.0, 100.0, vx=10.0, vy=0.0, is_static=0,
+                          mass=100.0, sigma=1.0, epsilon=1.0)
+
+        for _ in range(5):
+            sim.step(steps_to_run=1)
+        v_light = float(sim.vel_x[0])
+        v_heavy = float(sim.vel_x[1])
+        # Same starting velocity, same multiplicative drag → identical
+        # final velocity regardless of mass.
+        assert v_light == pytest.approx(v_heavy, rel=1e-5)
+
+    def test_tethered_atom_uses_tether_damping_not_wall_damping(self):
+        """Tethered atoms keep their separate TETHER_DAMPING (spring
+        oscillation suppressor) and are NOT additionally damped by the
+        medium-drag term — the slider only affects dynamic atoms."""
+        sim = Simulation(skip_warmup=True)
+        sim.world_size = 200.0
+        sim.gravity = 0.0
+        sim.paused = False
+        sim.dt = 0.005
+        sim.damping = 1.0  # no medium drag for dynamic
+        sim.use_boundaries = False
+
+        # Tethered atom with no force on it (tether_stiffness=0) should
+        # still see velocity decay from TETHER_DAMPING
+        sim._add_particle(100.0, 100.0, vx=10.0, vy=0.0, is_static=3)
+        sim.tether_entity_idx[0] = -1
+        sim.tether_stiffness[0] = 0.0
+
+        v0 = float(sim.vel_x[0])
+        for _ in range(10):
+            sim.step(steps_to_run=1)
+        v1 = float(sim.vel_x[0])
+        # TETHER_DAMPING = 0.90, applied each substep → 0.9^10 ≈ 0.349
+        assert v1 < v0 * 0.5
 
 
 class TestSourceParticlesCarryMaterialMass:
