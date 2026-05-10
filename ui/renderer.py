@@ -193,6 +193,20 @@ class Renderer:
     # =========================================================================
 
     def _draw_particles(self, session, sim, layout):
+        # Dispatch on session.render_mode (F7 cycles). The default RENDER_FULL
+        # path matches the original implementation; DOTS is a vectorized
+        # single-pixel scatter for diagnosing how much frame time the renderer
+        # is eating; OFF is a hard skip.
+        from core.session import RENDER_FULL, RENDER_DOTS, RENDER_OFF
+        mode = getattr(session, 'render_mode', RENDER_FULL)
+        if mode == RENDER_OFF:
+            return
+        if mode == RENDER_DOTS:
+            self._draw_particles_dots(session, sim, layout)
+            return
+        self._draw_particles_full(session, sim, layout)
+
+    def _draw_particles_full(self, session, sim, layout):
         for i in range(sim.count):
             if sim.is_static[i] and not getattr(session, 'show_wall_atoms', True):
                 continue
@@ -214,6 +228,56 @@ class Renderer:
                 atom_sig = sim.atom_sigma[i]
                 rad = max(2, int(atom_sig * config.PARTICLE_RADIUS_SCALE * ((layout['MID_W']-50)/sim.world_size) * session.camera.zoom))
                 pygame.draw.circle(self.screen, col, (sx, sy), rad)
+
+    def _draw_particles_dots(self, session, sim, layout):
+        """Vectorized single-pixel render path — diagnostic mode.
+
+        Inlines the sim_to_screen transform across pos_x/pos_y arrays, masks
+        to the viewport rectangle, then writes raw atom_color into the screen
+        surface via pygame.surfarray.pixels3d fancy indexing. Bypasses the
+        per-atom Python loop entirely; cost is essentially one numpy scatter.
+        """
+        n = sim.count
+        if n == 0:
+            return
+
+        cx_world = sim.world_size / 2.0
+        cy_world = sim.world_size / 2.0
+        cx_screen = layout['MID_X'] + (layout['MID_W'] / 2.0)
+        cy_screen = config.TOP_MENU_H + (layout['MID_H'] / 2.0)
+        base_scale = (layout['MID_W'] - 50) / sim.world_size
+        final_scale = base_scale * session.camera.zoom
+
+        sx = (cx_screen + (sim.pos_x[:n] - cx_world) * final_scale + session.camera.pan_x).astype(np.int32)
+        sy = (cy_screen + (sim.pos_y[:n] - cy_world) * final_scale + session.camera.pan_y).astype(np.int32)
+
+        surf_w, surf_h = self.screen.get_size()
+        mask = (
+            (sx > layout['MID_X']) & (sx < layout['RIGHT_X']) &
+            (sy > config.TOP_MENU_H) & (sy < config.WINDOW_HEIGHT) &
+            (sx < surf_w) & (sy < surf_h)
+        )
+        if not getattr(session, 'show_wall_atoms', True):
+            mask &= (sim.is_static[:n] == 0)
+
+        if not mask.any():
+            return
+
+        sx = sx[mask]
+        sy = sy[mask]
+        colors = sim.atom_color[:n][mask]
+
+        try:
+            arr = pygame.surfarray.pixels3d(self.screen)
+            arr[sx, sy, 0] = colors[:, 0]
+            arr[sx, sy, 1] = colors[:, 1]
+            arr[sx, sy, 2] = colors[:, 2]
+            del arr
+        except (pygame.error, ValueError):
+            # Fallback for surfaces incompatible with pixels3d (e.g. paletted
+            # or alpha-only): per-pixel set_at. Rare on modern Windows pygame.
+            for i in range(len(sx)):
+                self.screen.set_at((int(sx[i]), int(sy[i])), tuple(colors[i]))
 
     # =========================================================================
     # World Boundary
@@ -719,7 +783,7 @@ class Renderer:
         # over by the StatusBar widget.
         status_bar_h = config.scale(30)
         metric_x = layout['MID_X'] + 15
-        stats_y = layout['H'] - status_bar_h - 150
+        stats_y = layout['H'] - status_bar_h - 170
         curr_t = calculate_current_temp(sim.vel_x, sim.vel_y, sim.count, config.ATOM_MASS)
 
         # Live rate metrics. SPS is updated by Simulation.step; FPS comes from
@@ -738,12 +802,20 @@ class Renderer:
             BOUNDARY_PERIODIC: "Periodic",
         }.get(sim.boundary_mode, "?")
 
+        from core.session import RENDER_FULL, RENDER_DOTS, RENDER_OFF
+        render_label = {
+            RENDER_FULL: "Full",
+            RENDER_DOTS: "Dots",
+            RENDER_OFF: "Off",
+        }.get(getattr(session, 'render_mode', RENDER_FULL), "?")
+
         self.screen.blit(self.big_font.render(f"Particles: {sim.count}", True, (255, 255, 255)), (metric_x, stats_y))
         self.screen.blit(self.font.render(f"Pairs: {sim.pair_count} | T: {curr_t:.3f}", True, (180, 180, 180)), (metric_x, stats_y + 30))
         self.screen.blit(self.font.render(f"SPS: {int(sim.sps)} | FPS: {int(fps)}", True, (100, 255, 100)), (metric_x, stats_y + 50))
         self.screen.blit(self.font.render(f"steps/frame: {physics_steps} | dt: {sim.dt:.4f}", True, (180, 180, 180)), (metric_x, stats_y + 70))
         self.screen.blit(self.font.render(f"sim time: {sim_per_real:.2f}x real", True, (180, 200, 220)), (metric_x, stats_y + 90))
         self.screen.blit(self.font.render(f"bounds: {bdry_label}  [F8 to cycle]", True, (200, 200, 160)), (metric_x, stats_y + 110))
+        self.screen.blit(self.font.render(f"render: {render_label}  [F7 to cycle]", True, (200, 200, 160)), (metric_x, stats_y + 130))
 
     # =========================================================================
     # Tool Overlay Helpers

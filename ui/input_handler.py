@@ -198,6 +198,22 @@ class InputHandler:
                 self.controller.change_tool(config.TOOL_SOURCE)
                 return True
 
+            # Render mode cycle (F7) — diagnostic toggle for the particle
+            # render path. FULL is the per-atom pygame.draw.circle production
+            # path; DOTS is a vectorized single-pixel scatter; OFF skips
+            # particle drawing entirely. Useful for telling whether the
+            # frame-rate ceiling is set by physics or by the renderer.
+            if event.key == pygame.K_F7:
+                from core.session import RENDER_FULL, RENDER_DOTS, RENDER_OFF
+                new_mode = self.session.cycle_render_mode()
+                label = {
+                    RENDER_FULL: "Full",
+                    RENDER_DOTS: "Dots",
+                    RENDER_OFF: "Off",
+                }[new_mode]
+                self.session.status.set(f"Render: {label}")
+                return True
+
             # Boundary mode cycle (F8)
             if event.key == pygame.K_F8:
                 from engine.physics_core import (

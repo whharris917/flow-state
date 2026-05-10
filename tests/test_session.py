@@ -3,7 +3,13 @@
 import pytest
 
 import core.config as config
-from core.session import Session, InteractionState
+from core.session import (
+    Session,
+    InteractionState,
+    RENDER_FULL,
+    RENDER_DOTS,
+    RENDER_OFF,
+)
 
 
 class TestDefaults:
@@ -122,6 +128,36 @@ class TestToolSwitchMidDrag:
         session.change_tool(config.TOOL_BRUSH)
         assert a.deactivated is True
         assert b.activated is True
+
+
+class TestRenderMode:
+    def test_constants_are_distinct_small_ints(self):
+        assert {RENDER_FULL, RENDER_DOTS, RENDER_OFF} == {0, 1, 2}
+
+    def test_default_render_mode_is_full(self, session):
+        assert session.render_mode == RENDER_FULL
+
+    def test_cycle_full_to_dots(self, session):
+        session.render_mode = RENDER_FULL
+        assert session.cycle_render_mode() == RENDER_DOTS
+        assert session.render_mode == RENDER_DOTS
+
+    def test_cycle_dots_to_off(self, session):
+        session.render_mode = RENDER_DOTS
+        assert session.cycle_render_mode() == RENDER_OFF
+        assert session.render_mode == RENDER_OFF
+
+    def test_cycle_off_wraps_to_full(self, session):
+        session.render_mode = RENDER_OFF
+        assert session.cycle_render_mode() == RENDER_FULL
+        assert session.render_mode == RENDER_FULL
+
+    def test_cycle_three_times_returns_to_start(self, session):
+        start = session.render_mode
+        session.cycle_render_mode()
+        session.cycle_render_mode()
+        session.cycle_render_mode()
+        assert session.render_mode == start
 
 
 class TestFocusedElementLifecycle:

@@ -34,6 +34,16 @@ from core.status_bar import StatusBar
 from model.properties import Material, PRESET_MATERIALS
 
 
+# Particle render modes — cycled via F7 for troubleshooting / render-cost
+# diagnosis. RENDER_FULL is the production path (per-atom pygame.draw.circle
+# with size + per-particle color); RENDER_DOTS uses a vectorized single-pixel
+# scatter that bypasses the Python per-atom loop; RENDER_OFF skips particle
+# drawing entirely. Modes form a closed cycle: FULL -> DOTS -> OFF -> FULL.
+RENDER_FULL = 0
+RENDER_DOTS = 1
+RENDER_OFF = 2
+
+
 class InteractionState(Enum):
     """Enumeration of possible interaction states."""
     IDLE = auto()
@@ -86,6 +96,7 @@ class Session:
         self.show_wall_atoms = True
         self.show_constraints = True
         self.auto_atomize = False  # When True, new geometry is automatically atomized
+        self.render_mode = RENDER_FULL  # Particle render path (see RENDER_*)
 
         # =====================================================================
         # Focus Management (for widgets that need focus-loss detection)
@@ -165,3 +176,12 @@ class Session:
         self.selection.clear()
         self.constraint_builder.reset()
         self.placing_geo_data = None
+
+    # =========================================================================
+    # Render Mode (troubleshooting / render-cost diagnosis)
+    # =========================================================================
+
+    def cycle_render_mode(self):
+        """Advance render_mode FULL -> DOTS -> OFF -> FULL and return the new value."""
+        self.render_mode = (self.render_mode + 1) % 3
+        return self.render_mode
