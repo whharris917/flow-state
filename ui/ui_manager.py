@@ -231,6 +231,15 @@ class UIManager:
         add_tool_row('circle', 'circle', "Circle (C)", 'point', 'point', "Point (P)")
         add_tool_row('ref', 'ref_line', "Reference Line", 'source', 'source', "Source (Emitter)")
 
+        # Sink occupies a single-button row of its own — no natural pair
+        # in the current toolbar, and pairing arbitrarily would obscure
+        # the fact that Source/Sink are direct counterparts.
+        row_sink = UIContainer(0, 0, rp_w, btn_size, layout_type='horizontal', padding=0, spacing=spacing)
+        rp.add_child(row_sink)
+        b_sink = Button(0, 0, btn_size, btn_size, icon=icons.get_icon('sink'), tooltip="Sink (Drain)", active=False, toggle=False)
+        row_sink.add_child(b_sink)
+        self.tools['sink'] = b_sink
+
         sld_brush = SmartSlider(0, 0, rp_w, 1.0, 10.0, 2.0, "Brush Radius", hard_min=0.5)
         rp.add_child(sld_brush)
         self.sliders['brush_size'] = sld_brush

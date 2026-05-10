@@ -917,39 +917,50 @@ class SmartSlider(UIElement):
 
     def handle_event(self, event):
         if not self.visible: return False
-        
-        changed = False
-        
+
         # Pass event to input field first
         if self.in_val.handle_event(event):
-            self.val = self.in_val.get_value(self.val)
-            changed = True
+            # Clamp typed values into [min_val, max_val] so a user can't
+            # silently strand the slider in an out-of-range state. (The
+            # previous behaviour pinned the visual handle to one end while
+            # leaving self.val outside the range — looks like the slider
+            # is broken.)
+            new_val = self.in_val.get_value(self.val)
+            self.val = max(self.min_val, min(self.max_val, new_val))
+            # Reflect the clamped value back into the field text so the user
+            # sees what actually stuck. The InputField may still be active
+            # (just deactivated by RETURN); set_value respects active state
+            # and skips the write — handled below by direct text assignment
+            # since the field has just lost focus on RETURN.
+            if not self.in_val.active:
+                self.in_val.set_value(self.val)
             return True
-        
+
         if event.type == pygame.MOUSEMOTION:
             # Expand hit area for easier grabbing
             self.hovered = self.rect_track.inflate(0, 14).collidepoint(event.pos)
             if self.dragging:
                 rel = (event.pos[0] - self.rect_track.x) / self.rect_track.w
                 self.val = self.min_val + max(0, min(1, rel)) * (self.max_val - self.min_val)
-                changed = True
+                # Keep the on-screen readout in lockstep with the drag so
+                # the InputField shows the value the user is actually
+                # producing. Without this, the readout is stuck at whatever
+                # was last typed and the slider looks dead.
+                if not self.in_val.active:
+                    self.in_val.set_value(self.val)
                 return True
-        
+
         elif event.type == pygame.MOUSEBUTTONDOWN:
             if self.hovered:
                 self.dragging = True
-                changed = True
                 SoundManager.get().play_sound('click')
                 return True
-                
+
         elif event.type == pygame.MOUSEBUTTONUP:
             if self.dragging:
                 self.dragging = False
                 return True
-            
-        if changed and not self.in_val.active: 
-            self.in_val.set_value(self.val)
-            
+
         return False
 
     def draw(self, screen, font):
@@ -1180,6 +1191,143 @@ class ContextMenu(UIElement):
 # =============================================================================
 # DIALOGS (Floats)
 # =============================================================================
+
+class SourcePropertiesDialog:
+    """
+    Compact properties dialog for a Source ProcessObject.
+
+    Exposes the three knobs the Lead identified as load-bearing: radius,
+    rate, and temperature, plus a material dropdown that picks from the
+    sketch's existing material library. sigma/epsilon/mass/color come
+    from the chosen material — they're never edited here, since Sources
+    are meant to ride the material palette.
+
+    Usage pattern matches AnimationDialog:
+    - Caller pushes the dialog onto the modal stack
+    - Caller polls `dialog.done` each frame in actions.update()
+    - When done & apply, caller reads `get_values()` and applies via
+      SetSourcePropertiesCommand + SetSourceRadiusCommand (composite)
+    """
+
+    def __init__(self, x, y, source, sketch):
+        self.rect = pygame.Rect(x, y, 280, 240)
+        self.source = source
+        self.sketch = sketch
+        self.done = False
+        self.apply = False
+        self.cancelled = False
+        self.visible = True
+
+        # Material dropdown (single source of truth = sketch.materials)
+        material_names = list(sketch.materials.keys())
+        try:
+            sel = material_names.index(source.properties.material_name)
+        except ValueError:
+            sel = 0
+        # Material dropdown — opens upward via Dropdown's overlay rendering
+        self.dropdown = Dropdown(
+            x + 110, y + 45, 150, 25,
+            material_names if material_names else ['Water'],
+            selected_index=sel,
+        )
+
+        # Numeric inputs — floats with sensible precision.
+        # Flux is shown to 3 dp since typical values are in the 0.1–1.0 range.
+        self.in_radius = InputField(x + 110, y + 80, 150, 25, f"{source.radius:.2f}")
+        self.in_flux = InputField(x + 110, y + 115, 150, 25, f"{source.properties.flux:.3f}")
+        self.in_temp = InputField(x + 110, y + 150, 150, 25, f"{source.properties.temperature:.2f}")
+
+        self.btn_cancel = Button(x + 20, y + 195, 100, 30, "Cancel", toggle=False)
+        self.btn_ok = Button(x + 160, y + 195, 100, 30, "Apply", toggle=False,
+                             color_inactive=config.COLOR_SUCCESS)
+
+    def handle_event(self, event):
+        if not self.visible:
+            return False
+
+        # Dropdown gets first crack so its overlay clicks land
+        if self.dropdown.handle_event(event):
+            return True
+        if self.in_radius.handle_event(event):
+            return True
+        if self.in_flux.handle_event(event):
+            return True
+        if self.in_temp.handle_event(event):
+            return True
+
+        if self.btn_cancel.handle_event(event):
+            self.cancelled = True
+            self.done = True
+            return True
+        if self.btn_ok.handle_event(event):
+            self.apply = True
+            self.done = True
+            return True
+
+        # Absorb stray mouse events inside the dialog so the world doesn't catch them
+        if event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP):
+            if self.rect.collidepoint(event.pos):
+                return True
+            # Also absorb clicks landing inside the expanded dropdown overlay
+            if self.dropdown.expanded:
+                if self.dropdown.get_expanded_rect().collidepoint(event.pos):
+                    return True
+        if event.type == pygame.MOUSEMOTION:
+            return True
+        return False
+
+    def update(self, dt):
+        self.in_radius.update(dt)
+        self.in_flux.update(dt)
+        self.in_temp.update(dt)
+        self.btn_cancel.update(dt)
+        self.btn_ok.update(dt)
+
+    def get_values(self) -> dict:
+        """Return the dialog's current values, clamped to safe ranges."""
+        radius = max(0.5, self.in_radius.get_value(self.source.radius))
+        flux = max(0.0, self.in_flux.get_value(self.source.properties.flux))
+        temp = max(0.0, self.in_temp.get_value(self.source.properties.temperature))
+        material_name = self.dropdown.get_selected()
+        return {
+            'material_name': material_name,
+            'radius': radius,
+            'flux': flux,
+            'temperature': temp,
+        }
+
+    def draw(self, screen, font):
+        if not self.visible:
+            return
+
+        # Drop shadow
+        shadow = self.rect.copy()
+        shadow.x += 5
+        shadow.y += 5
+        s_surf = pygame.Surface((shadow.width, shadow.height), pygame.SRCALPHA)
+        pygame.draw.rect(s_surf, (0, 0, 0, 100), s_surf.get_rect(), border_radius=6)
+        screen.blit(s_surf, shadow)
+
+        pygame.draw.rect(screen, config.PANEL_BG_COLOR, self.rect, border_radius=6)
+        pygame.draw.rect(screen, config.COLOR_ACCENT, self.rect, 1, border_radius=6)
+
+        screen.blit(font.render("Source Properties", True, (255, 255, 255)),
+                    (self.rect.x + 15, self.rect.y + 12))
+
+        x = self.rect.x
+        y = self.rect.y
+        screen.blit(font.render("Material:", True, config.COLOR_TEXT), (x + 20, y + 50))
+        screen.blit(font.render("Radius:", True, config.COLOR_TEXT), (x + 20, y + 85))
+        screen.blit(font.render("Flux (p/s/u²):", True, config.COLOR_TEXT), (x + 20, y + 120))
+        screen.blit(font.render("Temperature:", True, config.COLOR_TEXT), (x + 20, y + 155))
+
+        self.dropdown.draw(screen, font)
+        self.in_radius.draw(screen, font)
+        self.in_flux.draw(screen, font)
+        self.in_temp.draw(screen, font)
+        self.btn_cancel.draw(screen, font)
+        self.btn_ok.draw(screen, font)
+
 
 class MaterialDialog:
     CREATE_NEW_OPTION = "[ Create New ]"
@@ -1657,7 +1805,7 @@ class AnimationDialog:
             if self.in_phase.handle_event(event): return True
         else:
             if self.in_rate.handle_event(event): return True
-        
+
         if self.btn_stop.handle_event(event):
             self.driver = None; self.apply = True; self.done = True
             return True
@@ -1778,7 +1926,7 @@ class MaterialPropertyWidget(UIContainer):
         self._last_material_id = None  # Track material for revert on deselect
         self._last_entity_idx = None  # Track entity index for clearing previews
         # Track which library material is selected in dropdown (for no-entity-selected mode)
-        self._dropdown_material_id = None
+        self._dropdown_id = None
         # Track if current material has unsaved modifications (for display only)
         self._is_current_modified = False
         # Callback for requesting "Save as New" dialog (set by controller)
@@ -1815,7 +1963,7 @@ class MaterialPropertyWidget(UIContainer):
         self.add_child(self.dropdown)
         # Initialize dropdown material ID to first material
         if options:
-            self._dropdown_material_id = self._strip_modified_suffix(options[0])
+            self._dropdown_id = self._strip_modified_suffix(options[0])
 
     def _get_material_names(self):
         """Get material names from sketch (if available) or session library."""
@@ -1885,13 +2033,13 @@ class MaterialPropertyWidget(UIContainer):
             return self.session.active_material, False
 
         # No entity selected - edit the library material selected in dropdown
-        if self._dropdown_material_id and self._dropdown_material_id in library:
-            return library[self._dropdown_material_id], False
+        if self._dropdown_id and self._dropdown_id in library:
+            return library[self._dropdown_id], False
 
         # Fallback to first material in library or session active
         if library:
             first_mat_id = next(iter(library.keys()))
-            self._dropdown_material_id = first_mat_id
+            self._dropdown_id = first_mat_id
             return library[first_mat_id], False
 
         return self.session.active_material, False
@@ -1943,14 +2091,14 @@ class MaterialPropertyWidget(UIContainer):
             entity = self._get_selected_entity()
 
             # Clear any pending global preview for the OLD material
-            old_mat_id = self._dropdown_material_id
+            old_mat_id = self._dropdown_id
             if mat_mgr and old_mat_id and old_mat_id != clean_name:
                 if mat_mgr.has_global_override(old_mat_id):
                     mat_mgr.clear_global_preview(old_mat_id)
                     self._trigger_rebuild()
 
             # Track which material is selected in dropdown
-            self._dropdown_material_id = clean_name
+            self._dropdown_id = clean_name
 
             if entity:
                 # Apply to selected entity
@@ -2009,9 +2157,9 @@ class MaterialPropertyWidget(UIContainer):
             # Update dropdown to show "(modified)"
             self._update_dropdown_display()
 
-        elif mat_mgr and self._dropdown_material_id:
+        elif mat_mgr and self._dropdown_id:
             # No entity selected: Use global preview override
-            material_id = self._dropdown_material_id
+            material_id = self._dropdown_id
 
             # Ensure global preview is started
             if not mat_mgr.has_global_override(material_id):
@@ -2091,9 +2239,9 @@ class MaterialPropertyWidget(UIContainer):
             mat_mgr.update_entity_preview(entity_idx, color=new_color)
             self._trigger_rebuild()
             self._update_dropdown_display()
-        elif mat_mgr and self._dropdown_material_id:
+        elif mat_mgr and self._dropdown_id:
             # No entity selected: Use global preview override
-            material_id = self._dropdown_material_id
+            material_id = self._dropdown_id
 
             if not mat_mgr.has_global_override(material_id):
                 mat_mgr.begin_global_preview(material_id)
@@ -2137,9 +2285,9 @@ class MaterialPropertyWidget(UIContainer):
             else:
                 # No changes to commit
                 SoundManager.get().play_sound('snap')
-        elif mat_mgr and self._dropdown_material_id:
+        elif mat_mgr and self._dropdown_id:
             # No entity selected: Commit global preview to library
-            mat_id = self._dropdown_material_id
+            mat_id = self._dropdown_id
 
             if mat_mgr.has_global_override(mat_id):
                 mat_mgr.commit_global_preview(mat_id)
@@ -2171,7 +2319,7 @@ class MaterialPropertyWidget(UIContainer):
         # Store pending save data
         self._pending_save_as_new = {
             'entity_idx': entity_idx,
-            'old_mat_id': getattr(entity, 'material_id', 'Wall') if entity else self._dropdown_material_id,
+            'old_mat_id': getattr(entity, 'material_id', 'Wall') if entity else self._dropdown_id,
             'sigma': self.slider_sigma.val,
             'epsilon': self.slider_epsilon.val,
             'mass': self.slider_mass.val,
@@ -2228,7 +2376,7 @@ class MaterialPropertyWidget(UIContainer):
             entity = self._get_selected_entity()
             if entity:
                 entity.material_id = new_name
-                self._dropdown_material_id = new_name
+                self._dropdown_id = new_name
                 self._last_material_id = new_name
 
             # Clear any entity preview
@@ -2287,15 +2435,15 @@ class MaterialPropertyWidget(UIContainer):
             return  # Entity selected, not using global preview
 
         mat_mgr = self._get_material_manager()
-        if mat_mgr and self._dropdown_material_id:
-            if mat_mgr.has_global_override(self._dropdown_material_id):
-                mat_mgr.clear_global_preview(self._dropdown_material_id)
+        if mat_mgr and self._dropdown_id:
+            if mat_mgr.has_global_override(self._dropdown_id):
+                mat_mgr.clear_global_preview(self._dropdown_id)
                 self._trigger_rebuild()
                 self._update_dropdown_display()
                 # Sync sliders back to library values
                 library = self._get_material_library()
-                if self._dropdown_material_id in library:
-                    self._sync_from_material(library[self._dropdown_material_id])
+                if self._dropdown_id in library:
+                    self._sync_from_material(library[self._dropdown_id])
 
     def _check_selection_change(self):
         """Check if selection changed and update widget accordingly."""
@@ -2309,7 +2457,7 @@ class MaterialPropertyWidget(UIContainer):
         else:
             current_hash = None
             # Track dropdown material for no-entity case
-            current_mat_id = self._dropdown_material_id
+            current_mat_id = self._dropdown_id
 
         if current_hash != self._last_selection_hash:
             # Selection changed - clear any pending previews
@@ -2340,7 +2488,7 @@ class MaterialPropertyWidget(UIContainer):
         if entity:
             # Entity selected - sync dropdown to entity's material
             mat_id = getattr(entity, 'material_id', 'Wall')
-            self._dropdown_material_id = mat_id
+            self._dropdown_id = mat_id
         # else: Keep current dropdown selection when deselecting
 
         # Get the material to display (library material, not any override)
@@ -2367,7 +2515,7 @@ class MaterialPropertyWidget(UIContainer):
         if entity:
             target_mat_id = getattr(entity, 'material_id', None)
         else:
-            target_mat_id = self._dropdown_material_id
+            target_mat_id = self._dropdown_id
 
         # Build clean options list (no suffix!)
         new_options = list(library.keys())

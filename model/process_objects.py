@@ -38,49 +38,59 @@ if TYPE_CHECKING:
 class SourceProperties:
     """
     Properties for a particle Source.
-    
-    Particle Properties:
-        sigma: Particle size parameter (LJ sigma)
-        epsilon: Interaction strength (LJ epsilon)
-        mass: Particle mass
-    
-    Injection Behavior:
-        rate: Target particles per second
-        temperature: For Maxwell-Boltzmann velocity sampling
-        injection_direction: Preferred direction in radians (0 = right)
-        injection_spread: Angular spread (2*pi = isotropic)
+
+    The Source describes itself with **intensive** quantities — knobs
+    whose physical meaning is independent of the Source's size:
+
+        material_name: Reference into sketch.materials. sigma / epsilon /
+            mass / color are looked up at spawn time.
+        flux: Target spawn rate per unit area, in particles per
+            (unit-time · unit-area). The effective successful-spawn
+            rate scales as `flux · π · r²` — doubling the radius
+            quadruples total throughput at fixed flux, mirroring the
+            way pressure or chemical potential decouple intensity from
+            container size.
+        temperature: For Maxwell-Boltzmann velocity sampling.
+        injection_direction / injection_spread: Optional bias of the
+            velocity distribution. 2π spread = isotropic.
+
+    Note on the chemical-potential analogue: flux as defined here is a
+    *forcing* term (constant, equilibrium-blind). A true chemical-
+    potential source would adjust its spawn rate dynamically to maintain
+    a target density inside the spawn region (or fail-to-spawn through
+    rejection when saturated). That's a possible future variant; the
+    current implementation is the flux precursor.
     """
-    # Particle properties
-    sigma: float = 1.0
-    epsilon: float = 1.0
-    mass: float = 1.0
-    
-    # Injection behavior
-    rate: float = 10.0              # particles per second (target rate)
+    material_name: str = 'Water'    # Looked up via sketch.get_material() at spawn
+    flux: float = 0.5               # particles per (unit time · unit area)
     temperature: float = 1.0        # for velocity sampling
     injection_direction: float = 0  # angle in radians, 0 = no bias (right)
     injection_spread: float = 2 * math.pi  # angular spread (2π = isotropic)
-    
+
     def to_dict(self) -> dict:
         """Serialize to dictionary."""
         return {
-            'sigma': self.sigma,
-            'epsilon': self.epsilon,
-            'mass': self.mass,
-            'rate': self.rate,
+            'material_name': self.material_name,
+            'flux': self.flux,
             'temperature': self.temperature,
             'injection_direction': self.injection_direction,
             'injection_spread': self.injection_spread,
         }
-    
+
     @staticmethod
     def from_dict(data: dict) -> 'SourceProperties':
-        """Deserialize from dictionary."""
+        """Deserialize from dictionary.
+
+        Legacy `sigma` / `epsilon` / `mass` keys (pre-material-palette
+        refactor) are silently ignored. Legacy `rate` (pre-flux
+        refactor) cannot be converted here because the radius lives on
+        the Source, not on SourceProperties — Source.from_dict handles
+        that conversion. If both `flux` and `rate` are present, `flux`
+        wins.
+        """
         return SourceProperties(
-            sigma=data.get('sigma', 1.0),
-            epsilon=data.get('epsilon', 1.0),
-            mass=data.get('mass', 1.0),
-            rate=data.get('rate', 10.0),
+            material_name=data.get('material_name', 'Water'),
+            flux=data.get('flux', 0.5),
             temperature=data.get('temperature', 1.0),
             injection_direction=data.get('injection_direction', 0),
             injection_spread=data.get('injection_spread', 2 * math.pi),
@@ -240,20 +250,27 @@ class Source(ProcessObject):
     
     def execute(self, simulation: 'Simulation', dt: float) -> None:
         """
-        Spawn particles according to rate with adaptive algorithm.
-        
+        Spawn particles according to flux with adaptive algorithm.
+
+        Effective successful-spawn rate is `flux · π · r²` — flux is
+        intensive (per-area) so the same flux yields more total
+        throughput on a bigger Source. See SourceProperties.flux.
+
         Args:
             simulation: The Simulation to add particles to
             dt: Time step in seconds
         """
         if not self.enabled:
             return
-        
+
         import time
         current_time = time.time()
-        
+
+        # Effective target rate = flux · area. Particles per second.
+        effective_rate = self.properties.flux * math.pi * (self.radius ** 2)
+
         # Accumulate spawn credit
-        self._spawn_accumulator += self.properties.rate * dt
+        self._spawn_accumulator += effective_rate * dt
         
         # Calculate adaptive attempts based on how far behind we are
         catchup_factor = self._calculate_catchup_factor(current_time)
@@ -293,11 +310,12 @@ class Source(ProcessObject):
         elapsed = max(elapsed, 0.01)  # Prevent division by zero
         
         actual_rate = total_spawned / elapsed
-        target_rate = self.properties.rate
-        
+        # Target effective rate uses the same flux · π · r² model as execute()
+        target_rate = self.properties.flux * math.pi * (self.radius ** 2)
+
         if target_rate <= 0:
             return 1.0
-        
+
         ratio = actual_rate / target_rate
         
         # If we're at 50% or less of target, double the attempts
@@ -313,49 +331,73 @@ class Source(ProcessObject):
         if count > 0:
             self._recent_spawns.append((current_time, count))
     
+    def _resolve_material(self):
+        """Look up the spawn material from the owning scene's sketch.
+
+        Falls back to a default Water-like Material when the Source isn't
+        attached to a scene yet (exercised by tests that build a bare
+        Simulation + Source without going through Scene.add_process_object).
+        """
+        scene = self._owner_scene
+        if scene is not None and hasattr(scene, 'sketch'):
+            mat = scene.sketch.get_material(self.properties.material_name)
+            if mat is not None:
+                return mat
+        # Fallback — keeps test code that constructs a bare Source working
+        from model.properties import Material
+        return Material('Water', sigma=1.0, epsilon=1.0, mass=1.0,
+                        color=(50, 150, 255))
+
     def _try_spawn_particle(self, simulation: 'Simulation') -> bool:
         """
         Attempt to spawn a single particle using rejection sampling.
-        
+
         Returns:
             True if particle was spawned, False if rejected
         """
+        material = self._resolve_material()
+
         # Random position within radius (sqrt for uniform area distribution)
         angle = random.uniform(0, 2 * math.pi)
         r = self.radius * math.sqrt(random.uniform(0, 1))
         x = self.x + r * math.cos(angle)
         y = self.y + r * math.sin(angle)
-        
+
         # Check bounds
         if x < 0 or x > simulation.world_size or y < 0 or y > simulation.world_size:
             return False
-        
+
         # Overlap check using the simulation's method
-        if simulation.has_particle_near(x, y, self.properties.sigma * 0.8):
+        if simulation.has_particle_near(x, y, material.sigma * 0.8):
             return False
-        
+
         # Sample velocity from Maxwell-Boltzmann with optional direction bias
-        vx, vy = self._sample_velocity()
-        
-        # Add the particle
+        vx, vy = self._sample_velocity(material.mass)
+
+        # Add the particle — color follows the material so emitted particles
+        # visually match other atoms of the same material.
         simulation._add_particle(
             x=x, y=y, vx=vx, vy=vy,
             is_static=0,
-            sigma=self.properties.sigma,
-            epsilon=self.properties.epsilon
+            sigma=material.sigma,
+            epsilon=material.epsilon,
+            color=material.color,
         )
-        
+
         return True
-    
-    def _sample_velocity(self) -> tuple:
+
+    def _sample_velocity(self, mass: float = 1.0) -> tuple:
         """
         Sample velocity from Maxwell-Boltzmann distribution with optional direction bias.
-        
+
+        Args:
+            mass: Particle mass (looked up from the resolved material)
+
         Returns:
             (vx, vy) tuple
         """
         # Standard deviation for Maxwell-Boltzmann (sqrt(kT/m), using kT = temperature)
-        std = math.sqrt(self.properties.temperature / self.properties.mass)
+        std = math.sqrt(self.properties.temperature / mass)
         
         # Sample random direction with optional bias
         if self.properties.injection_spread >= 2 * math.pi - 0.01:
@@ -440,15 +482,234 @@ class Source(ProcessObject):
     
     @staticmethod
     def from_dict(data: dict) -> 'Source':
-        """Deserialize Source from dictionary."""
-        props = SourceProperties.from_dict(data.get('properties', {}))
+        """Deserialize Source from dictionary.
+
+        Migrates legacy `rate` (pre-flux refactor) to flux using the
+        Source's own radius — preserves total throughput from old saves.
+        Only runs if `flux` isn't already in the properties dict.
+        """
+        radius = float(data['radius'])
+        props_data = data.get('properties', {})
+        if 'flux' not in props_data and 'rate' in props_data and radius > 0:
+            legacy_rate = float(props_data['rate'])
+            area = math.pi * radius * radius
+            props_data = dict(props_data)
+            props_data['flux'] = legacy_rate / area if area > 0 else 0.5
+
+        props = SourceProperties.from_dict(props_data)
         source = Source(
             center=tuple(data['center']),
-            radius=data['radius'],
+            radius=radius,
             properties=props,
         )
         source.enabled = data.get('enabled', True)
         return source
+
+
+# =============================================================================
+# Sink — particle absorber (drain). Complement to Source.
+# =============================================================================
+
+
+@dataclass
+class SinkProperties:
+    """
+    Properties for a particle Sink.
+
+    The Sink absorbs all dynamic particles that fall inside its radius.
+    These properties are reserved for future filter behaviour (mass /
+    size / colour selectivity); for now they are accepted but unused so
+    the schema is forward-compatible.
+    """
+    # Reserved for future filter behaviour
+    enabled_filter: bool = False    # If True, only absorb matching particles
+    min_sigma: float = 0.0          # Future: min particle size to absorb
+    max_sigma: float = float('inf') # Future: max particle size to absorb
+
+    def to_dict(self) -> dict:
+        """Serialize to dictionary."""
+        # NOTE: max_sigma uses inf as sentinel; JSON cannot represent it.
+        # Encode as None and decode back to inf.
+        max_s = None if math.isinf(self.max_sigma) else self.max_sigma
+        return {
+            'enabled_filter': self.enabled_filter,
+            'min_sigma': self.min_sigma,
+            'max_sigma': max_s,
+        }
+
+    @staticmethod
+    def from_dict(data: dict) -> 'SinkProperties':
+        """Deserialize from dictionary."""
+        max_s = data.get('max_sigma', None)
+        if max_s is None:
+            max_s = float('inf')
+        return SinkProperties(
+            enabled_filter=data.get('enabled_filter', False),
+            min_sigma=data.get('min_sigma', 0.0),
+            max_sigma=max_s,
+        )
+
+
+class Sink(ProcessObject):
+    """
+    Particle absorber — removes dynamic particles inside a circular region.
+
+    Like Source, a Sink has a center handle (Point) for constraint
+    participation and a radius defining the absorption region. Static
+    and tethered particles are preserved (only `is_static==0` is
+    absorbed); this matches the BrushTool erase precedent.
+
+    Stats:
+        absorbed_count: Cumulative number of particles absorbed since
+            this Sink was created.
+        last_frame_absorbed: Number absorbed in the most recent
+            execute() call. Useful for HUD readouts and diagnostics.
+    """
+
+    def __init__(self, center: tuple, radius: float,
+                 properties: 'SinkProperties' = None):
+        """
+        Create a new Sink.
+
+        Args:
+            center: (x, y) tuple for center position
+            radius: Absorption region radius
+            properties: SinkProperties or None for defaults
+        """
+        super().__init__()
+
+        self.radius = float(radius)
+        self.properties = properties or SinkProperties()
+
+        # Stats
+        self.absorbed_count = 0
+        self.last_frame_absorbed = 0
+
+        # Create the center handle
+        center_point = Point(center[0], center[1], anchored=False)
+        center_point.is_handle = True
+        self.handles['center'] = center_point
+
+    @property
+    def center(self) -> Point:
+        """Get the center handle point."""
+        return self.handles['center']
+
+    @property
+    def x(self) -> float:
+        """Get center x coordinate."""
+        return self.center.pos[0]
+
+    @property
+    def y(self) -> float:
+        """Get center y coordinate."""
+        return self.center.pos[1]
+
+    def execute(self, simulation: 'Simulation', dt: float) -> None:
+        """
+        Absorb dynamic particles inside the radius.
+
+        Mirrors ParticleBrush.erase: iterate dynamic particles, collect
+        in-radius indices, compact the simulation arrays. Static
+        (is_static==1) and tethered (is_static==3) particles are left
+        alone.
+
+        Args:
+            simulation: The Simulation to remove particles from
+            dt: Time step (unused; absorption is per-frame, not rate-limited)
+        """
+        self.last_frame_absorbed = 0
+        if not self.enabled:
+            return
+        if simulation.count == 0:
+            return
+
+        cx = self.x
+        cy = self.y
+        r_sq = self.radius * self.radius
+
+        indices_to_remove = []
+        for i in range(simulation.count):
+            # Only absorb dynamic particles
+            if simulation.is_static[i] != 0:
+                continue
+            dx = simulation.pos_x[i] - cx
+            dy = simulation.pos_y[i] - cy
+            if dx * dx + dy * dy <= r_sq:
+                indices_to_remove.append(i)
+
+        if not indices_to_remove:
+            return
+
+        remove_set = set(indices_to_remove)
+        keep_indices = [i for i in range(simulation.count) if i not in remove_set]
+
+        simulation.compact_arrays(keep_indices)
+        simulation.rebuild_next = True
+
+        n = len(indices_to_remove)
+        self.absorbed_count += n
+        self.last_frame_absorbed = n
+
+    def get_geometry_for_rendering(self) -> List[dict]:
+        """
+        Return the dashed circle geometry for rendering.
+
+        Sinks are rendered like Sources but with `kind='sink'` so the
+        renderer can pick a distinguishing colour.
+        """
+        return [{
+            'type': 'dashed_circle',
+            'center': (self.x, self.y),
+            'radius': self.radius,
+            'kind': 'sink',
+        }]
+
+    def contains_point(self, x: float, y: float, tolerance: float = 0.0) -> bool:
+        """
+        Check if a point is inside the Sink's absorption region.
+        """
+        dx = x - self.x
+        dy = y - self.y
+        dist = math.sqrt(dx * dx + dy * dy)
+        return dist <= self.radius + tolerance
+
+    def hit_test(self, x: float, y: float, tolerance: float = 5.0) -> bool:
+        """
+        Check if a point hits the Sink (center or circumference).
+        """
+        dx = x - self.x
+        dy = y - self.y
+        dist = math.sqrt(dx * dx + dy * dy)
+
+        if dist <= tolerance:
+            return True
+        if abs(dist - self.radius) <= tolerance:
+            return True
+        return False
+
+    def to_dict(self) -> dict:
+        """Serialize Sink to dictionary."""
+        return {
+            'type': 'sink',
+            'center': [float(self.x), float(self.y)],
+            'radius': self.radius,
+            'enabled': self.enabled,
+            'properties': self.properties.to_dict(),
+            # absorbed_count is intentionally not serialized — stats reset on load
+        }
+
+    @staticmethod
+    def from_dict(data: dict) -> 'Sink':
+        """Deserialize Sink from dictionary."""
+        props = SinkProperties.from_dict(data.get('properties', {}))
+        sink = Sink(
+            center=tuple(data['center']),
+            radius=data['radius'],
+            properties=props,
+        )
+        sink.enabled = data.get('enabled', True)
+        return sink
 
 
 # =============================================================================
@@ -483,7 +744,8 @@ def create_process_object(data: dict) -> Optional[ProcessObject]:
     
     if obj_type == 'source':
         return Source.from_dict(data)
-    # Future: elif obj_type == 'sink': return Sink.from_dict(data)
+    if obj_type == 'sink':
+        return Sink.from_dict(data)
     # Future: elif obj_type == 'heater': return Heater.from_dict(data)
-    
+
     return None

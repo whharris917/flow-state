@@ -339,20 +339,44 @@ class AppController:
         self.sound_manager.play_sound('click')
 
     def action_delete_selection(self):
-        """Delete selected entities using commands for proper undo/redo."""
+        """Delete selected entities using commands for proper undo/redo.
+
+        Handle Points (those owned by a ProcessObject) cascade to their
+        owner — deleting the center handle of a Source/Sink removes the
+        whole ProcessObject. Without this dispatch, RemoveEntityCommand
+        would orphan the ProcessObject in scene.process_objects with no
+        handle in the sketch.
+        """
         if not self.session.selection.walls:
             self.session.status.set("Nothing selected")
             return
-            
-        # Create composite command for multi-delete
+
+        from model.process_objects import Source, Sink
+        from core.source_commands import DeleteSourceCommand
+        from core.sink_commands import DeleteSinkCommand
+
+        # Sort indices descending so RemoveEntityCommand index math is
+        # stable even if the cascade-delete shrinks the entity list.
         indices = sorted(self.session.selection.walls, reverse=True)
-        cmds = [RemoveEntityCommand(self.sketch, idx) for idx in indices]
-        
+        cmds = []
+        for idx in indices:
+            if 0 <= idx < len(self.sketch.entities):
+                entity = self.sketch.entities[idx]
+                owner = self.scene.get_process_object_for_handle(entity)
+                if owner is not None:
+                    if isinstance(owner, Source):
+                        cmds.append(DeleteSourceCommand(self.scene, owner))
+                        continue
+                    if isinstance(owner, Sink):
+                        cmds.append(DeleteSinkCommand(self.scene, owner))
+                        continue
+            cmds.append(RemoveEntityCommand(self.sketch, idx))
+
         if len(cmds) == 1:
             self.scene.execute(cmds[0])
         else:
             self.scene.execute(CompositeCommand(cmds))
-        
+
         self.session.selection.walls.clear()
         self.session.selection.points.clear()
         self.session.status.set(f"Deleted {len(indices)} entities")
@@ -426,6 +450,72 @@ class AppController:
         dialog = MaterialDialog(mx, my, self.sketch, current_mat)
         self.push_modal(dialog, 'prop_dialog')
 
+    def open_source_properties_dialog(self):
+        """Open the Source Properties dialog for the right-clicked Source handle.
+
+        Resolves the Source from the entity at `ctx_vars['wall']` via the
+        Scene's handle→owner map. If the entity isn't a Source handle,
+        bails out with a status message rather than opening an empty
+        dialog.
+        """
+        from ui.ui_widgets import SourcePropertiesDialog
+        from model.process_objects import Source
+
+        wall_idx = self.ctx_vars.get('wall', -1)
+        if wall_idx == -1 or wall_idx >= len(self.sketch.entities):
+            self.session.status.set("No Source under cursor")
+            return
+        entity = self.sketch.entities[wall_idx]
+        owner = self.scene.get_process_object_for_handle(entity)
+        if not isinstance(owner, Source):
+            self.session.status.set("Not a Source")
+            return
+
+        mx, my = pygame.mouse.get_pos()
+        dialog = SourcePropertiesDialog(mx, my, owner, self.sketch)
+        self.push_modal(dialog, 'source_properties_dialog')
+
+    def apply_source_properties_from_dialog(self, dialog):
+        """Apply Source dialog values via the existing command pattern.
+
+        Bundles radius + properties changes into one CompositeCommand so
+        the whole edit collapses to a single undo.
+        """
+        from model.process_objects import SourceProperties
+        from core.source_commands import (
+            SetSourceRadiusCommand, SetSourcePropertiesCommand,
+        )
+        from core.commands import CompositeCommand
+
+        if not getattr(dialog, 'apply', False):
+            return  # Cancelled
+
+        source = dialog.source
+        vals = dialog.get_values()
+
+        new_props = SourceProperties(
+            material_name=vals['material_name'],
+            flux=vals['flux'],
+            temperature=vals['temperature'],
+            injection_direction=source.properties.injection_direction,
+            injection_spread=source.properties.injection_spread,
+        )
+
+        cmds = []
+        if vals['radius'] != source.radius:
+            cmds.append(SetSourceRadiusCommand(source, vals['radius']))
+        cmds.append(SetSourcePropertiesCommand(source, new_props))
+
+        if len(cmds) == 1:
+            self.scene.execute(cmds[0])
+        else:
+            self.scene.execute(CompositeCommand(cmds))
+
+        self.session.status.set(
+            f"Source: {vals['material_name']}, r={vals['radius']:.1f}, flux={vals['flux']:.3f}"
+        )
+        self.sound_manager.play_sound('click')
+
     def open_rotation_dialog(self):
         # Legacy rotation dialog - show message about using constraint drivers
         self.session.status.set("Use constraint drivers for animation (right-click constraint > Animate)")
@@ -479,15 +569,25 @@ class AppController:
             entities = self.sketch.entities
             if w_idx < len(entities):
                 w = entities[w_idx]
+                # Process-object handle: swap in object-specific options.
+                # Sinks stay simple (Lead direction); Sources get a
+                # properties dialog covering material / radius / rate / temperature.
+                owner = self.scene.get_process_object_for_handle(w)
+                if owner is not None:
+                    from model.process_objects import Source
+                    if isinstance(owner, Source):
+                        options.append("Source Properties...")
+                    options.append("Delete")
+                    return options
                 is_anchored = False
                 if isinstance(w, Line):
                     is_anchored = w.anchored[pt_idx]
                 elif isinstance(w, Circle):
                     is_anchored = w.anchored[0]
                 elif isinstance(w, Point):
-                    is_anchored = w.anchored 
+                    is_anchored = w.anchored
                 options.append("Un-Anchor" if is_anchored else "Anchor")
-                options.append("Set Length...") 
+                options.append("Set Length...")
         elif target_type == 'constraint':
             options = ["Delete Constraint", "Animate..."]
         return options
@@ -495,6 +595,8 @@ class AppController:
     def handle_context_menu_action(self, action):
         if action == "Properties":
             self.open_material_dialog()
+        elif action == "Source Properties...":
+            self.open_source_properties_dialog()
         elif action == "Animate...":
             self.open_animation_dialog()
         elif action == "Delete":
@@ -670,6 +772,11 @@ class AppController:
             # this per-frame poll rather than the event-driven dispatcher)
             if modal_type == 'confirm_resize_dialog' and hasattr(modal, 'done') and modal.done:
                 self.apply_resize_confirm(modal)
+                break  # Modal stack was modified, exit loop
+            # Source properties dialog: apply on OK, dismiss on Cancel
+            if modal_type == 'source_properties_dialog' and hasattr(modal, 'done') and modal.done:
+                self.apply_source_properties_from_dialog(modal)
+                self.close_modal(modal)
                 break  # Modal stack was modified, exit loop
 
     def draw_overlays(self, screen, font):

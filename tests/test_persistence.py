@@ -66,7 +66,7 @@ class TestSceneSaveLoad:
 
     def test_round_trip_preserves_process_objects(self, scene, tmp_scene_path):
         _prime_scene_with_particle(scene)
-        scene.add_process_object(Source((25, 25), 3.0, SourceProperties(rate=15.0)))
+        scene.add_process_object(Source((25, 25), 3.0, SourceProperties(flux=1.5)))
         scene.save_scene(tmp_scene_path)
 
         loaded, _, _ = Scene.load_scene(tmp_scene_path, skip_warmup=True)
@@ -74,7 +74,7 @@ class TestSceneSaveLoad:
         source = loaded.process_objects[0]
         assert source.x == 25.0
         assert source.radius == 3.0
-        assert source.properties.rate == 15.0
+        assert source.properties.flux == 1.5
 
     def test_view_state_preserved(self, scene, tmp_scene_path):
         """Per TU-UI: round-trip the loaded view through CameraController so the

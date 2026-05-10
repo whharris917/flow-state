@@ -36,24 +36,25 @@ def render_process_objects(screen, process_objects, session, layout, world_size)
     """
     for obj in process_objects:
         geometries = obj.get_geometry_for_rendering()
-        
+
         for geom in geometries:
             if geom['type'] == 'dashed_circle':
                 _draw_dashed_circle(
-                    screen, 
+                    screen,
                     geom['center'],
                     geom['radius'],
                     session,
                     layout,
                     world_size,
-                    enabled=obj.enabled
+                    enabled=obj.enabled,
+                    kind=geom.get('kind', 'source'),
                 )
 
 
-def _draw_dashed_circle(screen, center, radius, session, layout, world_size, enabled=True):
+def _draw_dashed_circle(screen, center, radius, session, layout, world_size, enabled=True, kind='source'):
     """
-    Draw a dashed circle for a Source's spawn region.
-    
+    Draw a dashed circle for a Source spawn region or Sink absorption region.
+
     Args:
         screen: Pygame screen surface
         center: (x, y) world coordinates
@@ -62,6 +63,7 @@ def _draw_dashed_circle(screen, center, radius, session, layout, world_size, ena
         layout: Layout dictionary
         world_size: World size for transforms
         enabled: If False, draw grayed out
+        kind: 'source' (default — light blue) or 'sink' (red).
     """
     # Transform center to screen coordinates
     cx, cy = sim_to_screen(
@@ -84,11 +86,15 @@ def _draw_dashed_circle(screen, center, radius, session, layout, world_size, ena
     if screen_radius < 2:
         return  # Too small to render
     
-    # Choose color based on enabled state
-    if enabled:
-        color = (100, 180, 255)  # Light blue
+    # Choose color based on kind and enabled state. Source = blue,
+    # Sink = red, with a single grey palette for the disabled case so
+    # the visual rule "greyed out = inactive" stays consistent.
+    if not enabled:
+        color = (80, 80, 100)
+    elif kind == 'sink':
+        color = (220, 80, 80)    # Red
     else:
-        color = (80, 80, 100)    # Grayed out
+        color = (100, 180, 255)  # Light blue
     
     # Draw dashed circle
     circumference = 2 * math.pi * screen_radius

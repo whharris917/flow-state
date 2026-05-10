@@ -41,14 +41,15 @@ class InputHandler:
         # Tool button mappings
         self.tool_btn_map = {}
         tool_defs = {
-            'brush': config.TOOL_BRUSH, 
+            'brush': config.TOOL_BRUSH,
             'select': config.TOOL_SELECT,
-            'line': config.TOOL_LINE, 
+            'line': config.TOOL_LINE,
             'rect': config.TOOL_RECT,
-            'circle': config.TOOL_CIRCLE, 
+            'circle': config.TOOL_CIRCLE,
             'point': config.TOOL_POINT,
             'ref': config.TOOL_REF,
-            'source': config.TOOL_SOURCE, 
+            'source': config.TOOL_SOURCE,
+            'sink': config.TOOL_SINK,
         }
         for key, val in tool_defs.items():
             if key in self.ui.tools:
@@ -198,6 +199,10 @@ class InputHandler:
                 self.controller.change_tool(config.TOOL_SOURCE)
                 return True
 
+            if event.key == pygame.K_d and (pygame.key.get_mods() & pygame.KMOD_SHIFT):
+                self.controller.change_tool(config.TOOL_SINK)
+                return True
+
             # Render mode cycle (F7) — diagnostic toggle for the particle
             # render path. FULL is the per-atom pygame.draw.circle production
             # path; DOTS is a vectorized single-pixel scatter; OFF skips
@@ -291,6 +296,12 @@ class InputHandler:
                     # Set cancellation flags; AppController.update()
                     # polls dialog.done and routes through
                     # apply_resize_confirm on the next frame.
+                    modal.cancelled = True
+                    modal.done = True
+                elif modal_type == 'source_properties_dialog':
+                    # Cancellation routes through actions.update() which
+                    # checks `apply` (not just `done`) so a click-outside
+                    # cancel doesn't accidentally fire the apply path.
                     modal.cancelled = True
                     modal.done = True
                 else:

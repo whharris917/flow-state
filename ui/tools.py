@@ -74,6 +74,9 @@ from core.commands import (
     AddRectangleCommand, SetPointCommand, SetCircleRadiusCommand,
     SetEntityGeometryCommand
 )
+from core.source_commands import SetSourceRadiusCommand
+from core.sink_commands import SetSinkRadiusCommand
+from model.process_objects import Source, Sink
 
 
 # =============================================================================
@@ -700,6 +703,7 @@ class SelectTool(Tool):
     Modes:
     - EDIT: Drag individual points
     - RESIZE_CIRCLE: Drag circle edge to resize
+    - RESIZE_PROCESS_OBJECT: Drag Source/Sink edge to resize
     - MOVE_WALL: Drag entire entity
     - MOVE_GROUP: Drag multiple selected entities
     """
@@ -712,6 +716,7 @@ class SelectTool(Tool):
         self.mode = None
         self.target_idx = -1
         self.target_pt = -1
+        self.target_obj = None  # For RESIZE_PROCESS_OBJECT — direct ref to Source/Sink
         self.group_indices = []
         self.drag_start_mouse = None
         self.total_dx = 0.0
@@ -851,6 +856,13 @@ class SelectTool(Tool):
                 self._start_resize_drag(resize_hit, mouse_pos)
                 return True
 
+        # 2b. Check for ProcessObject (Source/Sink) circumference resize
+        if not shift_held:
+            po_hit = self._hit_test_process_object_resize(mx, my, layout)
+            if po_hit is not None:
+                self._start_resize_process_object_drag(po_hit, mouse_pos)
+                return True
+
         # 3. Check for entity body hit
         sim_x, sim_y = utils.screen_to_sim(
             mx, my, self.ctx.zoom, self.ctx.pan[0], self.ctx.pan[1],
@@ -917,6 +929,8 @@ class SelectTool(Tool):
             return self._handle_edit_drag(mx, my, layout)
         elif self.mode == 'RESIZE_CIRCLE':
             return self._handle_resize_drag(curr_sim)
+        elif self.mode == 'RESIZE_PROCESS_OBJECT':
+            return self._handle_resize_process_object_drag(curr_sim)
         elif self.mode in ['MOVE_WALL', 'MOVE_GROUP']:
             return self._handle_move_drag(dx, dy)
 
@@ -928,6 +942,8 @@ class SelectTool(Tool):
             self._commit_edit()
         elif self.mode == 'RESIZE_CIRCLE':
             self._commit_resize()
+        elif self.mode == 'RESIZE_PROCESS_OBJECT':
+            self._commit_resize_process_object()
         elif self.mode in ['MOVE_WALL', 'MOVE_GROUP']:
             self._commit_move()
 
@@ -1002,6 +1018,44 @@ class SelectTool(Tool):
         self.scene.execute(cmd)
 
         self.ctx.interaction_state = InteractionState.DRAGGING_GEOMETRY
+
+    def _start_resize_process_object_drag(self, obj, mouse_pos):
+        """Start resizing a Source or Sink by dragging its circumference.
+
+        `obj` is the Source/Sink instance directly — ProcessObjects are
+        not in `sketch.entities`, so we keep a reference rather than an
+        index. The supersede-pattern command class is picked from the
+        instance type (Source → SetSourceRadiusCommand, etc.).
+        """
+        self.mode = 'RESIZE_PROCESS_OBJECT'
+        self.target_obj = obj
+        self.drag_start_mouse = mouse_pos
+        self.original_radius = float(obj.radius)
+
+        # Initial command for supersede chain — discard restores radius on cancel
+        cmd = self._build_set_radius_command(
+            obj, self.original_radius, self.original_radius,
+            historize=True, supersede=False,
+        )
+        if cmd is not None:
+            self.scene.execute(cmd)
+
+        self.ctx.interaction_state = InteractionState.DRAGGING_GEOMETRY
+
+    def _build_set_radius_command(self, obj, new_radius, old_radius,
+                                  historize=True, supersede=True):
+        """Pick the right SetRadius command for a ProcessObject."""
+        if isinstance(obj, Source):
+            return SetSourceRadiusCommand(
+                obj, new_radius, old_radius=old_radius,
+                historize=historize, supersede=supersede,
+            )
+        if isinstance(obj, Sink):
+            return SetSinkRadiusCommand(
+                obj, new_radius, old_radius=old_radius,
+                historize=historize, supersede=supersede,
+            )
+        return None
 
     def _start_entity_move(self, entity_idx, mouse_pos, layout):
         """Start moving a single entity."""
@@ -1161,6 +1215,22 @@ class SelectTool(Tool):
             self.scene.execute(cmd)
         return True
 
+    def _handle_resize_process_object_drag(self, curr_sim):
+        """Handle Source/Sink resize drag using commands."""
+        obj = self.target_obj
+        if obj is None:
+            return False
+        new_r = math.hypot(curr_sim[0] - obj.x, curr_sim[1] - obj.y)
+        new_r = max(0.5, new_r)  # match SourceTool/SinkTool placement floor
+
+        cmd = self._build_set_radius_command(
+            obj, new_r, self.original_radius,
+            historize=True, supersede=True,
+        )
+        if cmd is not None:
+            self.scene.execute(cmd)
+        return True
+
     def _handle_move_drag(self, dx, dy):
         """Handle entity/group move drag using commands."""
         self.total_dx += dx
@@ -1216,6 +1286,10 @@ class SelectTool(Tool):
         """
         # The supersede pattern means the final SetCircleRadiusCommand is already
         # on the stack from _handle_resize_drag. No manual append needed.
+        pass
+
+    def _commit_resize_process_object(self):
+        """Commit Source/Sink resize. Supersede leaves final command on stack."""
         pass
 
     def _commit_move(self):
@@ -1294,7 +1368,7 @@ class SelectTool(Tool):
 
     def _hit_test_circle_resize(self, mx, my, entities, layout):
         """Test if mouse hit a circle's resize handle (edge). Returns entity index or None."""
-        
+
         for i, w in enumerate(entities):
             if w.entity_type == EntityType.CIRCLE:
                 sx, sy = utils.sim_to_screen(
@@ -1302,18 +1376,43 @@ class SelectTool(Tool):
                     self.ctx.zoom, self.ctx.pan[0], self.ctx.pan[1],
                     self.ctx.world_size, layout
                 )
-                
+
                 # Calculate screen radius
                 p0 = utils.sim_to_screen(0, 0, self.ctx.zoom, self.ctx.pan[0], self.ctx.pan[1],
                                          self.ctx.world_size, layout)
                 pr = utils.sim_to_screen(w.radius, 0, self.ctx.zoom, self.ctx.pan[0], self.ctx.pan[1],
                                          self.ctx.world_size, layout)
                 screen_r = abs(pr[0] - p0[0])
-                
+
                 # Check if near edge (not center)
                 dist_from_center = math.hypot(mx - sx, my - sy)
                 if abs(dist_from_center - screen_r) < 8:  # 8 pixel tolerance
                     return i
+
+        return None
+
+    def _hit_test_process_object_resize(self, mx, my, layout):
+        """Test if mouse hit a Source/Sink circumference. Returns the
+        ProcessObject instance or None."""
+        scene = self.scene
+        # Same screen-radius math as circle resize, applied to each
+        # ProcessObject's (center, radius) pair.
+        p0 = utils.sim_to_screen(0, 0, self.ctx.zoom, self.ctx.pan[0], self.ctx.pan[1],
+                                 self.ctx.world_size, layout)
+
+        for obj in scene.process_objects:
+            sx, sy = utils.sim_to_screen(
+                obj.x, obj.y,
+                self.ctx.zoom, self.ctx.pan[0], self.ctx.pan[1],
+                self.ctx.world_size, layout,
+            )
+            pr = utils.sim_to_screen(obj.radius, 0, self.ctx.zoom, self.ctx.pan[0], self.ctx.pan[1],
+                                     self.ctx.world_size, layout)
+            screen_r = abs(pr[0] - p0[0])
+
+            dist_from_center = math.hypot(mx - sx, my - sy)
+            if abs(dist_from_center - screen_r) < 8:  # 8 pixel tolerance
+                return obj
 
         return None
 

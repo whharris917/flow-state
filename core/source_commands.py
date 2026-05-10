@@ -185,18 +185,16 @@ class SetSourcePropertiesCommand(Command):
     def execute(self) -> bool:
         """Apply new properties."""
         from model.process_objects import SourceProperties
-        
+
         # Save current for undo
         self.old_properties = SourceProperties(
-            sigma=self.source.properties.sigma,
-            epsilon=self.source.properties.epsilon,
-            mass=self.source.properties.mass,
-            rate=self.source.properties.rate,
+            material_name=self.source.properties.material_name,
+            flux=self.source.properties.flux,
             temperature=self.source.properties.temperature,
             injection_direction=self.source.properties.injection_direction,
             injection_spread=self.source.properties.injection_spread,
         )
-        
+
         self.source.properties = self.new_properties
         return True
     

@@ -31,12 +31,18 @@ from ui.input_handler import InputHandler
 from core.sound_manager import SoundManager
 from app.app_controller import AppController
 
-# Import SourceTool for ProcessObject creation
+# Import SourceTool / SinkTool for ProcessObject creation
 try:
     from ui.source_tool import SourceTool
     HAS_SOURCE_TOOL = True
 except ImportError:
     HAS_SOURCE_TOOL = False
+
+try:
+    from ui.sink_tool import SinkTool
+    HAS_SINK_TOOL = True
+except ImportError:
+    HAS_SINK_TOOL = False
 
 
 class FlowStateApp:
@@ -213,9 +219,11 @@ class FlowStateApp:
             (config.TOOL_REF, LineTool, "Ref Line"),
         ]
 
-        # Add SourceTool if available
+        # Add SourceTool / SinkTool if available
         if HAS_SOURCE_TOOL:
             tool_registry.append((config.TOOL_SOURCE, SourceTool, None))
+        if HAS_SINK_TOOL:
+            tool_registry.append((config.TOOL_SINK, SinkTool, None))
 
         for tid, cls, name in tool_registry:
             self.session.tools[tid] = cls(ctx)  # Pass ctx, not self

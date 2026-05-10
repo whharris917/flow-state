@@ -356,25 +356,25 @@ def draw_icon_source(surface, rect, color):
     """Source (ProcessObject) - dashed circle with emanating particles."""
     cx, cy = rect.center
     size = min(rect.width, rect.height) // 2 - 3
-    
+
     # Dashed circle
     num_dashes = 8
     dash_angle = math.pi / num_dashes
-    
+
     for i in range(num_dashes):
         start_angle = i * 2 * dash_angle
         end_angle = start_angle + dash_angle
-        
+
         x1 = cx + int(size * math.cos(start_angle))
         y1 = cy + int(size * math.sin(start_angle))
         x2 = cx + int(size * math.cos(end_angle))
         y2 = cy + int(size * math.sin(end_angle))
-        
+
         pygame.draw.line(surface, color, (x1, y1), (x2, y2), 2)
-    
+
     # Center dot
     pygame.draw.circle(surface, color, (cx, cy), 3)
-    
+
     # Emanating particles (small dots)
     for angle_deg in [45, 135, 225, 315]:
         angle = math.radians(angle_deg)
@@ -382,6 +382,53 @@ def draw_icon_source(surface, rect, color):
             px = cx + int(dist * math.cos(angle))
             py = cy + int(dist * math.sin(angle))
             pygame.draw.circle(surface, color, (px, py), 2)
+
+
+def draw_icon_sink(surface, rect, color):
+    """Sink (ProcessObject) - dashed circle with particles converging inward."""
+    cx, cy = rect.center
+    size = min(rect.width, rect.height) // 2 - 3
+
+    # Dashed circle (same as source)
+    num_dashes = 8
+    dash_angle = math.pi / num_dashes
+
+    for i in range(num_dashes):
+        start_angle = i * 2 * dash_angle
+        end_angle = start_angle + dash_angle
+
+        x1 = cx + int(size * math.cos(start_angle))
+        y1 = cy + int(size * math.sin(start_angle))
+        x2 = cx + int(size * math.cos(end_angle))
+        y2 = cy + int(size * math.sin(end_angle))
+
+        pygame.draw.line(surface, color, (x1, y1), (x2, y2), 2)
+
+    # Center dot
+    pygame.draw.circle(surface, color, (cx, cy), 3)
+
+    # Inward arrows along the diagonals — mirror image of Source's
+    # emanating particles. Each arrow is a short line with a tiny
+    # arrowhead pointing toward the center.
+    for angle_deg in [45, 135, 225, 315]:
+        angle = math.radians(angle_deg)
+        outer_dist = size * 0.85
+        inner_dist = size * 0.45
+
+        ox = cx + outer_dist * math.cos(angle)
+        oy = cy + outer_dist * math.sin(angle)
+        ix = cx + inner_dist * math.cos(angle)
+        iy = cy + inner_dist * math.sin(angle)
+
+        pygame.draw.line(surface, color, (int(ox), int(oy)), (int(ix), int(iy)), 2)
+
+        # Arrowhead at the inner end (pointing toward center)
+        # Wings rotated ±25° from the arrow direction
+        wing_len = 4
+        for wing_angle in [angle + 0.4 + math.pi, angle - 0.4 + math.pi]:
+            wx = ix + wing_len * math.cos(wing_angle)
+            wy = iy + wing_len * math.sin(wing_angle)
+            pygame.draw.line(surface, color, (int(ix), int(iy)), (int(wx), int(wy)), 2)
 
 
 # =============================================================================
@@ -436,6 +483,7 @@ PROCEDURAL_ICONS = {
     'save': draw_icon_save,
     'exit': draw_icon_exit,
     'source': draw_icon_source,  # ProcessObject: particle emitter
+    'sink': draw_icon_sink,      # ProcessObject: particle absorber
 }
 
 # Build the final icon registry

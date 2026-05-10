@@ -1,11 +1,13 @@
 """
-SourceTool - Tool for Creating Particle Source Emitters
+SinkTool - Tool for Creating Particle Sink Absorbers (Drains)
 
-This tool follows the two-click pattern:
+Two-click placement, mirroring SourceTool:
 1. First click: Set center position (with snap support)
 2. Second click: Set radius
 
-The Source's center handle participates in constraints like any Point.
+The Sink's center handle participates in constraints like any Point.
+The visual treatment is dashed red (vs. Source's dashed blue) so the
+two are immediately distinguishable in the viewport.
 """
 
 import pygame
@@ -14,50 +16,47 @@ import math
 import core.config as config
 import core.utils as utils
 
-from core.source_commands import AddSourceCommand
-from model.process_objects import Source, SourceProperties
+from core.sink_commands import AddSinkCommand
+from model.process_objects import Sink, SinkProperties
 from ui.tools import Tool
 
 
-class SourceTool(Tool):
+# Sink visual palette — red, distinct from Source's blue (100, 180, 255)
+SINK_COLOR = (220, 80, 80)
+SINK_COLOR_DARK = (160, 50, 50)
+
+
+class SinkTool(Tool):
     """
-    Tool for creating Source (particle emitter) ProcessObjects.
+    Tool for creating Sink (particle absorber) ProcessObjects.
 
-    Two-click workflow:
-    1. Click to set center (snaps to existing geometry)
-    2. Click to set radius
-
-    During step 2, a preview circle is drawn following the mouse.
+    Two-click workflow identical to SourceTool. During step 2 a preview
+    dashed red circle follows the mouse.
     """
 
     def __init__(self, ctx):
-        super().__init__(ctx, name="Source")
+        super().__init__(ctx, name="Sink")
 
-        # State
-        self.center = None          # (x, y) world coords after first click
-        self.preview_radius = None  # Current radius preview
-        self.center_snap = None     # Snap target for constraint creation
+        self.center = None
+        self.preview_radius = None
+        self.center_snap = None
 
     def activate(self):
-        """Called when tool becomes active."""
         self._reset()
 
     def deactivate(self):
-        """Called when switching away from this tool."""
         self._reset()
         self.ctx.snap_target = None
 
     def _reset(self):
-        """Reset tool state."""
         self.center = None
         self.preview_radius = None
         self.center_snap = None
 
     def cancel(self):
-        """Cancel current operation."""
         if self.center is not None:
             self._reset()
-            self.ctx.set_status("Source cancelled")
+            self.ctx.set_status("Sink cancelled")
         self.ctx.snap_target = None
 
     def handle_event(self, event, layout):
@@ -66,29 +65,27 @@ class SourceTool(Tool):
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             mx, my = event.pos
 
-            # Only handle clicks in the viewport (X and Y).
-            # Y-gate matches BrushTool's pattern so clicks in the top menu bar
-            # or below the viewport don't accidentally place a Source.
+            # Y-gate matches SourceTool/BrushTool — ignore clicks in the
+            # top menu bar or below the viewport.
             if not (layout['LEFT_X'] < mx < layout['RIGHT_X']):
                 return False
             if not (config.TOP_MENU_H < my < config.WINDOW_HEIGHT):
                 return False
 
-            # Get snapped world position
             wx, wy, snap = self._get_snapped(mx, my, layout)
 
             if self.center is None:
                 # First click: set center
                 self.center = (wx, wy)
                 self.center_snap = snap
-                self.ctx.set_status("Click to set radius")
+                self.ctx.set_status("Click to set sink radius")
                 return True
             else:
-                # Second click: set radius and create Source
+                # Second click: set radius and create Sink
                 radius = math.hypot(wx - self.center[0], wy - self.center[1])
-                radius = max(0.5, radius)  # Minimum radius
+                radius = max(0.5, radius)
 
-                self._create_source(radius)
+                self._create_sink(radius)
                 self._reset()
                 return True
 
@@ -96,12 +93,10 @@ class SourceTool(Tool):
             mx, my = event.pos
 
             if self.center is not None:
-                # Update preview radius
                 wx, wy = self._get_world_pos(mx, my, layout)
                 self.preview_radius = math.hypot(wx - self.center[0], wy - self.center[1])
                 self.preview_radius = max(0.5, self.preview_radius)
             else:
-                # Update snap indicator
                 self._update_hover_snap(mx, my, layout)
 
             return False
@@ -114,63 +109,53 @@ class SourceTool(Tool):
         return False
 
     def update(self, dt, layout):
-        """Called every frame while tool is active."""
         pass
 
     def draw_overlay(self, screen, renderer, layout):
         """Draw tool-specific overlay graphics."""
         mx, my = pygame.mouse.get_pos()
 
-        # Only draw if mouse is in viewport
         if not (layout['MID_X'] < mx < layout['RIGHT_X']):
             return
 
         if self.center is not None:
-            # Draw center point
             cx_screen, cy_screen = self._world_to_screen(
                 self.center[0], self.center[1], layout
             )
-            pygame.draw.circle(screen, (100, 180, 255), (cx_screen, cy_screen), 5)
+            pygame.draw.circle(screen, SINK_COLOR, (cx_screen, cy_screen), 5)
             pygame.draw.circle(screen, (255, 255, 255), (cx_screen, cy_screen), 5, 1)
 
-            # Draw preview circle if we have a radius
             if self.preview_radius is not None:
                 screen_radius = self._world_to_screen_distance(self.preview_radius, layout)
                 self._draw_dashed_circle(
                     screen,
                     (cx_screen, cy_screen),
                     int(screen_radius),
-                    (100, 180, 255, 128)
+                    SINK_COLOR,
                 )
 
-                # Draw radius line
                 pygame.draw.line(
-                    screen, (100, 180, 255),
+                    screen, SINK_COLOR,
                     (cx_screen, cy_screen), (mx, my), 1
                 )
         else:
-            # Draw crosshair at mouse position
-            pygame.draw.circle(screen, (100, 180, 255), (mx, my), 4)
+            # Crosshair at mouse position before first click
+            pygame.draw.circle(screen, SINK_COLOR, (mx, my), 4)
 
-    def _create_source(self, radius):
-        """Create the Source and add to scene via AddSourceCommand so Ctrl+Z reverses it.
-
-        New Sources adopt the currently-active material so the brush palette
-        and Source emissions stay in lockstep visually.
-        """
-        active = self.ctx.get_active_material()
-        cmd = AddSourceCommand(
+    def _create_sink(self, radius):
+        """Create the Sink and add to scene via AddSinkCommand."""
+        cmd = AddSinkCommand(
             scene=self.ctx._get_scene(),
             center=self.center,
             radius=radius,
-            properties=SourceProperties(material_name=active.get('name', 'Water')),
+            properties=SinkProperties(),
         )
         self.ctx.execute(cmd)
-        source = cmd.source
+        sink = cmd.sink
 
-        # If we snapped to a point, create a coincident constraint
+        # If we snapped to a point with Ctrl held, create a coincident constraint
         if self.center_snap and pygame.key.get_mods() & pygame.KMOD_CTRL:
-            handle_indices = source.get_handle_indices(self.ctx._get_sketch())
+            handle_indices = sink.get_handle_indices(self.ctx._get_sketch())
             if 'center' in handle_indices:
                 center_idx = handle_indices['center']
                 snap_entity, snap_pt = self.center_snap
@@ -181,10 +166,13 @@ class SourceTool(Tool):
                 if constraint_cmd is not None:
                     self.ctx.execute(constraint_cmd)
 
-        self.ctx.set_status(f"Source created (r={radius:.1f})")
+        self.ctx.set_status(f"Sink created (r={radius:.1f})")
+
+    # =========================================================================
+    # Coordinate / snap helpers (verbatim from SourceTool)
+    # =========================================================================
 
     def _get_world_pos(self, mx, my, layout):
-        """Convert screen coordinates to world coordinates."""
         pan_x, pan_y = self.ctx.pan
         return utils.screen_to_sim(
             mx, my,
@@ -196,7 +184,6 @@ class SourceTool(Tool):
         )
 
     def _get_snapped(self, mx, my, layout):
-        """Get snapped world position and snap target."""
         mods = pygame.key.get_mods()
         snap_to_points = bool(mods & pygame.KMOD_CTRL)
         constrain_to_axis = bool(mods & pygame.KMOD_SHIFT)
@@ -214,12 +201,10 @@ class SourceTool(Tool):
         )
 
     def _update_hover_snap(self, mx, my, layout):
-        """Update snap indicator when not placing."""
         _, _, snap = self._get_snapped(mx, my, layout)
         self.ctx.snap_target = snap
 
     def _world_to_screen(self, wx, wy, layout):
-        """Convert world coordinates to screen coordinates."""
         pan_x, pan_y = self.ctx.pan
         return utils.sim_to_screen(
             wx, wy,
@@ -231,8 +216,6 @@ class SourceTool(Tool):
         )
 
     def _world_to_screen_distance(self, world_dist, layout):
-        """Convert a world distance to screen pixels."""
-        # Get scale factor
         zoom = self.ctx.zoom
         world_size = self.ctx.world_size
         base_scale = (layout['MID_W'] - 50) / world_size
@@ -240,25 +223,22 @@ class SourceTool(Tool):
         return world_dist * final_scale
 
     def _draw_dashed_circle(self, screen, center, radius, color):
-        """Draw a dashed circle preview."""
+        """Draw a dashed circle preview (verbatim from SourceTool)."""
         if radius < 5:
             pygame.draw.circle(screen, color[:3], center, radius, 1)
             return
 
-        # Calculate dash parameters
         circumference = 2 * math.pi * radius
-        dash_length = 8  # pixels
-        gap_length = 4   # pixels
+        dash_length = 8
+        gap_length = 4
         segment_length = dash_length + gap_length
         num_segments = max(8, int(circumference / segment_length))
 
-        # Draw dashes
         for i in range(num_segments):
-            if i % 2 == 0:  # Draw only even segments (dashes)
+            if i % 2 == 0:
                 start_angle = (i / num_segments) * 2 * math.pi
                 end_angle = ((i + 0.6) / num_segments) * 2 * math.pi
 
-                # Draw arc as line segments
                 steps = max(2, int((end_angle - start_angle) * radius / 5))
                 points = []
                 for j in range(steps + 1):
