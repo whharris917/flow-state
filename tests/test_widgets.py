@@ -573,33 +573,61 @@ class TestSmartSliderInputField:
         s.handle_event(make_event(pygame.KEYDOWN, key=pygame.K_RETURN, unicode=""))
         assert s.val == 7.5
 
-    def test_input_entry_above_max_clamps_to_max(self):
-        """Typing a value above the slider's max should clamp to max — not
-        leave the slider in an out-of-range state. This is the user's
-        'modifications to the limits don't stay' bug."""
+    def test_input_entry_above_max_expands_max(self):
+        """Typing above max should EXPAND max_val to include the new value
+        — the user's 'modifications to the limits don't stay' bug. The
+        slider's draggable range grows to accommodate the typed value
+        rather than silently dropping the user's input."""
         s = SmartSlider(0, 0, 200, 0.0, 10.0, 5.0, "G")
         s.in_val.active = True
-        s.in_val.text = "999.0"
-        s.in_val.cursor_pos = 5
+        s.in_val.text = "25.0"
+        s.in_val.cursor_pos = 4
         s.handle_event(make_event(pygame.KEYDOWN, key=pygame.K_RETURN, unicode=""))
-        assert s.val == pytest.approx(s.max_val)
+        assert s.val == 25.0
+        assert s.max_val == 25.0  # soft range expanded to fit
 
-    def test_input_entry_below_min_clamps_to_min(self):
-        """Symmetric clamp on the low end."""
-        s = SmartSlider(0, 0, 200, 0.0, 10.0, 5.0, "G")
+    def test_input_entry_below_min_expands_min(self):
+        """Symmetric expansion on the low end — typing below min stretches
+        min_val down to include the value."""
+        s = SmartSlider(0, 0, 200, 0.5, 10.0, 5.0, "G")
         s.in_val.active = True
-        s.in_val.text = "-100.0"
-        s.in_val.cursor_pos = 6
+        s.in_val.text = "0.1"
+        s.in_val.cursor_pos = 3
         s.handle_event(make_event(pygame.KEYDOWN, key=pygame.K_RETURN, unicode=""))
-        assert s.val == pytest.approx(s.min_val)
+        assert s.val == 0.1
+        assert s.min_val == 0.1
 
-    def test_input_entry_in_range_passes_through(self):
+    def test_input_entry_in_range_does_not_change_limits(self):
+        """A value inside the existing range should NOT alter min_val or
+        max_val — expansion only kicks in for out-of-range entries."""
         s = SmartSlider(0, 0, 200, 0.0, 10.0, 5.0, "G")
         s.in_val.active = True
         s.in_val.text = "3.25"
         s.in_val.cursor_pos = 4
         s.handle_event(make_event(pygame.KEYDOWN, key=pygame.K_RETURN, unicode=""))
         assert s.val == 3.25
+        assert s.min_val == 0.0
+        assert s.max_val == 10.0
+
+    def test_input_entry_below_hard_min_clamps_to_hard_min(self):
+        """hard_min is the absolute wall — typing below it clamps to the wall
+        instead of expanding past it."""
+        s = SmartSlider(0, 0, 200, 0.5, 10.0, 5.0, "G", hard_min=0.0)
+        s.in_val.active = True
+        s.in_val.text = "-99.0"
+        s.in_val.cursor_pos = 5
+        s.handle_event(make_event(pygame.KEYDOWN, key=pygame.K_RETURN, unicode=""))
+        assert s.val == 0.0  # clipped to hard_min
+        assert s.min_val == 0.0  # soft range expanded down to the wall
+
+    def test_input_entry_above_hard_max_clamps_to_hard_max(self):
+        s = SmartSlider(0, 0, 200, 0.0, 10.0, 5.0, "G", hard_max=20.0)
+        s.in_val.active = True
+        s.in_val.text = "999"
+        s.in_val.cursor_pos = 3
+        s.handle_event(make_event(pygame.KEYDOWN, key=pygame.K_RETURN, unicode=""))
+        assert s.val == 20.0
+        assert s.max_val == 20.0
 
 
 class TestSmartSliderLayout:
@@ -688,22 +716,64 @@ class TestMiniSlider:
         # Readout matches
         assert float(s.in_val.text) == pytest.approx(s.val, abs=0.01)
 
-    def test_set_value_clamps_to_range(self):
+    def test_set_value_auto_expands_above_max(self):
+        """Programmatic set_value with a value above the soft max widens
+        the slider's draggable range — matches the user-typing semantics
+        so loading an out-of-range material value doesn't get silently
+        clamped away from the truth."""
         s = MiniSlider(0, 0, 200, 0.0, 10.0, 5.0, "S")
-        s.set_value(999.0)
-        assert s.val == 10.0
+        s.set_value(25.0)
+        assert s.val == 25.0
+        assert s.max_val == 25.0
+
+    def test_set_value_auto_expands_below_min(self):
+        """The user's Wall-sigma=0.1 case: starting with min_val=0.5,
+        setting val=0.1 should yield val=0.1 and min_val=0.1 (not snap
+        to 0.5)."""
+        s = MiniSlider(0, 0, 200, 0.5, 2.0, 1.0, "Sigma")
+        s.set_value(0.1)
+        assert s.val == 0.1
+        assert s.min_val == 0.1
+
+    def test_set_value_within_range_does_not_change_limits(self):
+        s = MiniSlider(0, 0, 200, 0.0, 10.0, 5.0, "S")
+        s.set_value(3.0)
+        assert s.val == 3.0
+        assert s.min_val == 0.0
+        assert s.max_val == 10.0
+
+    def test_set_value_hard_min_clamps_far_below(self):
+        """hard_min is the absolute floor — values below it get clipped
+        (the soft range expands down to the hard floor, not below)."""
+        s = MiniSlider(0, 0, 200, 0.5, 2.0, 1.0, "Sigma", hard_min=0.0)
         s.set_value(-5.0)
         assert s.val == 0.0
+        assert s.min_val == 0.0
 
-    def test_input_field_entry_clamps(self):
-        """MiniSlider clamps typed values to its range — this is what
-        SmartSlider should also do."""
-        s = MiniSlider(0, 0, 200, 0.0, 10.0, 5.0, "S")
+    def test_set_value_hard_max_clamps_far_above(self):
+        s = MiniSlider(0, 0, 200, 0.5, 2.0, 1.0, "S", hard_max=10.0)
+        s.set_value(999.0)
+        assert s.val == 10.0
+        assert s.max_val == 10.0
+
+    def test_input_field_entry_auto_expands_below_min(self):
+        """The same Wall-sigma=0.1 scenario via the InputField path."""
+        s = MiniSlider(0, 0, 200, 0.5, 2.0, 1.0, "Sigma")
         s.in_val.active = True
-        s.in_val.text = "999"
+        s.in_val.text = "0.1"
         s.in_val.cursor_pos = 3
         s.handle_event(make_event(pygame.KEYDOWN, key=pygame.K_RETURN, unicode=""))
-        assert s.val == 10.0
+        assert s.val == 0.1
+        assert s.min_val == 0.1
+
+    def test_input_field_entry_auto_expands_above_max(self):
+        s = MiniSlider(0, 0, 200, 0.0, 10.0, 5.0, "S")
+        s.in_val.active = True
+        s.in_val.text = "25"
+        s.in_val.cursor_pos = 2
+        s.handle_event(make_event(pygame.KEYDOWN, key=pygame.K_RETURN, unicode=""))
+        assert s.val == 25.0
+        assert s.max_val == 25.0
 
     def test_set_position_moves_track_and_input(self):
         s = MiniSlider(0, 0, 200, 0.0, 10.0, 5.0, "S")

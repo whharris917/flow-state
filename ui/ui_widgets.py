@@ -886,7 +886,11 @@ class SmartSlider(UIElement):
         h = config.scale(60) # Scaled height
         super().__init__(x, y, w, h)
         self.val=initial_val; self.label=label
-        self.min_val=min_val; self.max_val=max_val; self.hard_min=hard_min; self.hard_max=hard_max
+        # min_val/max_val are SOFT limits — auto-expand to include typed
+        # values that fall outside. hard_min/hard_max are immutable walls
+        # that auto-expansion respects. None means "no wall".
+        self.min_val=min_val; self.max_val=max_val
+        self.hard_min=hard_min; self.hard_max=hard_max
         self.dragging = False
         
         # Sub-widgets (Scaled)
@@ -915,23 +919,37 @@ class SmartSlider(UIElement):
         # Update input field for cursor blinking
         self.in_val.update(dt)
 
+    def _apply_value_with_expansion(self, new_val):
+        """Set self.val to new_val, auto-expanding the soft range
+        [min_val, max_val] when needed. The hard walls hard_min /
+        hard_max are absolute caps; values outside them are clipped to
+        the wall (and the soft range stretches to meet it). This lets
+        a user type a value outside the slider's draggable range and
+        have it stick — the slider grows to accommodate. None hard
+        limits mean unbounded.
+        """
+        if self.hard_min is not None and new_val < self.hard_min:
+            new_val = self.hard_min
+        if self.hard_max is not None and new_val > self.hard_max:
+            new_val = self.hard_max
+        self.val = new_val
+        if new_val < self.min_val:
+            self.min_val = new_val
+        if new_val > self.max_val:
+            self.max_val = new_val
+
     def handle_event(self, event):
         if not self.visible: return False
 
         # Pass event to input field first
         if self.in_val.handle_event(event):
-            # Clamp typed values into [min_val, max_val] so a user can't
-            # silently strand the slider in an out-of-range state. (The
-            # previous behaviour pinned the visual handle to one end while
-            # leaving self.val outside the range — looks like the slider
-            # is broken.)
+            # Apply via expansion helper — soft range stretches to
+            # include the typed value (capped by hard walls). The user's
+            # entry sticks; the slider's draggable range grows around it.
             new_val = self.in_val.get_value(self.val)
-            self.val = max(self.min_val, min(self.max_val, new_val))
-            # Reflect the clamped value back into the field text so the user
-            # sees what actually stuck. The InputField may still be active
-            # (just deactivated by RETURN); set_value respects active state
-            # and skips the write — handled below by direct text assignment
-            # since the field has just lost focus on RETURN.
+            self._apply_value_with_expansion(new_val)
+            # Reflect the (possibly hard-clipped) value back into the
+            # field text so the user sees what actually stuck.
             if not self.in_val.active:
                 self.in_val.set_value(self.val)
             return True
@@ -2573,9 +2591,16 @@ class MaterialPropertyWidget(UIContainer):
 
 
 class MiniSlider(UIElement):
-    """Compact slider for property editing (single row)."""
+    """Compact slider for property editing (single row).
 
-    def __init__(self, x, y, w, min_val, max_val, initial_val, label):
+    Behaves identically to SmartSlider's value semantics: min_val and
+    max_val are SOFT bounds that auto-expand to include typed values
+    outside them; hard_min / hard_max are immutable walls (None = no
+    wall) that auto-expansion respects.
+    """
+
+    def __init__(self, x, y, w, min_val, max_val, initial_val, label,
+                 hard_min=None, hard_max=None):
         s = config.scale
         h = s(50)
         super().__init__(x, y, w, h)
@@ -2583,6 +2608,8 @@ class MiniSlider(UIElement):
         self.label = label
         self.min_val = min_val
         self.max_val = max_val
+        self.hard_min = hard_min
+        self.hard_max = hard_max
         self.dragging = False
         self.hovered = False
 
@@ -2597,9 +2624,25 @@ class MiniSlider(UIElement):
 
         self.anim_hover = AnimVar(0.0)
 
+    def _apply_value_with_expansion(self, new_val):
+        """Set self.val, auto-expanding [min_val, max_val] to include the
+        new value but never crossing [hard_min, hard_max]."""
+        if self.hard_min is not None and new_val < self.hard_min:
+            new_val = self.hard_min
+        if self.hard_max is not None and new_val > self.hard_max:
+            new_val = self.hard_max
+        self.val = new_val
+        if new_val < self.min_val:
+            self.min_val = new_val
+        if new_val > self.max_val:
+            self.max_val = new_val
+
     def set_value(self, val):
-        """Set the slider value programmatically."""
-        self.val = max(self.min_val, min(self.max_val, val))
+        """Set the slider value programmatically. Auto-expands soft
+        range (respecting hard caps) — programmatic loads of out-of-
+        range values widen the slider rather than silently clamping
+        the displayed value away from the truth."""
+        self._apply_value_with_expansion(val)
         self.in_val.set_value(self.val)
 
     def set_position(self, x, y):
@@ -2622,8 +2665,11 @@ class MiniSlider(UIElement):
 
         # Input field first
         if self.in_val.handle_event(event):
-            self.val = self.in_val.get_value(self.val)
-            self.val = max(self.min_val, min(self.max_val, self.val))
+            new_val = self.in_val.get_value(self.val)
+            self._apply_value_with_expansion(new_val)
+            # Sync the (possibly hard-clipped) value back into the field
+            if not self.in_val.active:
+                self.in_val.set_value(self.val)
             return True
 
         if event.type == pygame.MOUSEMOTION:
