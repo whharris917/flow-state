@@ -1,6 +1,6 @@
 import math
 import numpy as np
-from numba import njit, prange
+from numba import njit, prange, get_thread_id, get_num_threads
 import core.config as config
 
 # Module-level constants for numba JIT functions (evaluated at import time)
@@ -491,8 +491,219 @@ def integrate_n_steps(
                 vel_y[i] *= TETHER_DAMPING
 
         steps_done += 1
-        
+
     return steps_done
+
+
+@njit(fastmath=True, parallel=True)
+def integrate_n_steps_newton3(
+    steps_to_run,
+    pos_x, pos_y, vel_x, vel_y, force_x, force_y,
+    last_x, last_y,
+    is_static,
+    atom_sigma, atom_eps_sqrt, mass,
+    pair_i, pair_j, pair_count,    # half-pair list (i < j); each pair appears once
+    tether_entity_idx, joint_ids,
+    dt, gravity, r_cut2_base,
+    skin_limit_sq,
+    world_size,
+    boundary_mode,
+    wall_damping,
+    local_force_x, local_force_y,  # shape (T, N) — pre-allocated thread-local buffers
+):
+    """Verlet integrator using a HALF-pair list with Newton's-3rd-law and
+    thread-local force accumulators.
+
+    Differs from `integrate_n_steps` only in the force calculation phase:
+
+    - The classic kernel iterates the atom-centric CSR (`nbr_start`, `nbr_idx`)
+      so each pair (i,j) is computed twice — once when atom i scans its
+      neighbours, once when atom j scans its neighbours. That duplication
+      buys race-free parallelism (every thread writes only to its own atom's
+      force slot) but doubles the LJ force work.
+
+    - This kernel iterates `pair_i, pair_j` directly (each pair appears once)
+      and uses thread-local force buffers (`local_force_x[t]`,
+      `local_force_y[t]`) to avoid races. Each thread accumulates into its
+      own slice, then a final per-atom merge sums the T contributions.
+
+    The thread-local buffers must be pre-allocated to shape (T, N) where
+    T = numba.get_num_threads(); they are passed in to keep allocation off
+    the hot path. Buffers are zeroed at the start of each substep so prior
+    data does not bleed in.
+
+    Position/velocity update phases are line-for-line equivalent to the
+    classic kernel; only the force phase changes.
+    """
+    N = pos_x.shape[0]
+    T = local_force_x.shape[0]
+    half_dt = 0.5 * dt
+    dt2_2m = 0.5 * dt * dt / mass
+    inv_mass = 1.0 / mass
+    half_world = 0.5 * world_size
+
+    steps_done = 0
+
+    for step in range(steps_to_run):
+        # 0. Safety Check (matches classic kernel)
+        if step > 0 and step % SUBSTEP_SAFETY_CHECK_FREQ == 0:
+            if check_displacement(pos_x, pos_y, last_x, last_y, skin_limit_sq):
+                return steps_done
+
+        # 1. Integration (Pos + Half Vel) — copied verbatim from classic kernel.
+        for i in prange(N):
+            st = is_static[i]
+            if st == 0:
+                xi = pos_x[i] + vel_x[i] * dt + force_x[i] * dt2_2m
+                yi = pos_y[i] + vel_y[i] * dt + force_y[i] * dt2_2m
+
+                if boundary_mode == BOUNDARY_REFLECTING:
+                    if xi >= world_size:
+                        xi = 2.0 * world_size - xi
+                        vel_x[i] = -vel_x[i] * wall_damping
+                    elif xi < 0.0:
+                        xi = -xi
+                        vel_x[i] = -vel_x[i] * wall_damping
+                    if yi >= world_size:
+                        yi = 2.0 * world_size - yi
+                        vel_y[i] = -vel_y[i] * wall_damping
+                    elif yi < 0.0:
+                        yi = -yi
+                        vel_y[i] = -vel_y[i] * wall_damping
+                elif boundary_mode == BOUNDARY_PERIODIC:
+                    if xi >= world_size:
+                        xi -= world_size
+                    elif xi < 0.0:
+                        xi += world_size
+                    if yi >= world_size:
+                        yi -= world_size
+                    elif yi < 0.0:
+                        yi += world_size
+
+                pos_x[i] = xi
+                pos_y[i] = yi
+                vel_x[i] += force_x[i] * inv_mass * half_dt
+                vel_y[i] += force_y[i] * inv_mass * half_dt
+
+            elif st == 3:
+                xi = pos_x[i] + vel_x[i] * dt + force_x[i] * dt2_2m
+                yi = pos_y[i] + vel_y[i] * dt + force_y[i] * dt2_2m
+
+                if boundary_mode == BOUNDARY_REFLECTING:
+                    if xi >= world_size:
+                        xi = 2.0 * world_size - xi
+                        vel_x[i] = -vel_x[i] * wall_damping
+                    elif xi < 0.0:
+                        xi = -xi
+                        vel_x[i] = -vel_x[i] * wall_damping
+                    if yi >= world_size:
+                        yi = 2.0 * world_size - yi
+                        vel_y[i] = -vel_y[i] * wall_damping
+                    elif yi < 0.0:
+                        yi = -yi
+                        vel_y[i] = -vel_y[i] * wall_damping
+
+                pos_x[i] = xi
+                pos_y[i] = yi
+                vel_x[i] += force_x[i] * inv_mass * half_dt
+                vel_y[i] += force_y[i] * inv_mass * half_dt
+
+        # 2. Zero thread-local force buffers in parallel (per-thread strip).
+        for t in prange(T):
+            for i in range(N):
+                local_force_x[t, i] = 0.0
+                local_force_y[t, i] = 0.0
+
+        # 3. Half-pair LJ force loop with Newton-3 thread-local accumulation.
+        # Each pair contributes equal-and-opposite forces to its two atoms.
+        # `get_thread_id()` returns the worker index; each worker writes only
+        # to its own slice `local_force_*[t]`, so there are no races.
+        for k in prange(pair_count):
+            t = get_thread_id()
+            i = pair_i[k]
+            j = pair_j[k]
+
+            si = is_static[i]
+            sj = is_static[j]
+            # Both static: no force needed (both pinned).
+            if si == 1 and sj == 1:
+                continue
+
+            # Joint exclusion: atoms at coincident joints share the same
+            # non-zero joint_id and should not repel each other.
+            jid_i = joint_ids[i]
+            if jid_i != 0 and jid_i == joint_ids[j]:
+                continue
+
+            # Tether intra-entity exclusion: tethered atoms on the same rigid
+            # body should not exert LJ forces on each other.
+            if si == 3 and sj == 3:
+                ent_i = tether_entity_idx[i]
+                if ent_i >= 0 and ent_i == tether_entity_idx[j]:
+                    continue
+
+            dx = pos_x[i] - pos_x[j]
+            dy = pos_y[i] - pos_y[j]
+            if boundary_mode == BOUNDARY_PERIODIC:
+                if dx > half_world:
+                    dx -= world_size
+                elif dx < -half_world:
+                    dx += world_size
+                if dy > half_world:
+                    dy -= world_size
+                elif dy < -half_world:
+                    dy += world_size
+            r2 = dx * dx + dy * dy
+
+            if r2 < r_cut2_base:
+                s_ij = 0.5 * (atom_sigma[i] + atom_sigma[j])
+                s_ij2 = s_ij * s_ij
+                e_24 = 24.0 * atom_eps_sqrt[i] * atom_eps_sqrt[j]
+                f_scal = force_LJ_mixed(r2, s_ij2, e_24)
+                fx = f_scal * dx
+                fy = f_scal * dy
+
+                # Newton's 3rd law: equal and opposite. Skip writes for static
+                # atoms (their forces are never used; pinned positions).
+                if si != 1:
+                    local_force_x[t, i] += fx
+                    local_force_y[t, i] += fy
+                if sj != 1:
+                    local_force_x[t, j] -= fx
+                    local_force_y[t, j] -= fy
+
+        # 4. Merge thread-local forces into global force_x/y. Apply gravity for
+        # dynamic atoms. Static atoms zeroed for defensive cleanliness.
+        for i in prange(N):
+            st = is_static[i]
+            if st == 1:
+                force_x[i] = 0.0
+                force_y[i] = 0.0
+                continue
+            fx_sum = 0.0
+            fy_sum = mass * gravity if st == 0 else 0.0
+            for t in range(T):
+                fx_sum += local_force_x[t, i]
+                fy_sum += local_force_y[t, i]
+            force_x[i] = fx_sum
+            force_y[i] = fy_sum
+
+        # 5. Integration (Half Vel for Dynamic & Tethered) — verbatim from classic.
+        for i in prange(N):
+            st = is_static[i]
+            if st == 0:
+                vel_x[i] += force_x[i] * inv_mass * half_dt
+                vel_y[i] += force_y[i] * inv_mass * half_dt
+            elif st == 3:
+                vel_x[i] += force_x[i] * inv_mass * half_dt
+                vel_y[i] += force_y[i] * inv_mass * half_dt
+                vel_x[i] *= TETHER_DAMPING
+                vel_y[i] *= TETHER_DAMPING
+
+        steps_done += 1
+
+    return steps_done
+
 
 @njit(fastmath=True)
 def spatial_sort(pos_x, pos_y, vel_x, vel_y, force_x, force_y, is_static, atom_sigma, atom_eps_sqrt, world_size, cell_size):

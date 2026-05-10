@@ -815,3 +815,80 @@ class TestPeriodicForceMinimumImage:
         # nothing pushes the atoms; velocities remain exactly zero.
         assert simulation.vel_x[idx_a] == 0.0
         assert simulation.vel_x[idx_b] == 0.0
+
+
+class TestNewton3KernelEquivalence:
+    """The opt-in `use_newton3` half-pair kernel must be physics-equivalent
+    to the classic atom-centric kernel, modulo float32 sum-order noise.
+    Both kernels visit the same pairs; they differ only in iteration order
+    and accumulation strategy. Drift across many substeps is expected to
+    stay well below per-step LJ force magnitudes."""
+
+    def _setup(self, N, seed):
+        sim = Simulation(skip_warmup=True)
+        rho = 0.7
+        L = (N / rho) ** 0.5
+        sim.world_size = float(L)
+        sim._update_derived_params()
+        sim.boundary_mode = 1  # reflecting
+        sim.use_thermostat = False
+        sim.gravity = 0.0
+        sim.damping = 1.0
+
+        side = int(np.ceil(np.sqrt(N)))
+        spacing = L / side
+        rng = np.random.default_rng(seed)
+        k = 0
+        for i in range(side):
+            for j in range(side):
+                if k < N:
+                    sim.pos_x[k] = (i + 0.5) * spacing + rng.uniform(-0.05, 0.05) * spacing
+                    sim.pos_y[k] = (j + 0.5) * spacing + rng.uniform(-0.05, 0.05) * spacing
+                    k += 1
+        sim.count = N
+        sim.atom_sigma[:N] = 1.0
+        sim.atom_eps_sqrt[:N] = 1.0
+        sim.vel_x[:N] = rng.normal(0, 1.0, N).astype(np.float32)
+        sim.vel_y[:N] = rng.normal(0, 1.0, N).astype(np.float32)
+        sim.vel_x[:N] -= sim.vel_x[:N].mean()
+        sim.vel_y[:N] -= sim.vel_y[:N].mean()
+        sim.dt = 0.002
+        sim.rebuild_next = True
+        return sim
+
+    def test_classic_and_newton3_agree_within_float32_noise(self):
+        N = 500
+        sim_a = self._setup(N=N, seed=42)
+        sim_a.use_newton3 = False
+        sim_b = self._setup(N=N, seed=42)
+        sim_b.use_newton3 = True
+
+        for _ in range(10):
+            sim_a.step(steps_to_run=10)
+            sim_b.step(steps_to_run=10)
+
+        # Float32 sum-order ambiguity grows with substeps; over 100 substeps
+        # at LJ liquid density a 1e-2 position bound is comfortable.
+        max_dx = float(np.max(np.abs(sim_a.pos_x[:N] - sim_b.pos_x[:N])))
+        max_dy = float(np.max(np.abs(sim_a.pos_y[:N] - sim_b.pos_y[:N])))
+        assert max_dx < 1e-2
+        assert max_dy < 1e-2
+
+    def test_newton3_default_is_off(self):
+        sim = Simulation(skip_warmup=True)
+        assert sim.use_newton3 is False
+
+    def test_local_force_buffers_lazy_until_use(self):
+        sim = Simulation(skip_warmup=True)
+        assert sim._local_force_x is None
+        assert sim._local_force_y is None
+
+    def test_local_force_buffers_allocated_on_newton3_step(self):
+        sim = Simulation(skip_warmup=True)
+        sim.use_newton3 = True
+        sim._add_particle(10.0, 10.0, is_static=0)
+        sim._add_particle(11.0, 10.0, is_static=0)
+        sim.step(steps_to_run=1)
+        assert sim._local_force_x is not None
+        assert sim._local_force_y is not None
+        assert sim._local_force_x.shape[1] == sim.capacity

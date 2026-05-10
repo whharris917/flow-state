@@ -19,11 +19,13 @@ import time
 import core.config as config
 
 from engine.physics_core import (
-    integrate_n_steps, build_neighbor_list, check_displacement,
+    integrate_n_steps, integrate_n_steps_newton3,
+    build_neighbor_list, check_displacement,
     apply_thermostat, spatial_sort, apply_tether_forces_pbd,
     build_atom_neighbor_csr,
     BOUNDARY_OPEN, BOUNDARY_REFLECTING, BOUNDARY_PERIODIC,
 )
+from numba import get_num_threads
 
 # Entity type constants (must match physics kernel expectations)
 ENTITY_TYPE_LINE = 0
@@ -115,7 +117,16 @@ class Simulation:
         self.target_temp = 0.5
         self.use_thermostat = False
         self.damping = config.DEFAULT_DAMPING
-        
+
+        # Force-kernel selector. False = classic atom-centric LJ loop (pairs
+        # computed twice for race-free parallelism). True = half-pair Newton-3
+        # path with thread-local force accumulators (each pair computed once).
+        # The local_force_x/y buffers are lazy-allocated on first use sized to
+        # (T, capacity) where T = numba.get_num_threads().
+        self.use_newton3 = False
+        self._local_force_x = None
+        self._local_force_y = None
+
         self.r_cut_base = 2.5
         self._update_derived_params()
         
@@ -183,6 +194,20 @@ class Simulation:
         minimum for non-double-counting cell-neighbour walks under PBC."""
         n_cells = int(self.world_size // self.cell_size) + 1
         return n_cells >= 3
+
+    def _ensure_local_force_buffers(self):
+        """Lazy-allocate the (T, capacity) thread-local force buffers required
+        by the Newton-3 integrator. Resized when capacity grows (resize_world
+        and other expansion paths zero them out via reallocation)."""
+        T = get_num_threads()
+        cap = self.capacity
+        need_alloc = (
+            self._local_force_x is None
+            or self._local_force_x.shape != (T, cap)
+        )
+        if need_alloc:
+            self._local_force_x = np.zeros((T, cap), dtype=np.float32)
+            self._local_force_y = np.zeros((T, cap), dtype=np.float32)
 
     def _warmup_compiler(self):
         """Pre-compile Numba functions with dummy data."""
@@ -807,23 +832,45 @@ class Simulation:
 
         # Run integration
         if self.count > 0:
-            steps_done = integrate_n_steps(
-                steps_to_run,
-                self.pos_x[:self.count], self.pos_y[:self.count],
-                self.vel_x[:self.count], self.vel_y[:self.count],
-                self.force_x[:self.count], self.force_y[:self.count],
-                self.last_x[:self.count], self.last_y[:self.count],
-                self.is_static[:self.count],
-                self.atom_sigma[:self.count], self.atom_eps_sqrt[:self.count],
-                np.float32(config.ATOM_MASS),
-                self.nbr_start[:self.count + 1], self.nbr_idx,
-                self.tether_entity_idx[:self.count],  # For intra-entity exclusion
-                self.joint_ids[:self.count],  # For coincident constraint LJ exclusion
-                np.float32(self.dt), np.float32(self.gravity),
-                np.float32(self.r_cut_base**2), np.float32(self.r_skin_sq_limit),
-                np.float32(self.world_size), np.int32(self.boundary_mode),
-                np.float32(self.damping)
-            )
+            if self.use_newton3:
+                self._ensure_local_force_buffers()
+                steps_done = integrate_n_steps_newton3(
+                    steps_to_run,
+                    self.pos_x[:self.count], self.pos_y[:self.count],
+                    self.vel_x[:self.count], self.vel_y[:self.count],
+                    self.force_x[:self.count], self.force_y[:self.count],
+                    self.last_x[:self.count], self.last_y[:self.count],
+                    self.is_static[:self.count],
+                    self.atom_sigma[:self.count], self.atom_eps_sqrt[:self.count],
+                    np.float32(config.ATOM_MASS),
+                    self.pair_i, self.pair_j, self.pair_count,
+                    self.tether_entity_idx[:self.count],
+                    self.joint_ids[:self.count],
+                    np.float32(self.dt), np.float32(self.gravity),
+                    np.float32(self.r_cut_base**2), np.float32(self.r_skin_sq_limit),
+                    np.float32(self.world_size), np.int32(self.boundary_mode),
+                    np.float32(self.damping),
+                    self._local_force_x[:, :self.count],
+                    self._local_force_y[:, :self.count],
+                )
+            else:
+                steps_done = integrate_n_steps(
+                    steps_to_run,
+                    self.pos_x[:self.count], self.pos_y[:self.count],
+                    self.vel_x[:self.count], self.vel_y[:self.count],
+                    self.force_x[:self.count], self.force_y[:self.count],
+                    self.last_x[:self.count], self.last_y[:self.count],
+                    self.is_static[:self.count],
+                    self.atom_sigma[:self.count], self.atom_eps_sqrt[:self.count],
+                    np.float32(config.ATOM_MASS),
+                    self.nbr_start[:self.count + 1], self.nbr_idx,
+                    self.tether_entity_idx[:self.count],  # For intra-entity exclusion
+                    self.joint_ids[:self.count],  # For coincident constraint LJ exclusion
+                    np.float32(self.dt), np.float32(self.gravity),
+                    np.float32(self.r_cut_base**2), np.float32(self.r_skin_sq_limit),
+                    np.float32(self.world_size), np.int32(self.boundary_mode),
+                    np.float32(self.damping)
+                )
             
             self.total_steps += steps_done
             self.steps_accumulator += steps_done
