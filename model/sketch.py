@@ -5,6 +5,7 @@ from model.geometry import Line, Circle, Point
 from model.constraints import create_constraint
 from model.solver import Solver
 from model.properties import Material, PRESET_MATERIALS
+from model.molecule import MoleculeTemplate, make_diatom, make_water
 
 class Sketch:
     """
@@ -20,6 +21,22 @@ class Sketch:
         # Copy to avoid mutating the global presets
         self.materials = {name: mat.copy() for name, mat in PRESET_MATERIALS.items()}
 
+        # --- Molecule Templates ---
+        # Palette of named, re-usable particle clusters. Authored via the
+        # Molecule Builder dialog (R3) or seeded with starter entries below.
+        # Each placement instances the template into N atoms + M bonds in
+        # the Simulation; templates themselves never enter the Simulation.
+        self.molecules: dict = {}
+
+        # Per-material-pair bond defaults: frozenset({matA, matB}) → (k, r_eq).
+        # Looked up by the builder UI when a bond is drawn so the user starts
+        # with a sensible (k, r_eq) for the pair. Empty until populated by
+        # the user or by set_bond_default; get_bond_default falls back to
+        # sigma-based geometry when a pair has no override.
+        self.bond_defaults: dict = {}
+
+        self._seed_default_molecules()
+
         # Solver Configuration (runtime toggles for benchmarking)
         self.use_numba = False          # Default to legacy OOP path for safety
         self.solver_iterations = 20     # Default iteration count
@@ -31,6 +48,54 @@ class Sketch:
         # - handle_t: Parameter t (0.0-1.0) along line where user grabbed, or None
         # - target: World coordinates the user is dragging toward
         self.interaction_data = None
+
+    def _seed_default_molecules(self):
+        """Seed the palette with starter templates. Users author additional
+        molecules via the Molecule Builder dialog (R3)."""
+        diatom = make_diatom()
+        water_mol = make_water()
+        self.molecules[diatom.name] = diatom
+        self.molecules[water_mol.name] = water_mol
+
+    # --- Molecule Palette API ---
+
+    def add_molecule(self, template):
+        """Insert (or overwrite) a molecule template by name."""
+        if isinstance(template, MoleculeTemplate):
+            self.molecules[template.name] = template
+
+    def remove_molecule(self, name):
+        """Drop a molecule template by name. Silent no-op if absent."""
+        self.molecules.pop(name, None)
+
+    def get_molecule(self, name):
+        return self.molecules.get(name)
+
+    def get_bond_default(self, mat_a_name, mat_b_name):
+        """Return (k, r_eq) defaults for a material pair.
+
+        If the pair has an explicit override in self.bond_defaults that wins.
+        Otherwise falls back to a geometry-derived default:
+            r_eq = 0.5 * (sigma_a + sigma_b)   (atoms touching at LJ-ish range)
+            k    = 200.0                       (stiff enough to hold the bond)
+
+        The fallback resolves through get_material so unknown names still
+        produce sensible numbers via the Water/Wall fallback chain.
+        """
+        key = frozenset({mat_a_name, mat_b_name})
+        if key in self.bond_defaults:
+            return self.bond_defaults[key]
+        mat_a = self.get_material(mat_a_name)
+        mat_b = self.get_material(mat_b_name)
+        sigma_a = getattr(mat_a, 'sigma', 1.0)
+        sigma_b = getattr(mat_b, 'sigma', 1.0)
+        r_eq = 0.5 * (sigma_a + sigma_b)
+        return (200.0, r_eq)
+
+    def set_bond_default(self, mat_a_name, mat_b_name, k, r_eq):
+        """Override the (k, r_eq) defaults for a material pair."""
+        key = frozenset({mat_a_name, mat_b_name})
+        self.bond_defaults[key] = (float(k), float(r_eq))
 
     # --- Geometry Queries (New SoC Compliance) ---
 
@@ -348,17 +413,30 @@ class Sketch:
     # --- Serialization ---
 
     def to_dict(self):
+        # bond_defaults keys are frozensets of two material names. Serialize
+        # as a list of [name_a, name_b, k, r_eq] tuples — JSON-friendly and
+        # order-independent on restore (we re-key by frozenset).
+        bond_defaults_list = []
+        for key, (k, r_eq) in self.bond_defaults.items():
+            names = sorted(key)
+            # Frozensets of size 1 (self-pair) collapse to one name; pad.
+            if len(names) == 1:
+                names = [names[0], names[0]]
+            bond_defaults_list.append([names[0], names[1], float(k), float(r_eq)])
+
         return {
             'entities': [e.to_dict() for e in self.entities],
             'constraints': [c.to_dict() for c in self.constraints],
-            'materials': {k: v.to_dict() for k, v in self.materials.items()}
+            'materials': {k: v.to_dict() for k, v in self.materials.items()},
+            'molecules': {name: tpl.to_dict() for name, tpl in self.molecules.items()},
+            'bond_defaults': bond_defaults_list,
         }
 
     def restore(self, data):
         # Local imports
         from model.geometry import Line, Circle, Point
         from model.properties import Material
-        
+
         if 'materials' in data:
             self.materials = {}
             for k, v in data['materials'].items():
@@ -374,8 +452,34 @@ class Sketch:
             if e_data['type'] == 'line': self.entities.append(Line.from_dict(e_data))
             elif e_data['type'] == 'circle': self.entities.append(Circle.from_dict(e_data))
             elif e_data['type'] == 'point': self.entities.append(Point.from_dict(e_data))
-            
+
         self.constraints = []
         for c_data in data.get('constraints', []):
             c = create_constraint(c_data)
             if c: self.constraints.append(c)
+
+        # --- Molecules (R2+) ---
+        if 'molecules' in data:
+            self.molecules = {}
+            for name, tpl_data in data['molecules'].items():
+                self.molecules[name] = MoleculeTemplate.from_dict(tpl_data)
+        else:
+            # Pre-R2 save with no molecules — re-seed the starter palette so
+            # opening a legacy scene doesn't leave the user without templates.
+            self.molecules = {}
+            self._seed_default_molecules()
+
+        if 'bond_defaults' in data:
+            self.bond_defaults = {}
+            for entry in data['bond_defaults']:
+                # Tolerate both 4-tuples and dicts
+                if isinstance(entry, dict):
+                    name_a = entry['mat_a']
+                    name_b = entry['mat_b']
+                    k = entry['k']
+                    r_eq = entry['r_eq']
+                else:
+                    name_a, name_b, k, r_eq = entry
+                self.bond_defaults[frozenset({name_a, name_b})] = (float(k), float(r_eq))
+        else:
+            self.bond_defaults = {}

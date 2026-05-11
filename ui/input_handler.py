@@ -50,6 +50,7 @@ class InputHandler:
             'ref': config.TOOL_REF,
             'source': config.TOOL_SOURCE,
             'sink': config.TOOL_SINK,
+            'molecule': config.TOOL_MOLECULE,
         }
         for key, val in tool_defs.items():
             if key in self.ui.tools:
@@ -201,6 +202,10 @@ class InputHandler:
 
             if event.key == pygame.K_d and (pygame.key.get_mods() & pygame.KMOD_SHIFT):
                 self.controller.change_tool(config.TOOL_SINK)
+                return True
+
+            if event.key == pygame.K_m and (pygame.key.get_mods() & pygame.KMOD_SHIFT):
+                self.controller.change_tool(config.TOOL_MOLECULE)
                 return True
 
             # Render mode cycle (F7) — diagnostic toggle for the particle

@@ -44,6 +44,12 @@ try:
 except ImportError:
     HAS_SINK_TOOL = False
 
+try:
+    from ui.molecule_tool import MoleculeTool
+    HAS_MOLECULE_TOOL = True
+except ImportError:
+    HAS_MOLECULE_TOOL = False
+
 
 class FlowStateApp:
     def __init__(self, start_mode=config.MODE_SIM):
@@ -219,11 +225,13 @@ class FlowStateApp:
             (config.TOOL_REF, LineTool, "Ref Line"),
         ]
 
-        # Add SourceTool / SinkTool if available
+        # Add SourceTool / SinkTool / MoleculeTool if available
         if HAS_SOURCE_TOOL:
             tool_registry.append((config.TOOL_SOURCE, SourceTool, None))
         if HAS_SINK_TOOL:
             tool_registry.append((config.TOOL_SINK, SinkTool, None))
+        if HAS_MOLECULE_TOOL:
+            tool_registry.append((config.TOOL_MOLECULE, MoleculeTool, None))
 
         for tid, cls, name in tool_registry:
             self.session.tools[tid] = cls(ctx)  # Pass ctx, not self
