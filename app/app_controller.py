@@ -516,6 +516,40 @@ class AppController:
         )
         self.sound_manager.play_sound('click')
 
+    def open_molecule_builder_dialog(self, template=None):
+        """Open the Molecule Builder dialog. If `template` is provided, the
+        dialog starts populated with a copy of that template for editing;
+        otherwise a fresh template is created.
+        """
+        from ui.molecule_builder_dialog import MoleculeBuilderDialog
+
+        mx = self.app.layout['W'] // 2 - 260
+        my = self.app.layout['H'] // 2 - 270
+        dialog = MoleculeBuilderDialog(mx, my, self.sketch, template=template)
+        self.push_modal(dialog, 'molecule_builder_dialog')
+
+    def apply_molecule_builder_dialog(self, dialog):
+        """Save the dialog's working template into Sketch.molecules.
+
+        Saves on Apply (Save button), no-op on Cancel. After saving,
+        refresh the right-panel palette so the new molecule appears in
+        the dropdown without requiring a UI rebuild.
+        """
+        if not getattr(dialog, 'apply', False):
+            return
+        dialog.apply_to_sketch(self.sketch)
+        # Refresh the right-panel palette dropdown so the new molecule shows up.
+        ui = getattr(self.app, 'ui', None)
+        palette = getattr(ui, 'molecule_palette', None) if ui is not None else None
+        if palette is not None:
+            palette.refresh()
+        self.session.status.set(
+            f"Saved molecule '{dialog.template.name}' "
+            f"({len(dialog.template.atoms)} atoms, "
+            f"{len(dialog.template.bonds)} bonds)"
+        )
+        self.sound_manager.play_sound('click')
+
     def open_rotation_dialog(self):
         # Legacy rotation dialog - show message about using constraint drivers
         self.session.status.set("Use constraint drivers for animation (right-click constraint > Animate)")
@@ -776,6 +810,11 @@ class AppController:
             # Source properties dialog: apply on OK, dismiss on Cancel
             if modal_type == 'source_properties_dialog' and hasattr(modal, 'done') and modal.done:
                 self.apply_source_properties_from_dialog(modal)
+                self.close_modal(modal)
+                break  # Modal stack was modified, exit loop
+            # Molecule Builder dialog: apply on Save, dismiss on Cancel
+            if modal_type == 'molecule_builder_dialog' and hasattr(modal, 'done') and modal.done:
+                self.apply_molecule_builder_dialog(modal)
                 self.close_modal(modal)
                 break  # Modal stack was modified, exit loop
 
