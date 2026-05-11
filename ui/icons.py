@@ -431,6 +431,27 @@ def draw_icon_sink(surface, rect, color):
             pygame.draw.line(surface, color, (int(ix), int(iy)), (int(wx), int(wy)), 2)
 
 
+def draw_icon_molecule(surface, rect, color):
+    """Molecule icon — three atoms in a triangle with bonds between them.
+
+    The motif is recognisably "molecular" (atom-bond-atom) without echoing
+    Source's dashed-circle outline or Sink's converging arrows. Atoms are
+    rendered as filled discs; bonds as lines connecting them.
+    """
+    cx, cy = rect.center
+    size = min(rect.width, rect.height) // 2 - 3
+    atom_r = max(3, size // 4)
+    apex = (cx, cy - int(size * 0.55))
+    left = (cx - int(size * 0.55), cy + int(size * 0.35))
+    right = (cx + int(size * 0.55), cy + int(size * 0.35))
+    atoms = [apex, left, right]
+    for i in range(len(atoms)):
+        for j in range(i + 1, len(atoms)):
+            pygame.draw.line(surface, color, atoms[i], atoms[j], 2)
+    for ax, ay in atoms:
+        pygame.draw.circle(surface, color, (ax, ay), atom_r)
+
+
 # =============================================================================
 # Icon Registry - Maps names to drawing functions
 # =============================================================================
@@ -484,6 +505,7 @@ PROCEDURAL_ICONS = {
     'exit': draw_icon_exit,
     'source': draw_icon_source,  # ProcessObject: particle emitter
     'sink': draw_icon_sink,      # ProcessObject: particle absorber
+    'molecule': draw_icon_molecule,  # Molecule template (atom-bond cluster)
 }
 
 # Build the final icon registry

@@ -8,6 +8,7 @@ Root -> [Menu Bar, Middle Region, Status Bar]
 import pygame
 import core.config as config
 from ui.ui_widgets import UIContainer, UIElement, Button, SmartSlider, InputField, MenuBar, StatusBar, ScrollableContainer, MaterialPropertyWidget, OverlayProvider
+from ui.molecule_palette_widget import MoleculePaletteWidget
 from ui import icons
 from core.session import InteractionState
 
@@ -239,6 +240,22 @@ class UIManager:
         b_sink = Button(0, 0, btn_size, btn_size, icon=icons.get_icon('sink'), tooltip="Sink (Drain)", active=False, toggle=False)
         row_sink.add_child(b_sink)
         self.tools['sink'] = b_sink
+
+        # Molecule tool row + palette widget. The tool button selects
+        # MoleculeTool (which places the currently-active template from
+        # the palette dropdown). The palette widget below it manages the
+        # active template and opens the builder dialog.
+        row_molecule = UIContainer(0, 0, rp_w, btn_size, layout_type='horizontal', padding=0, spacing=spacing)
+        rp.add_child(row_molecule)
+        b_molecule = Button(0, 0, btn_size, btn_size, icon=icons.get_icon('molecule'), tooltip="Molecule (Shift+M)", active=False, toggle=False)
+        row_molecule.add_child(b_molecule)
+        self.tools['molecule'] = b_molecule
+
+        if self.controller is not None:
+            self.molecule_palette = MoleculePaletteWidget(0, 0, rp_w, self.controller)
+            rp.add_child(self.molecule_palette)
+        else:
+            self.molecule_palette = None
 
         sld_brush = SmartSlider(0, 0, rp_w, 1.0, 10.0, 2.0, "Brush Radius", hard_min=0.5)
         rp.add_child(sld_brush)
