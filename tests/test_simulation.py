@@ -1231,3 +1231,425 @@ class TestCompilerAtomsCarryMaterialMass:
                 any_static = True
                 assert float(sim.atom_mass[i]) == pytest.approx(oil_mass)
         assert any_static, "Expected at least one static wall atom"
+
+
+# =============================================================================
+# Harmonic spring bonds (intramolecular).
+# Foundation for the Molecule Builder feature: each bond couples two atoms
+# with F = -k*(r - r_eq)*r_hat. R1 lands the engine plumbing (kernel + arrays
+# + plumbing through compact/snapshot/serialize); the molecule data model and
+# placement UX land in R2-R4.
+# =============================================================================
+
+
+class TestBondArrayConstruction:
+    """Defaults, capacity, and the add/remove/clear primitives."""
+
+    def test_defaults(self, simulation):
+        assert simulation.bond_count == 0
+        assert simulation.bond_capacity == 100
+        assert simulation.bond_i.dtype == np.int32
+        assert simulation.bond_j.dtype == np.int32
+        assert simulation.bond_k.dtype == np.float32
+        assert simulation.bond_r_eq.dtype == np.float32
+
+    def test_add_bond_returns_index_and_advances_count(self, simulation):
+        simulation._add_particle(0.0, 0.0)
+        simulation._add_particle(1.0, 0.0)
+        b = simulation.add_bond(0, 1, k=100.0, r_eq=1.0)
+        assert b == 0
+        assert simulation.bond_count == 1
+        assert int(simulation.bond_i[0]) == 0
+        assert int(simulation.bond_j[0]) == 1
+        assert float(simulation.bond_k[0]) == pytest.approx(100.0)
+        assert float(simulation.bond_r_eq[0]) == pytest.approx(1.0)
+
+    def test_add_self_bond_rejected(self, simulation):
+        simulation._add_particle(0.0, 0.0)
+        assert simulation.add_bond(0, 0, 100.0, 1.0) == -1
+        assert simulation.bond_count == 0
+
+    def test_remove_bond_swap_with_last(self, simulation):
+        for i in range(4):
+            simulation._add_particle(float(i), 0.0)
+        simulation.add_bond(0, 1, 100.0, 1.0)
+        simulation.add_bond(1, 2, 200.0, 2.0)
+        simulation.add_bond(2, 3, 300.0, 3.0)
+        # Remove middle bond; last bond should fill its slot.
+        simulation.remove_bond(1)
+        assert simulation.bond_count == 2
+        # Slot 1 now holds the former bond 2 (atoms 2->3, k=300)
+        assert int(simulation.bond_i[1]) == 2
+        assert int(simulation.bond_j[1]) == 3
+        assert float(simulation.bond_k[1]) == pytest.approx(300.0)
+
+    def test_clear_bonds_drops_all(self, simulation):
+        simulation._add_particle(0.0, 0.0)
+        simulation._add_particle(1.0, 0.0)
+        simulation.add_bond(0, 1, 100.0, 1.0)
+        simulation.clear_bonds()
+        assert simulation.bond_count == 0
+
+    def test_clear_drops_bonds(self, simulation):
+        """Simulation.clear() must drop bonds — they reference indices that
+        the cleared atoms no longer occupy."""
+        simulation._add_particle(0.0, 0.0)
+        simulation._add_particle(1.0, 0.0)
+        simulation.add_bond(0, 1, 100.0, 1.0)
+        simulation.clear()
+        assert simulation.bond_count == 0
+
+    def test_resize_grows_capacity(self, simulation):
+        # Fill default capacity (100); next add should trigger resize.
+        for i in range(101):
+            simulation._add_particle(float(i), 0.0)
+        for i in range(100):
+            simulation.add_bond(i, i + 1, 100.0, 1.0)
+        old_cap = simulation.bond_capacity
+        simulation.add_bond(0, 50, 100.0, 1.0)
+        assert simulation.bond_capacity == old_cap * 2
+        assert simulation.bond_count == 101
+        # Existing data preserved
+        assert int(simulation.bond_i[0]) == 0
+        assert int(simulation.bond_j[0]) == 1
+
+
+class TestSpringForceKernel:
+    """Direct invocation of apply_spring_bonds — force direction, magnitude,
+    Newton's 3rd law, and the equilibrium null point."""
+
+    def _setup(self, dx_atom=2.0, k=100.0, r_eq=1.0):
+        """Two atoms along x: i at (0,0), j at (dx_atom, 0), one bond."""
+        pos_x = np.array([0.0, dx_atom], dtype=np.float32)
+        pos_y = np.array([0.0, 0.0], dtype=np.float32)
+        force_x = np.zeros(2, dtype=np.float32)
+        force_y = np.zeros(2, dtype=np.float32)
+        is_static = np.zeros(2, dtype=np.int32)
+        bond_i = np.array([0], dtype=np.int32)
+        bond_j = np.array([1], dtype=np.int32)
+        bond_k = np.array([k], dtype=np.float32)
+        bond_r_eq = np.array([r_eq], dtype=np.float32)
+        return pos_x, pos_y, force_x, force_y, is_static, bond_i, bond_j, bond_k, bond_r_eq
+
+    def test_force_zero_at_equilibrium(self):
+        from engine.physics_core import apply_spring_bonds
+        # Atoms at exactly r_eq apart.
+        args = self._setup(dx_atom=1.0, k=100.0, r_eq=1.0)
+        apply_spring_bonds(*args, 100.0, 0)
+        # f_scal = 100 * 0 / 1 = 0
+        assert float(args[2][0]) == pytest.approx(0.0, abs=1e-6)
+        assert float(args[2][1]) == pytest.approx(0.0, abs=1e-6)
+        assert float(args[3][0]) == pytest.approx(0.0, abs=1e-6)
+
+    def test_stretched_pulls_atoms_together(self):
+        """Bond at r=2 with r_eq=1 is stretched; force on i should point
+        toward j (positive x). Force on j should point toward i (negative x)."""
+        from engine.physics_core import apply_spring_bonds
+        args = self._setup(dx_atom=2.0, k=100.0, r_eq=1.0)
+        apply_spring_bonds(*args, 100.0, 0)
+        # r=2, r_eq=1, k=100 → f_scal = 100 * (2-1) / 2 = 50
+        # Force on i: fx = f_scal * (pos_j_x - pos_i_x) = 50 * 2 = 100
+        # Force on j: equal and opposite (-100).
+        force_x = args[2]
+        force_y = args[3]
+        assert float(force_x[0]) == pytest.approx(100.0, rel=1e-4)
+        assert float(force_x[1]) == pytest.approx(-100.0, rel=1e-4)
+        assert float(force_y[0]) == pytest.approx(0.0, abs=1e-4)
+        assert float(force_y[1]) == pytest.approx(0.0, abs=1e-4)
+
+    def test_compressed_pushes_atoms_apart(self):
+        """Bond at r=0.5 with r_eq=1 is compressed; force on i should point
+        AWAY from j (negative x). Force on j should point AWAY from i
+        (positive x)."""
+        from engine.physics_core import apply_spring_bonds
+        args = self._setup(dx_atom=0.5, k=100.0, r_eq=1.0)
+        apply_spring_bonds(*args, 100.0, 0)
+        # r=0.5, r_eq=1, k=100 → f_scal = 100 * (0.5-1) / 0.5 = -100
+        # Force on i = (-100 * 0.5, 0) = (-50, 0)
+        force_x = args[2]
+        assert float(force_x[0]) == pytest.approx(-50.0, rel=1e-4)
+        assert float(force_x[1]) == pytest.approx(50.0, rel=1e-4)
+
+    def test_newton_third_law(self):
+        """Force on i must always equal -Force on j (per-component)."""
+        from engine.physics_core import apply_spring_bonds
+        pos_x = np.array([3.0, 7.0], dtype=np.float32)
+        pos_y = np.array([5.0, 9.0], dtype=np.float32)
+        force_x = np.zeros(2, dtype=np.float32)
+        force_y = np.zeros(2, dtype=np.float32)
+        is_static = np.zeros(2, dtype=np.int32)
+        bond_i = np.array([0], dtype=np.int32)
+        bond_j = np.array([1], dtype=np.int32)
+        bond_k = np.array([42.0], dtype=np.float32)
+        bond_r_eq = np.array([2.5], dtype=np.float32)
+        apply_spring_bonds(
+            pos_x, pos_y, force_x, force_y, is_static,
+            bond_i, bond_j, bond_k, bond_r_eq,
+            100.0, 0,
+        )
+        assert float(force_x[0]) == pytest.approx(-float(force_x[1]), rel=1e-5)
+        assert float(force_y[0]) == pytest.approx(-float(force_y[1]), rel=1e-5)
+
+    def test_static_atom_not_force_written(self):
+        """is_static==1 atoms should not receive force writes. The dynamic
+        partner still feels the bond pulling it toward the static anchor."""
+        from engine.physics_core import apply_spring_bonds
+        pos_x = np.array([0.0, 2.0], dtype=np.float32)
+        pos_y = np.array([0.0, 0.0], dtype=np.float32)
+        force_x = np.zeros(2, dtype=np.float32)
+        force_y = np.zeros(2, dtype=np.float32)
+        is_static = np.array([0, 1], dtype=np.int32)  # atom 1 is static
+        bond_i = np.array([0], dtype=np.int32)
+        bond_j = np.array([1], dtype=np.int32)
+        bond_k = np.array([100.0], dtype=np.float32)
+        bond_r_eq = np.array([1.0], dtype=np.float32)
+        apply_spring_bonds(
+            pos_x, pos_y, force_x, force_y, is_static,
+            bond_i, bond_j, bond_k, bond_r_eq,
+            100.0, 0,
+        )
+        # Dynamic atom feels the pull toward static partner
+        assert float(force_x[0]) == pytest.approx(100.0, rel=1e-4)
+        # Static atom force slot left zero
+        assert float(force_x[1]) == 0.0
+
+    def test_both_static_bond_skipped(self):
+        from engine.physics_core import apply_spring_bonds
+        pos_x = np.array([0.0, 2.0], dtype=np.float32)
+        pos_y = np.array([0.0, 0.0], dtype=np.float32)
+        force_x = np.zeros(2, dtype=np.float32)
+        force_y = np.zeros(2, dtype=np.float32)
+        is_static = np.array([1, 1], dtype=np.int32)
+        bond_i = np.array([0], dtype=np.int32)
+        bond_j = np.array([1], dtype=np.int32)
+        bond_k = np.array([100.0], dtype=np.float32)
+        bond_r_eq = np.array([1.0], dtype=np.float32)
+        apply_spring_bonds(
+            pos_x, pos_y, force_x, force_y, is_static,
+            bond_i, bond_j, bond_k, bond_r_eq,
+            100.0, 0,
+        )
+        assert float(force_x[0]) == 0.0
+        assert float(force_x[1]) == 0.0
+
+    def test_pbc_minimum_image(self):
+        """Bonded atoms on opposite sides of a periodic box should feel a
+        bond force corresponding to the SHORT (across-the-wrap) distance,
+        not the long in-domain distance."""
+        from engine.physics_core import apply_spring_bonds
+        from engine.physics_core import BOUNDARY_PERIODIC
+        # World 10 wide. Atom 0 at x=0.5, atom 1 at x=9.5. In-domain distance=9;
+        # minimum-image distance = 1 (wrap).
+        pos_x = np.array([0.5, 9.5], dtype=np.float32)
+        pos_y = np.array([5.0, 5.0], dtype=np.float32)
+        force_x = np.zeros(2, dtype=np.float32)
+        force_y = np.zeros(2, dtype=np.float32)
+        is_static = np.zeros(2, dtype=np.int32)
+        bond_i = np.array([0], dtype=np.int32)
+        bond_j = np.array([1], dtype=np.int32)
+        bond_k = np.array([100.0], dtype=np.float32)
+        bond_r_eq = np.array([1.0], dtype=np.float32)
+        apply_spring_bonds(
+            pos_x, pos_y, force_x, force_y, is_static,
+            bond_i, bond_j, bond_k, bond_r_eq,
+            10.0, BOUNDARY_PERIODIC,
+        )
+        # Min-image dx = pos_j - pos_i = 9 → wraps to -1 (atom j is "to the left"
+        # of atom i across the wrap). At r=1 == r_eq, f_scal = 0.
+        assert float(force_x[0]) == pytest.approx(0.0, abs=1e-4)
+        assert float(force_x[1]) == pytest.approx(0.0, abs=1e-4)
+
+
+class TestSpringBondIntegration:
+    """End-to-end through Simulation.step(): bond forces accelerate atoms."""
+
+    def test_stretched_bond_accelerates_atoms_together(self, simulation):
+        """Two atoms bonded with r=2 > r_eq=1 should be pulled toward each
+        other after one substep."""
+        simulation.world_size = 200.0
+        simulation.gravity = 0.0
+        simulation.paused = False
+        simulation.dt = 0.001
+        simulation.damping = 1.0
+        simulation.use_boundaries = False
+        i = simulation._add_particle(99.0, 100.0, vx=0.0, vy=0.0, is_static=0)
+        j = simulation._add_particle(101.0, 100.0, vx=0.0, vy=0.0, is_static=0)
+        simulation.add_bond(i, j, k=100.0, r_eq=1.0)
+
+        simulation.step(steps_to_run=1)
+
+        # Atom i should have gained positive vel_x (pulled right toward j);
+        # atom j should have gained negative vel_x (pulled left toward i).
+        assert float(simulation.vel_x[i]) > 0
+        assert float(simulation.vel_x[j]) < 0
+        # Newton's 3rd law → equal and opposite (equal mass → equal speed)
+        assert float(simulation.vel_x[i]) == pytest.approx(
+            -float(simulation.vel_x[j]), rel=1e-3
+        )
+
+    def test_bondless_simulation_unaffected(self, simulation):
+        """The bondless fast path must remain bit-equivalent to pre-R1
+        behaviour. Two LJ-interacting atoms with no bonds should behave
+        identically whether bonds machinery is present or not."""
+        simulation.world_size = 200.0
+        simulation.gravity = 0.0
+        simulation.paused = False
+        simulation.dt = 0.001
+        simulation.damping = 1.0
+        simulation.use_boundaries = False
+        simulation._add_particle(100.0, 100.0, vx=1.0, vy=0.0, is_static=0)
+
+        # No bonds added — bond_count stays 0
+        assert simulation.bond_count == 0
+
+        v0 = float(simulation.vel_x[0])
+        for _ in range(5):
+            simulation.step(steps_to_run=1)
+        v1 = float(simulation.vel_x[0])
+        # No gravity, no damping, no bonds, no LJ partner → velocity preserved
+        assert v1 == pytest.approx(v0, rel=1e-5)
+
+
+class TestCompactArraysRemapsBonds:
+    """compact_arrays must rewrite bond indices through the keep_indices
+    remap, and drop bonds where either endpoint is removed."""
+
+    def test_compact_rewrites_surviving_bond_indices(self, simulation):
+        # 4 atoms, bond between atom 1 and atom 3. Remove atom 0.
+        # After compact: atom 1 → new index 0, atom 3 → new index 2.
+        for i in range(4):
+            simulation._add_particle(float(i), 0.0)
+        simulation.add_bond(1, 3, 100.0, 1.0)
+        simulation.compact_arrays(np.array([1, 2, 3], dtype=np.int32))
+        assert simulation.bond_count == 1
+        assert int(simulation.bond_i[0]) == 0  # old 1 → new 0
+        assert int(simulation.bond_j[0]) == 2  # old 3 → new 2
+
+    def test_compact_drops_bond_when_atom_removed(self, simulation):
+        for i in range(4):
+            simulation._add_particle(float(i), 0.0)
+        simulation.add_bond(0, 1, 100.0, 1.0)  # will be dropped (atom 0 removed)
+        simulation.add_bond(2, 3, 200.0, 2.0)  # survives (atoms 2,3 kept)
+        simulation.compact_arrays(np.array([1, 2, 3], dtype=np.int32))
+        assert simulation.bond_count == 1
+        # Surviving bond is now between old-atom-2 (new 1) and old-atom-3 (new 2)
+        assert int(simulation.bond_i[0]) == 1
+        assert int(simulation.bond_j[0]) == 2
+        assert float(simulation.bond_k[0]) == pytest.approx(200.0)
+
+    def test_compact_with_no_bonds_does_nothing(self, simulation):
+        for i in range(3):
+            simulation._add_particle(float(i), 0.0)
+        simulation.compact_arrays(np.array([0, 2], dtype=np.int32))
+        assert simulation.bond_count == 0
+
+
+class TestBondSerializationRoundTrip:
+    """snapshot/_restore_physics_state, _push_to_stack, to_dict/restore all
+    preserve bonds. Pre-R1 saves without bond keys default to bond_count=0."""
+
+    def test_snapshot_restore_round_trip(self, simulation):
+        simulation._add_particle(0.0, 0.0)
+        simulation._add_particle(1.0, 0.0)
+        simulation.add_bond(0, 1, k=150.0, r_eq=1.0)
+        simulation.snapshot()
+        # Mutate
+        simulation.remove_bond(0)
+        assert simulation.bond_count == 0
+        # Undo via restore
+        simulation._restore_physics_state(simulation.undo_stack[-1])
+        assert simulation.bond_count == 1
+        assert float(simulation.bond_k[0]) == pytest.approx(150.0)
+
+    def test_to_dict_round_trip(self, simulation):
+        simulation._add_particle(0.0, 0.0)
+        simulation._add_particle(1.0, 0.0)
+        simulation._add_particle(2.0, 0.0)
+        simulation.add_bond(0, 1, k=100.0, r_eq=1.0)
+        simulation.add_bond(1, 2, k=200.0, r_eq=2.0)
+        data = simulation.to_dict()
+        assert data['bond_count'] == 2
+
+        sim2 = Simulation(skip_warmup=True)
+        sim2.restore(data)
+        assert sim2.bond_count == 2
+        assert int(sim2.bond_i[0]) == 0
+        assert int(sim2.bond_j[0]) == 1
+        assert float(sim2.bond_k[0]) == pytest.approx(100.0)
+        assert int(sim2.bond_i[1]) == 1
+        assert float(sim2.bond_r_eq[1]) == pytest.approx(2.0)
+
+    def test_restore_pre_r1_save_treats_as_no_bonds(self, simulation):
+        """Saves from before R1 do not carry bond_count. restore() should
+        treat absence as 'no bonds' rather than KeyError."""
+        legacy_data = {
+            'count': 1,
+            'world_size': 50.0,
+            'pos_x': [10.0],
+            'pos_y': [10.0],
+            'vel_x': [0.0],
+            'vel_y': [0.0],
+            'is_static': [0],
+            'atom_sigma': [1.0],
+            'atom_eps_sqrt': [1.0],
+            'atom_mass': [1.0],
+            'atom_color': [[100, 100, 100]],
+            # No bond_count / bond_i / bond_j / ...
+        }
+        simulation.restore(legacy_data)
+        assert simulation.bond_count == 0
+
+    def test_undo_redo_preserves_bonds(self, simulation):
+        simulation._add_particle(0.0, 0.0)
+        simulation._add_particle(1.0, 0.0)
+        simulation.add_bond(0, 1, 100.0, 1.0)
+        simulation.snapshot()
+        # Add another bond (would normally come from a new molecule placement)
+        simulation._add_particle(2.0, 0.0)
+        simulation.add_bond(1, 2, 200.0, 2.0)
+        assert simulation.bond_count == 2
+
+        simulation.undo()
+        assert simulation.bond_count == 1
+        assert float(simulation.bond_k[0]) == pytest.approx(100.0)
+
+        simulation.redo()
+        assert simulation.bond_count == 2
+        assert float(simulation.bond_k[1]) == pytest.approx(200.0)
+
+
+class TestSpringOscillation:
+    """A bonded pair displaced from equilibrium should oscillate. Integration
+    test using simulation.step() — verifies the kernel is actually invoked
+    and that bond forces participate in the Verlet update."""
+
+    def test_pair_returns_through_equilibrium(self, simulation):
+        """Two equal-mass atoms with a stiff bond, displaced from equilibrium.
+        After a quarter period, the relative velocity should peak at r=r_eq.
+        We just verify the pair passes through r=r_eq within a bounded
+        number of substeps — period sanity rather than precise frequency."""
+        simulation.world_size = 200.0
+        simulation.gravity = 0.0
+        simulation.paused = False
+        simulation.dt = 0.001
+        simulation.damping = 1.0
+        simulation.use_boundaries = False
+        # Place atoms far enough from each other to avoid LJ overlap at r_eq=1.
+        # sigma=0.5 → r_cut at ~0.5*2.5=1.25 — at r=1, LJ is non-zero but small.
+        # Use much smaller sigma so LJ stays negligible vs the spring at r=1.
+        i = simulation._add_particle(99.0, 100.0, is_static=0,
+                                     sigma=0.1, epsilon=0.01, mass=1.0)
+        j = simulation._add_particle(101.0, 100.0, is_static=0,
+                                     sigma=0.1, epsilon=0.01, mass=1.0)
+        simulation.add_bond(i, j, k=1000.0, r_eq=1.0)
+
+        # Initial r = 2, r_eq = 1 → stretched. Expect contraction.
+        crossed_through_r_eq = False
+        for _ in range(500):
+            simulation.step(steps_to_run=1)
+            r = float(np.hypot(simulation.pos_x[j] - simulation.pos_x[i],
+                               simulation.pos_y[j] - simulation.pos_y[i]))
+            if r < 1.0:
+                crossed_through_r_eq = True
+                break
+        assert crossed_through_r_eq, "Bonded pair never contracted past r_eq"

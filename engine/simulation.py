@@ -81,6 +81,18 @@ class Simulation:
         # This prevents physics explosions at coincident joints where atoms overlap
         self.joint_ids = np.zeros(self.capacity, dtype=np.int32)
 
+        # --- Bond Arrays (Harmonic Spring Bonds, intramolecular) ---
+        # Each bond couples two atoms (bond_i[b], bond_j[b]) via F = -k*(r - r_eq)*r_hat.
+        # Bonds are independent of atom arrays — they're indexed b=0..bond_count-1
+        # and grown separately. compact_arrays remaps bond indices when atoms
+        # are removed; bonds that reference a removed atom are dropped.
+        self.bond_capacity = 100
+        self.bond_count = 0
+        self.bond_i = np.zeros(self.bond_capacity, dtype=np.int32)
+        self.bond_j = np.zeros(self.bond_capacity, dtype=np.int32)
+        self.bond_k = np.zeros(self.bond_capacity, dtype=np.float32)
+        self.bond_r_eq = np.zeros(self.bond_capacity, dtype=np.float32)
+
         # --- Entity State Arrays (for physics kernel to read/write) ---
         # These are synced from Sketch entities before physics runs
         # entity_positions: [N, 4] - Line: [start_x, start_y, end_x, end_y]
@@ -241,6 +253,12 @@ class Simulation:
             ]
         ]
 
+        # Warmup with empty bond list — exercises the zero-length bond loop
+        # so the kernel is JIT-compiled for the typical bondless fast path.
+        empty_bi = np.zeros(0, dtype=np.int32)
+        empty_bj = np.zeros(0, dtype=np.int32)
+        empty_bk = np.zeros(0, dtype=np.float32)
+        empty_br = np.zeros(0, dtype=np.float32)
         integrate_n_steps(
             1, self.pos_x[:2], self.pos_y[:2],
             self.vel_x[:2], self.vel_y[:2],
@@ -252,6 +270,7 @@ class Simulation:
             self.nbr_start[:3], self.nbr_idx,
             self.tether_entity_idx[:2],  # For intra-entity exclusion
             self.joint_ids[:2],  # For coincident constraint LJ exclusion
+            empty_bi, empty_bj, empty_bk, empty_br,
             f32_vals[1], f32_vals[2], f32_vals[3], f32_vals[4],
             f32_vals[5], np.int32(self.boundary_mode), f32_vals[6]
         )
@@ -286,7 +305,12 @@ class Simulation:
             'atom_eps_sqrt': np.copy(self.atom_eps_sqrt[:self.count]),
             'atom_mass': np.copy(self.atom_mass[:self.count]),
             'atom_color': np.copy(self.atom_color[:self.count]),
-            'world_size': self.world_size
+            'world_size': self.world_size,
+            'bond_count': self.bond_count,
+            'bond_i': np.copy(self.bond_i[:self.bond_count]),
+            'bond_j': np.copy(self.bond_j[:self.bond_count]),
+            'bond_k': np.copy(self.bond_k[:self.bond_count]),
+            'bond_r_eq': np.copy(self.bond_r_eq[:self.bond_count]),
         }
         self.undo_stack.append(state)
         if len(self.undo_stack) > 50:
@@ -300,7 +324,7 @@ class Simulation:
             while self.capacity < self.count:
                 self.capacity *= 2
             self._resize_arrays()
-        
+
         self.pos_x[:self.count] = state['pos_x']
         self.pos_y[:self.count] = state['pos_y']
         self.vel_x[:self.count] = state['vel_x']
@@ -313,6 +337,19 @@ class Simulation:
         if 'atom_color' in state:
             self.atom_color[:self.count] = state['atom_color']
         self.world_size = state['world_size']
+        # Bonds (back-compat: snapshots from before R1 won't have these keys —
+        # treat absence as "no bonds in the saved state" rather than failing).
+        if 'bond_count' in state:
+            new_bond_count = state['bond_count']
+            while self.bond_capacity < new_bond_count:
+                self._resize_bond_arrays()
+            self.bond_count = new_bond_count
+            self.bond_i[:new_bond_count] = state['bond_i']
+            self.bond_j[:new_bond_count] = state['bond_j']
+            self.bond_k[:new_bond_count] = state['bond_k']
+            self.bond_r_eq[:new_bond_count] = state['bond_r_eq']
+        else:
+            self.bond_count = 0
         self.rebuild_next = True
         self.pair_count = 0
 
@@ -347,7 +384,12 @@ class Simulation:
             'atom_eps_sqrt': np.copy(self.atom_eps_sqrt[:self.count]),
             'atom_mass': np.copy(self.atom_mass[:self.count]),
             'atom_color': np.copy(self.atom_color[:self.count]),
-            'world_size': self.world_size
+            'world_size': self.world_size,
+            'bond_count': self.bond_count,
+            'bond_i': np.copy(self.bond_i[:self.bond_count]),
+            'bond_j': np.copy(self.bond_j[:self.bond_count]),
+            'bond_k': np.copy(self.bond_k[:self.bond_count]),
+            'bond_r_eq': np.copy(self.bond_r_eq[:self.bond_count]),
         }
         stack.append(state)
 
@@ -386,6 +428,8 @@ class Simulation:
         self.vel_x.fill(0)
         self.vel_y.fill(0)
         self.is_static.fill(0)
+        # Bonds reference atom indices that are now gone — drop them all.
+        self.bond_count = 0
         self.rebuild_next = True
 
     def reset(self):
@@ -421,6 +465,11 @@ class Simulation:
             'atom_eps_sqrt': self.atom_eps_sqrt[:self.count].tolist(),
             'atom_mass': self.atom_mass[:self.count].tolist(),
             'atom_color': self.atom_color[:self.count].tolist(),
+            'bond_count': int(self.bond_count),
+            'bond_i': self.bond_i[:self.bond_count].tolist(),
+            'bond_j': self.bond_j[:self.bond_count].tolist(),
+            'bond_k': self.bond_k[:self.bond_count].tolist(),
+            'bond_r_eq': self.bond_r_eq[:self.bond_count].tolist(),
         }
 
     def restore(self, data):
@@ -453,6 +502,17 @@ class Simulation:
         # which doesn't broadcast into atom_color[:0] of shape (0, 3).
         if 'atom_color' in data and self.count > 0:
             self.atom_color[:self.count] = np.array(data['atom_color'], dtype=np.uint8)
+
+        # Bonds (back-compat: pre-R1 saves won't carry them — default to none).
+        new_bond_count = data.get('bond_count', 0)
+        while self.bond_capacity < new_bond_count:
+            self._resize_bond_arrays()
+        self.bond_count = new_bond_count
+        if new_bond_count > 0:
+            self.bond_i[:new_bond_count] = np.array(data['bond_i'], dtype=np.int32)
+            self.bond_j[:new_bond_count] = np.array(data['bond_j'], dtype=np.int32)
+            self.bond_k[:new_bond_count] = np.array(data['bond_k'], dtype=np.float32)
+            self.bond_r_eq[:new_bond_count] = np.array(data['bond_r_eq'], dtype=np.float32)
 
         self.rebuild_next = True
         self.pair_count = 0
@@ -679,9 +739,21 @@ class Simulation:
         """
         Compact particle arrays to remove gaps.
         Called by Compiler during rebuild.
+
+        Bonds are remapped via an old→new index table built from
+        keep_indices: any bond touching a removed atom is dropped (swap-with-
+        last). Bonds where both endpoints survive have bond_i and bond_j
+        rewritten to their new positions. This preserves the bond between
+        atoms even when atoms get reordered by compaction.
         """
         indices = np.array(keep_indices, dtype=np.int32)
         new_count = len(indices)
+
+        # Build old→new index remap BEFORE overwriting the atom arrays.
+        # remap[old_idx] = new_idx, or -1 if the atom was removed.
+        remap = np.full(self.count, -1, dtype=np.int32)
+        for new_idx, old_idx in enumerate(indices):
+            remap[old_idx] = new_idx
 
         self.pos_x[:new_count] = self.pos_x[indices]
         self.pos_y[:new_count] = self.pos_y[indices]
@@ -702,6 +774,18 @@ class Simulation:
         self.joint_ids[:new_count] = self.joint_ids[indices]
 
         self.count = new_count
+
+        # Remap or drop bonds. Iterate from the end so swap-with-last is safe.
+        b = self.bond_count - 1
+        while b >= 0:
+            new_i = remap[self.bond_i[b]]
+            new_j = remap[self.bond_j[b]]
+            if new_i < 0 or new_j < 0:
+                self.remove_bond(b)
+            else:
+                self.bond_i[b] = new_i
+                self.bond_j[b] = new_j
+            b -= 1
 
     # =========================================================================
     # Low-Level Particle Primitives (Used by ParticleBrush, Compiler, Sources)
@@ -757,6 +841,56 @@ class Simulation:
         self.rebuild_next = True
 
         return idx
+
+    def add_bond(self, i, j, k, r_eq):
+        """Add a harmonic spring bond between atoms i and j.
+
+        Args:
+            i, j: Atom indices into pos_x/pos_y/... (must be < self.count).
+            k: Spring stiffness.
+            r_eq: Equilibrium bond length.
+
+        Returns:
+            Index of the new bond (0..bond_count-1 after insertion), or -1
+            if i == j (degenerate). Self-bonds are silently rejected because
+            the force computation would divide by zero on identical positions
+            and the result is meaningless physically.
+        """
+        if i == j:
+            return -1
+        if self.bond_count >= self.bond_capacity:
+            self._resize_bond_arrays()
+        b = self.bond_count
+        self.bond_i[b] = i
+        self.bond_j[b] = j
+        self.bond_k[b] = k
+        self.bond_r_eq[b] = r_eq
+        self.bond_count += 1
+        return b
+
+    def remove_bond(self, b):
+        """Remove the bond at index b via swap-with-last."""
+        if b < 0 or b >= self.bond_count:
+            return
+        last = self.bond_count - 1
+        if b != last:
+            self.bond_i[b] = self.bond_i[last]
+            self.bond_j[b] = self.bond_j[last]
+            self.bond_k[b] = self.bond_k[last]
+            self.bond_r_eq[b] = self.bond_r_eq[last]
+        self.bond_count -= 1
+
+    def clear_bonds(self):
+        """Drop all bonds (used by clear/reset)."""
+        self.bond_count = 0
+
+    def _resize_bond_arrays(self):
+        """Double the capacity of bond arrays. Preserves existing data."""
+        self.bond_capacity *= 2
+        self.bond_i = np.resize(self.bond_i, self.bond_capacity)
+        self.bond_j = np.resize(self.bond_j, self.bond_capacity)
+        self.bond_k = np.resize(self.bond_k, self.bond_capacity)
+        self.bond_r_eq = np.resize(self.bond_r_eq, self.bond_capacity)
 
     def _check_overlap(self, x, y, threshold):
         """
@@ -848,6 +982,9 @@ class Simulation:
 
         # Run integration
         if self.count > 0:
+            # Bond views: kernels slice their own length off bond_i.shape[0],
+            # so an empty bond list (bond_count==0) skips cleanly inside the kernel.
+            b = self.bond_count
             if self.use_newton3:
                 self._ensure_local_force_buffers()
                 steps_done = integrate_n_steps_newton3(
@@ -862,6 +999,8 @@ class Simulation:
                     self.pair_i, self.pair_j, self.pair_count,
                     self.tether_entity_idx[:self.count],
                     self.joint_ids[:self.count],
+                    self.bond_i[:b], self.bond_j[:b],
+                    self.bond_k[:b], self.bond_r_eq[:b],
                     np.float32(self.dt), np.float32(self.gravity),
                     np.float32(self.r_cut_base**2), np.float32(self.r_skin_sq_limit),
                     np.float32(self.world_size), np.int32(self.boundary_mode),
@@ -882,6 +1021,8 @@ class Simulation:
                     self.nbr_start[:self.count + 1], self.nbr_idx,
                     self.tether_entity_idx[:self.count],  # For intra-entity exclusion
                     self.joint_ids[:self.count],  # For coincident constraint LJ exclusion
+                    self.bond_i[:b], self.bond_j[:b],
+                    self.bond_k[:b], self.bond_r_eq[:b],
                     np.float32(self.dt), np.float32(self.gravity),
                     np.float32(self.r_cut_base**2), np.float32(self.r_skin_sq_limit),
                     np.float32(self.world_size), np.int32(self.boundary_mode),

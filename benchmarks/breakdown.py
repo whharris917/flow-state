@@ -174,6 +174,7 @@ def _instrumented_step(sim, physics_steps: int, *, record: dict | None) -> bool:
     # Phase 4: integrate
     if sim.count > 0:
         t0 = time.perf_counter() if record is not None else None
+        bc = sim.bond_count
         steps_done = integrate_n_steps(
             physics_steps,
             sim.pos_x[:sim.count], sim.pos_y[:sim.count],
@@ -182,10 +183,12 @@ def _instrumented_step(sim, physics_steps: int, *, record: dict | None) -> bool:
             sim.last_x[:sim.count], sim.last_y[:sim.count],
             sim.is_static[:sim.count],
             sim.atom_sigma[:sim.count], sim.atom_eps_sqrt[:sim.count],
-            np.float32(config.ATOM_MASS),
+            sim.atom_mass[:sim.count],
             sim.nbr_start[:sim.count + 1], sim.nbr_idx,
             sim.tether_entity_idx[:sim.count],
             sim.joint_ids[:sim.count],
+            sim.bond_i[:bc], sim.bond_j[:bc],
+            sim.bond_k[:bc], sim.bond_r_eq[:bc],
             np.float32(sim.dt), np.float32(sim.gravity),
             np.float32(sim.r_cut_base**2), np.float32(sim.r_skin_sq_limit),
             np.float32(sim.world_size), sim.boundary_mode,

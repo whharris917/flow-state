@@ -22,6 +22,75 @@ BOUNDARY_REFLECTING = 1
 BOUNDARY_PERIODIC = 2
 
 @njit(fastmath=True)
+def apply_spring_bonds(
+    pos_x, pos_y, force_x, force_y, is_static,
+    bond_i, bond_j, bond_k, bond_r_eq,
+    world_size, boundary_mode,
+):
+    """Harmonic spring bond forces (intramolecular).
+
+    For each bond (i, j) with stiffness k and equilibrium length r_eq:
+        F_on_i = +k*(r - r_eq) * (r_hat from i to j)   (pulls i toward j when stretched)
+        F_on_j = -F_on_i                                (Newton's 3rd law)
+    where r = |pos_j - pos_i| and r_hat = (pos_j - pos_i) / r.
+
+    Serial: each bond writes to two atoms; parallelizing would race when two
+    bonds share an atom (the common case in any non-trivial molecule).
+    Bond count is typically O(N_atoms) — small molecules have a handful of
+    bonds per atom — which is much smaller than the LJ pair count, so the
+    serial cost is minor in absolute terms.
+
+    Skips bonds where both atoms are static (forces would be discarded).
+    Static atoms (is_static==1) still see force writes skipped to keep the
+    behaviour identical to the LJ loop's static-skip pattern.
+
+    Under PERIODIC boundary mode the bond uses minimum-image dx/dy so a
+    molecule that wraps across the box boundary stays bonded across the wrap.
+
+    Inputs:
+        bond_i, bond_j: int32 arrays (length = bond_count) of atom indices.
+        bond_k:         float32 array of stiffness per bond.
+        bond_r_eq:      float32 array of equilibrium length per bond.
+    """
+    B = bond_i.shape[0]
+    half_world = 0.5 * world_size
+    for b in range(B):
+        i = bond_i[b]
+        j = bond_j[b]
+        si = is_static[i]
+        sj = is_static[j]
+        if si == 1 and sj == 1:
+            continue
+        dx = pos_x[j] - pos_x[i]
+        dy = pos_y[j] - pos_y[i]
+        if boundary_mode == BOUNDARY_PERIODIC:
+            if dx > half_world:
+                dx -= world_size
+            elif dx < -half_world:
+                dx += world_size
+            if dy > half_world:
+                dy -= world_size
+            elif dy < -half_world:
+                dy += world_size
+        r2 = dx * dx + dy * dy
+        if r2 < 1e-12:
+            # Coincident atoms — direction undefined. Skip rather than divide by zero.
+            continue
+        r = math.sqrt(r2)
+        # f_scal*dx gives the x-component of the force on i pointing toward j
+        # when the bond is stretched (r > r_eq). Sign flips for compression.
+        f_scal = bond_k[b] * (r - bond_r_eq[b]) / r
+        fx = f_scal * dx
+        fy = f_scal * dy
+        if si != 1:
+            force_x[i] += fx
+            force_y[i] += fy
+        if sj != 1:
+            force_x[j] -= fx
+            force_y[j] -= fy
+
+
+@njit(fastmath=True)
 def force_LJ_mixed(r2, s_ij2, e_24):
     """
     LJ Force for mixed particle types.
@@ -305,16 +374,21 @@ def integrate_n_steps(
     nbr_start, nbr_idx,             # atom-centric CSR neighbour list
     tether_entity_idx,  # For intra-entity force exclusion
     joint_ids,  # For coincident constraint LJ exclusion
+    bond_i, bond_j, bond_k, bond_r_eq,  # Harmonic spring bonds (intramolecular)
     dt, gravity, r_cut2_base,
     skin_limit_sq,
     world_size,
     boundary_mode,
     wall_damping
 ):
-    """Verlet integrator with cell-list LJ pair forces.
+    """Verlet integrator with cell-list LJ pair forces and harmonic spring bonds.
 
     atom_mass: per-particle mass array (matches atom_sigma / atom_eps_sqrt).
         Each particle's integration uses its own mass; previously a scalar.
+
+    bond_i, bond_j, bond_k, bond_r_eq: per-bond arrays already sliced to
+        bond_count. Empty arrays (shape[0]==0) cost only a single bond-loop
+        header check per substep, so the bondless fast path is preserved.
 
     boundary_mode: 0=open (no wall, escapes filtered post-step),
                    1=reflecting walls (existing behaviour, wall_damping applied),
@@ -482,6 +556,17 @@ def integrate_n_steps(
             force_x[i] += fx_i
             force_y[i] += fy_i
 
+        # 3.5 Spring bond forces (intramolecular) - SERIAL
+        # Accumulates harmonic-spring forces into force_x/y AFTER the LJ
+        # pair loop has written. Bond count is typically O(N_atoms) so the
+        # serial cost is dominated by the O(N_pairs) LJ phase. Skipped
+        # cleanly when bond_i is empty (B==0 → zero-trip loop).
+        apply_spring_bonds(
+            pos_x, pos_y, force_x, force_y, is_static,
+            bond_i, bond_j, bond_k, bond_r_eq,
+            world_size, boundary_mode,
+        )
+
         # 4. Integration (Half Vel for Dynamic & Tethered) - PARALLEL
         # Dynamic atoms also take a per-substep medium-drag multiplier
         # (wall_damping). Previously this was applied ONLY at wall bounces,
@@ -522,6 +607,7 @@ def integrate_n_steps_newton3(
     atom_sigma, atom_eps_sqrt, atom_mass,
     pair_i, pair_j, pair_count,    # half-pair list (i < j); each pair appears once
     tether_entity_idx, joint_ids,
+    bond_i, bond_j, bond_k, bond_r_eq,  # Harmonic spring bonds (intramolecular)
     dt, gravity, r_cut2_base,
     skin_limit_sq,
     world_size,
@@ -708,6 +794,16 @@ def integrate_n_steps_newton3(
                 fy_sum += local_force_y[t, i]
             force_x[i] = fx_sum
             force_y[i] = fy_sum
+
+        # 4.5 Spring bond forces (intramolecular) — same placement and contract
+        # as the classic kernel: after pair-force accumulation, before the
+        # final half-vel update. Empty bond arrays cost only a single header
+        # check per substep.
+        apply_spring_bonds(
+            pos_x, pos_y, force_x, force_y, is_static,
+            bond_i, bond_j, bond_k, bond_r_eq,
+            world_size, boundary_mode,
+        )
 
         # 5. Integration (Half Vel for Dynamic & Tethered) — verbatim from classic.
         # Dynamic atoms also take wall_damping as per-substep medium drag.
