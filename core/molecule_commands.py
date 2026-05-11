@@ -21,6 +21,7 @@ Undo limitation (documented):
 """
 
 import math
+import random
 
 from core.commands import Command
 
@@ -67,6 +68,28 @@ class AddMoleculeCommand(Command):
         cos_r = math.cos(self.rotation)
         sin_r = math.sin(self.rotation)
 
+        # Sample a Maxwell-Boltzmann centre-of-mass velocity for the molecule.
+        # The thermostat is a multiplicative Berendsen rescaler — it cannot
+        # heat from absolute zero (early-out at current_T <= 1e-6). Placing
+        # molecules at LJ + bond equilibrium with zero velocity leaves the
+        # net force at zero, so without this kick they sit perfectly still
+        # and the thermostat does nothing. Applying the same (vx_cm, vy_cm)
+        # to every atom in the molecule gives translational thermal motion
+        # without immediately exciting internal vibration; the thermostat
+        # then maintains it.
+        molecule_mass = 0.0
+        for ma in self.template.atoms:
+            mat = sketch.get_material(ma.material_name)
+            molecule_mass += getattr(mat, 'mass', 1.0)
+        target_temp = float(getattr(sim, 'target_temp', 0.0))
+        if molecule_mass > 0.0 and target_temp > 0.0:
+            std = math.sqrt(target_temp / molecule_mass)
+            vx_cm = random.gauss(0.0, std)
+            vy_cm = random.gauss(0.0, std)
+        else:
+            vx_cm = 0.0
+            vy_cm = 0.0
+
         atom_indices = []
         for ma in self.template.atoms:
             mat = sketch.get_material(ma.material_name)
@@ -75,7 +98,7 @@ class AddMoleculeCommand(Command):
             wx = cx + cos_r * ma.x - sin_r * ma.y
             wy = cy + sin_r * ma.x + cos_r * ma.y
             idx = sim._add_particle(
-                wx, wy, vx=0.0, vy=0.0, is_static=0,
+                wx, wy, vx=vx_cm, vy=vy_cm, is_static=0,
                 sigma=getattr(mat, 'sigma', None),
                 epsilon=getattr(mat, 'epsilon', None),
                 mass=getattr(mat, 'mass', None),

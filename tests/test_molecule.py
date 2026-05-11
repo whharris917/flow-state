@@ -391,3 +391,151 @@ class TestMoleculeIntegrationWithScene:
         scene.undo()
         assert scene.simulation.count == 0
         assert scene.simulation.bond_count == 0
+
+
+class TestMaxwellBoltzmannPlacementVelocity:
+    """At placement time AddMoleculeCommand seeds a Maxwell-Boltzmann
+    centre-of-mass velocity drawn from N(0, sqrt(target_temp / M_molecule)).
+
+    The Berendsen thermostat (apply_thermostat) is a multiplicative
+    rescaler with an `if current_T <= 1e-6: return` early-out — it can
+    only scale existing motion. Without this kick the placed molecule
+    sits at LJ + bond equilibrium with zero velocity → zero KE → the
+    thermostat does nothing and the molecule never translates.
+    """
+
+    def _seed(self):
+        # Seed Python's random so the COM velocity sample is reproducible.
+        import random
+        random.seed(12345)
+
+    def test_zero_target_temp_yields_zero_velocity(self, scene):
+        self._seed()
+        scene.simulation.target_temp = 0.0
+        tpl = make_diatom(material_name="Water")
+        cmd = AddMoleculeCommand(scene, tpl, world_pos=(10.0, 10.0))
+        cmd.execute()
+        sim = scene.simulation
+        assert float(sim.vel_x[0]) == 0.0
+        assert float(sim.vel_y[0]) == 0.0
+        assert float(sim.vel_x[1]) == 0.0
+        assert float(sim.vel_y[1]) == 0.0
+
+    def test_nonzero_target_temp_yields_nonzero_velocity(self, scene):
+        self._seed()
+        scene.simulation.target_temp = 1.0
+        tpl = make_diatom(material_name="Water")
+        cmd = AddMoleculeCommand(scene, tpl, world_pos=(10.0, 10.0))
+        cmd.execute()
+        sim = scene.simulation
+        # At least one component should be nonzero (with seed 12345, a draw
+        # from N(0, std) is extremely unlikely to land at exactly 0 on
+        # both axes simultaneously).
+        assert (float(sim.vel_x[0]) != 0.0 or float(sim.vel_y[0]) != 0.0)
+
+    def test_all_atoms_share_com_velocity(self, scene):
+        """The kick is centre-of-mass: every atom in the molecule receives
+        the SAME (vx_cm, vy_cm). Internal vibration is NOT seeded — that
+        keeps the bond at r_eq instead of stretching it on placement."""
+        self._seed()
+        scene.simulation.target_temp = 1.0
+        tpl = make_diatom(material_name="Water")
+        cmd = AddMoleculeCommand(scene, tpl, world_pos=(10.0, 10.0))
+        cmd.execute()
+        sim = scene.simulation
+        assert float(sim.vel_x[0]) == pytest.approx(float(sim.vel_x[1]))
+        assert float(sim.vel_y[0]) == pytest.approx(float(sim.vel_y[1]))
+
+    def test_water_molecule_three_atoms_share_velocity(self, scene):
+        self._seed()
+        scene.simulation.target_temp = 1.0
+        tpl = make_water()
+        cmd = AddMoleculeCommand(scene, tpl, world_pos=(10.0, 10.0))
+        cmd.execute()
+        sim = scene.simulation
+        v0x = float(sim.vel_x[0])
+        v0y = float(sim.vel_y[0])
+        for i in range(1, 3):
+            assert float(sim.vel_x[i]) == pytest.approx(v0x)
+            assert float(sim.vel_y[i]) == pytest.approx(v0y)
+
+    def test_heavier_molecule_has_smaller_velocity_variance(self, scene):
+        """At the same target_temp, the heavier molecule's M is larger so
+        std = sqrt(target_temp / M) is smaller. Average |v| over many
+        placements should follow."""
+        import random
+        # Light molecule: 2 × Water (m=1 each) → M=2
+        # Heavy molecule: 2 × Mercury (m=13.5 each) → M=27
+        scene.simulation.target_temp = 1.0
+        light = make_diatom(material_name="Water")
+        heavy = make_diatom(material_name="Mercury")
+
+        N = 200
+        light_speeds = []
+        random.seed(1)
+        for _ in range(N):
+            scene.simulation.count = 0
+            scene.simulation.bond_count = 0
+            cmd = AddMoleculeCommand(scene, light, world_pos=(10.0, 10.0))
+            cmd.execute()
+            sp = math.hypot(float(scene.simulation.vel_x[0]),
+                            float(scene.simulation.vel_y[0]))
+            light_speeds.append(sp)
+
+        heavy_speeds = []
+        random.seed(1)
+        for _ in range(N):
+            scene.simulation.count = 0
+            scene.simulation.bond_count = 0
+            cmd = AddMoleculeCommand(scene, heavy, world_pos=(10.0, 10.0))
+            cmd.execute()
+            sp = math.hypot(float(scene.simulation.vel_x[0]),
+                            float(scene.simulation.vel_y[0]))
+            heavy_speeds.append(sp)
+
+        mean_light = sum(light_speeds) / N
+        mean_heavy = sum(heavy_speeds) / N
+        # Theoretical ratio: sqrt(M_heavy / M_light) = sqrt(27/2) ≈ 3.67
+        # Loose bound — sampling noise at N=200 → allow ±25%
+        ratio = mean_light / mean_heavy
+        assert 2.7 < ratio < 5.0
+
+    def test_placed_molecule_translates_under_thermostat(self, scene):
+        """End-to-end sanity check that pins the original bug: with the
+        thermostat on, a placed water molecule should drift (its centre
+        of mass should move) over a few-hundred-substep window."""
+        import random
+        random.seed(7)
+        sim = scene.simulation
+        sim.world_size = 200.0
+        sim.gravity = 0.0
+        sim.use_boundaries = False
+        sim.use_thermostat = True
+        sim.target_temp = 1.0
+        sim.damping = 1.0  # no medium drag — pure thermal motion
+        sim.paused = False
+        sim.dt = 0.001
+
+        tpl = make_water()
+        cmd = AddMoleculeCommand(scene, tpl, world_pos=(100.0, 100.0))
+        scene.execute(cmd)
+
+        # Initial centre of mass
+        cx0 = float(sum(sim.pos_x[:sim.count]) / sim.count)
+        cy0 = float(sum(sim.pos_y[:sim.count]) / sim.count)
+
+        for _ in range(200):
+            sim.step(steps_to_run=1)
+
+        cx1 = float(sum(sim.pos_x[:sim.count]) / sim.count)
+        cy1 = float(sum(sim.pos_y[:sim.count]) / sim.count)
+        drift = math.hypot(cx1 - cx0, cy1 - cy0)
+
+        # The molecule should have moved measurably (>0.05 simulation units
+        # over 200 substeps at dt=0.001 → 0.2 sim-time at thermal speeds
+        # ≈ sqrt(1/15.5) ≈ 0.25 sim/units per sim/time).
+        assert drift > 0.05, (
+            f"Molecule didn't translate (drift={drift:.4f}). Pre-fix this "
+            "was zero — placed molecules had vx=vy=0 and the Berendsen "
+            "thermostat couldn't heat from absolute zero."
+        )
