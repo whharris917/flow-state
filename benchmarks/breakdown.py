@@ -175,6 +175,7 @@ def _instrumented_step(sim, physics_steps: int, *, record: dict | None) -> bool:
     if sim.count > 0:
         t0 = time.perf_counter() if record is not None else None
         bc = sim.bond_count
+        ac = sim.angle_count
         steps_done = integrate_n_steps(
             physics_steps,
             sim.pos_x[:sim.count], sim.pos_y[:sim.count],
@@ -189,6 +190,8 @@ def _instrumented_step(sim, physics_steps: int, *, record: dict | None) -> bool:
             sim.joint_ids[:sim.count],
             sim.bond_i[:bc], sim.bond_j[:bc],
             sim.bond_k[:bc], sim.bond_r_eq[:bc],
+            sim.angle_a[:ac], sim.angle_b[:ac], sim.angle_c[:ac],
+            sim.angle_k[:ac], sim.angle_theta_eq[:ac],
             np.float32(sim.dt), np.float32(sim.gravity),
             np.float32(sim.r_cut_base**2), np.float32(sim.r_skin_sq_limit),
             np.float32(sim.world_size), sim.boundary_mode,

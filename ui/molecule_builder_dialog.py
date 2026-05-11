@@ -248,7 +248,10 @@ class MoleculeBuilderDialog:
         """Commit the working template to the sketch's molecule palette.
 
         Uses the current value of the name InputField; if empty the
-        template's existing name is kept.
+        template's existing name is kept. Auto-generates angle springs
+        from the current bond topology + atom positions so the saved
+        molecule's geometry survives thermal motion (without this, three
+        co-bonded atoms collapse to linear under LJ repulsion).
         """
         try:
             new_name = self.in_name.text.strip()
@@ -258,6 +261,11 @@ class MoleculeBuilderDialog:
             self.template.name = new_name
         # Pull any pending bond-input edits before saving.
         self.apply_bond_input_edits()
+        # Auto-generate angles from the bond topology if the template
+        # doesn't already carry them (a re-edited template's existing
+        # explicit angles are preserved verbatim).
+        if not self.template.angles:
+            self.template.auto_generate_angles()
         sketch.add_molecule(self.template)
 
     # =========================================================================

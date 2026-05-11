@@ -93,6 +93,19 @@ class Simulation:
         self.bond_k = np.zeros(self.bond_capacity, dtype=np.float32)
         self.bond_r_eq = np.zeros(self.bond_capacity, dtype=np.float32)
 
+        # --- Angle Arrays (Three-Body Angle Springs, intramolecular) ---
+        # Each angle binds three atoms (a, b, c) with b as the apex via
+        # U(θ) = k*(θ - θ_eq)² where θ is the angle b→a vs b→c.
+        # Indexed n=0..angle_count-1; grown separately from atom and bond
+        # arrays. compact_arrays remaps angle indices the same way as bonds.
+        self.angle_capacity = 100
+        self.angle_count = 0
+        self.angle_a = np.zeros(self.angle_capacity, dtype=np.int32)
+        self.angle_b = np.zeros(self.angle_capacity, dtype=np.int32)
+        self.angle_c = np.zeros(self.angle_capacity, dtype=np.int32)
+        self.angle_k = np.zeros(self.angle_capacity, dtype=np.float32)
+        self.angle_theta_eq = np.zeros(self.angle_capacity, dtype=np.float32)
+
         # --- Entity State Arrays (for physics kernel to read/write) ---
         # These are synced from Sketch entities before physics runs
         # entity_positions: [N, 4] - Line: [start_x, start_y, end_x, end_y]
@@ -253,12 +266,18 @@ class Simulation:
             ]
         ]
 
-        # Warmup with empty bond list — exercises the zero-length bond loop
-        # so the kernel is JIT-compiled for the typical bondless fast path.
+        # Warmup with empty bond + angle lists — exercises the zero-length
+        # loops so the kernel is JIT-compiled for the bondless/angle-less
+        # fast path that's typical of brush-only scenes.
         empty_bi = np.zeros(0, dtype=np.int32)
         empty_bj = np.zeros(0, dtype=np.int32)
         empty_bk = np.zeros(0, dtype=np.float32)
         empty_br = np.zeros(0, dtype=np.float32)
+        empty_aa = np.zeros(0, dtype=np.int32)
+        empty_ab = np.zeros(0, dtype=np.int32)
+        empty_ac = np.zeros(0, dtype=np.int32)
+        empty_ak = np.zeros(0, dtype=np.float32)
+        empty_ate = np.zeros(0, dtype=np.float32)
         integrate_n_steps(
             1, self.pos_x[:2], self.pos_y[:2],
             self.vel_x[:2], self.vel_y[:2],
@@ -271,6 +290,7 @@ class Simulation:
             self.tether_entity_idx[:2],  # For intra-entity exclusion
             self.joint_ids[:2],  # For coincident constraint LJ exclusion
             empty_bi, empty_bj, empty_bk, empty_br,
+            empty_aa, empty_ab, empty_ac, empty_ak, empty_ate,
             f32_vals[1], f32_vals[2], f32_vals[3], f32_vals[4],
             f32_vals[5], np.int32(self.boundary_mode), f32_vals[6]
         )
@@ -311,6 +331,12 @@ class Simulation:
             'bond_j': np.copy(self.bond_j[:self.bond_count]),
             'bond_k': np.copy(self.bond_k[:self.bond_count]),
             'bond_r_eq': np.copy(self.bond_r_eq[:self.bond_count]),
+            'angle_count': self.angle_count,
+            'angle_a': np.copy(self.angle_a[:self.angle_count]),
+            'angle_b': np.copy(self.angle_b[:self.angle_count]),
+            'angle_c': np.copy(self.angle_c[:self.angle_count]),
+            'angle_k': np.copy(self.angle_k[:self.angle_count]),
+            'angle_theta_eq': np.copy(self.angle_theta_eq[:self.angle_count]),
         }
         self.undo_stack.append(state)
         if len(self.undo_stack) > 50:
@@ -350,6 +376,19 @@ class Simulation:
             self.bond_r_eq[:new_bond_count] = state['bond_r_eq']
         else:
             self.bond_count = 0
+        # Angles (back-compat: pre-angle snapshots fall through to angle_count=0)
+        if 'angle_count' in state:
+            new_angle_count = state['angle_count']
+            while self.angle_capacity < new_angle_count:
+                self._resize_angle_arrays()
+            self.angle_count = new_angle_count
+            self.angle_a[:new_angle_count] = state['angle_a']
+            self.angle_b[:new_angle_count] = state['angle_b']
+            self.angle_c[:new_angle_count] = state['angle_c']
+            self.angle_k[:new_angle_count] = state['angle_k']
+            self.angle_theta_eq[:new_angle_count] = state['angle_theta_eq']
+        else:
+            self.angle_count = 0
         self.rebuild_next = True
         self.pair_count = 0
 
@@ -390,6 +429,12 @@ class Simulation:
             'bond_j': np.copy(self.bond_j[:self.bond_count]),
             'bond_k': np.copy(self.bond_k[:self.bond_count]),
             'bond_r_eq': np.copy(self.bond_r_eq[:self.bond_count]),
+            'angle_count': self.angle_count,
+            'angle_a': np.copy(self.angle_a[:self.angle_count]),
+            'angle_b': np.copy(self.angle_b[:self.angle_count]),
+            'angle_c': np.copy(self.angle_c[:self.angle_count]),
+            'angle_k': np.copy(self.angle_k[:self.angle_count]),
+            'angle_theta_eq': np.copy(self.angle_theta_eq[:self.angle_count]),
         }
         stack.append(state)
 
@@ -428,8 +473,9 @@ class Simulation:
         self.vel_x.fill(0)
         self.vel_y.fill(0)
         self.is_static.fill(0)
-        # Bonds reference atom indices that are now gone — drop them all.
+        # Bonds and angles reference atom indices that are now gone — drop them all.
         self.bond_count = 0
+        self.angle_count = 0
         self.rebuild_next = True
 
     def reset(self):
@@ -470,6 +516,12 @@ class Simulation:
             'bond_j': self.bond_j[:self.bond_count].tolist(),
             'bond_k': self.bond_k[:self.bond_count].tolist(),
             'bond_r_eq': self.bond_r_eq[:self.bond_count].tolist(),
+            'angle_count': int(self.angle_count),
+            'angle_a': self.angle_a[:self.angle_count].tolist(),
+            'angle_b': self.angle_b[:self.angle_count].tolist(),
+            'angle_c': self.angle_c[:self.angle_count].tolist(),
+            'angle_k': self.angle_k[:self.angle_count].tolist(),
+            'angle_theta_eq': self.angle_theta_eq[:self.angle_count].tolist(),
         }
 
     def restore(self, data):
@@ -513,6 +565,18 @@ class Simulation:
             self.bond_j[:new_bond_count] = np.array(data['bond_j'], dtype=np.int32)
             self.bond_k[:new_bond_count] = np.array(data['bond_k'], dtype=np.float32)
             self.bond_r_eq[:new_bond_count] = np.array(data['bond_r_eq'], dtype=np.float32)
+
+        # Angles (back-compat: pre-R5-angle saves get angle_count=0)
+        new_angle_count = data.get('angle_count', 0)
+        while self.angle_capacity < new_angle_count:
+            self._resize_angle_arrays()
+        self.angle_count = new_angle_count
+        if new_angle_count > 0:
+            self.angle_a[:new_angle_count] = np.array(data['angle_a'], dtype=np.int32)
+            self.angle_b[:new_angle_count] = np.array(data['angle_b'], dtype=np.int32)
+            self.angle_c[:new_angle_count] = np.array(data['angle_c'], dtype=np.int32)
+            self.angle_k[:new_angle_count] = np.array(data['angle_k'], dtype=np.float32)
+            self.angle_theta_eq[:new_angle_count] = np.array(data['angle_theta_eq'], dtype=np.float32)
 
         self.rebuild_next = True
         self.pair_count = 0
@@ -787,6 +851,20 @@ class Simulation:
                 self.bond_j[b] = new_j
             b -= 1
 
+        # Remap or drop angles — same iterate-from-end / swap-with-last pattern.
+        n = self.angle_count - 1
+        while n >= 0:
+            new_a = remap[self.angle_a[n]]
+            new_b = remap[self.angle_b[n]]
+            new_c = remap[self.angle_c[n]]
+            if new_a < 0 or new_b < 0 or new_c < 0:
+                self.remove_angle(n)
+            else:
+                self.angle_a[n] = new_a
+                self.angle_b[n] = new_b
+                self.angle_c[n] = new_c
+            n -= 1
+
     # =========================================================================
     # Low-Level Particle Primitives (Used by ParticleBrush, Compiler, Sources)
     # =========================================================================
@@ -892,6 +970,58 @@ class Simulation:
         self.bond_k = np.resize(self.bond_k, self.bond_capacity)
         self.bond_r_eq = np.resize(self.bond_r_eq, self.bond_capacity)
 
+    def add_angle(self, a, b, c, k, theta_eq):
+        """Add a three-body angle spring with apex b between legs a and c.
+
+        Args:
+            a, b, c: Atom indices (b is the apex; the angle is between
+                vectors b→a and b→c). All three must be distinct.
+            k: Angular stiffness.
+            theta_eq: Equilibrium angle in radians (0 to π).
+
+        Returns:
+            Index of the new angle, or -1 if the triplet is degenerate
+            (any two indices equal).
+        """
+        if a == b or b == c or a == c:
+            return -1
+        if self.angle_count >= self.angle_capacity:
+            self._resize_angle_arrays()
+        n = self.angle_count
+        self.angle_a[n] = a
+        self.angle_b[n] = b
+        self.angle_c[n] = c
+        self.angle_k[n] = k
+        self.angle_theta_eq[n] = theta_eq
+        self.angle_count += 1
+        return n
+
+    def remove_angle(self, n):
+        """Remove the angle at index n via swap-with-last."""
+        if n < 0 or n >= self.angle_count:
+            return
+        last = self.angle_count - 1
+        if n != last:
+            self.angle_a[n] = self.angle_a[last]
+            self.angle_b[n] = self.angle_b[last]
+            self.angle_c[n] = self.angle_c[last]
+            self.angle_k[n] = self.angle_k[last]
+            self.angle_theta_eq[n] = self.angle_theta_eq[last]
+        self.angle_count -= 1
+
+    def clear_angles(self):
+        """Drop all angles (used by clear/reset)."""
+        self.angle_count = 0
+
+    def _resize_angle_arrays(self):
+        """Double the capacity of angle arrays. Preserves existing data."""
+        self.angle_capacity *= 2
+        self.angle_a = np.resize(self.angle_a, self.angle_capacity)
+        self.angle_b = np.resize(self.angle_b, self.angle_capacity)
+        self.angle_c = np.resize(self.angle_c, self.angle_capacity)
+        self.angle_k = np.resize(self.angle_k, self.angle_capacity)
+        self.angle_theta_eq = np.resize(self.angle_theta_eq, self.angle_capacity)
+
     def _check_overlap(self, x, y, threshold):
         """
         Check if a position overlaps existing particles.
@@ -982,9 +1112,10 @@ class Simulation:
 
         # Run integration
         if self.count > 0:
-            # Bond views: kernels slice their own length off bond_i.shape[0],
-            # so an empty bond list (bond_count==0) skips cleanly inside the kernel.
+            # Bond / angle views: kernels infer count from .shape[0], so
+            # empty lists skip cleanly inside the kernel.
             b = self.bond_count
+            a = self.angle_count
             if self.use_newton3:
                 self._ensure_local_force_buffers()
                 steps_done = integrate_n_steps_newton3(
@@ -1001,6 +1132,8 @@ class Simulation:
                     self.joint_ids[:self.count],
                     self.bond_i[:b], self.bond_j[:b],
                     self.bond_k[:b], self.bond_r_eq[:b],
+                    self.angle_a[:a], self.angle_b[:a], self.angle_c[:a],
+                    self.angle_k[:a], self.angle_theta_eq[:a],
                     np.float32(self.dt), np.float32(self.gravity),
                     np.float32(self.r_cut_base**2), np.float32(self.r_skin_sq_limit),
                     np.float32(self.world_size), np.int32(self.boundary_mode),
@@ -1023,6 +1156,8 @@ class Simulation:
                     self.joint_ids[:self.count],  # For coincident constraint LJ exclusion
                     self.bond_i[:b], self.bond_j[:b],
                     self.bond_k[:b], self.bond_r_eq[:b],
+                    self.angle_a[:a], self.angle_b[:a], self.angle_c[:a],
+                    self.angle_k[:a], self.angle_theta_eq[:a],
                     np.float32(self.dt), np.float32(self.gravity),
                     np.float32(self.r_cut_base**2), np.float32(self.r_skin_sq_limit),
                     np.float32(self.world_size), np.int32(self.boundary_mode),

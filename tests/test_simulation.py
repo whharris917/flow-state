@@ -1,5 +1,6 @@
 """Tests for engine/simulation.py — particle arrays, world, snapshot/restore."""
 
+import math
 import numpy as np
 import pytest
 
@@ -1653,3 +1654,323 @@ class TestSpringOscillation:
                 crossed_through_r_eq = True
                 break
         assert crossed_through_r_eq, "Bonded pair never contracted past r_eq"
+
+
+# =============================================================================
+# Three-body angle springs.
+# Energy = k*(θ - θ_eq)² for the angle at apex b between legs (a, c).
+# Same plumbing pattern as bonds: arrays + add/remove + compact remap +
+# snapshot/restore. End-to-end test verifies the kernel pulls a perturbed
+# triple back toward θ_eq.
+# =============================================================================
+
+
+class TestAngleArrayConstruction:
+    def test_defaults(self, simulation):
+        assert simulation.angle_count == 0
+        assert simulation.angle_capacity == 100
+        assert simulation.angle_a.dtype == np.int32
+        assert simulation.angle_k.dtype == np.float32
+
+    def test_add_angle_returns_index_and_advances(self, simulation):
+        for _ in range(3):
+            simulation._add_particle(0.0, 0.0)
+        n = simulation.add_angle(0, 1, 2, k=50.0, theta_eq=math.pi)
+        assert n == 0
+        assert simulation.angle_count == 1
+        assert int(simulation.angle_a[0]) == 0
+        assert int(simulation.angle_b[0]) == 1
+        assert int(simulation.angle_c[0]) == 2
+        assert float(simulation.angle_k[0]) == pytest.approx(50.0)
+        assert float(simulation.angle_theta_eq[0]) == pytest.approx(math.pi)
+
+    def test_degenerate_triplet_rejected(self, simulation):
+        for _ in range(3):
+            simulation._add_particle(0.0, 0.0)
+        assert simulation.add_angle(0, 0, 1, 50.0, math.pi) == -1
+        assert simulation.add_angle(0, 1, 1, 50.0, math.pi) == -1
+        assert simulation.add_angle(0, 1, 0, 50.0, math.pi) == -1
+        assert simulation.angle_count == 0
+
+    def test_remove_angle_swap_with_last(self, simulation):
+        for _ in range(5):
+            simulation._add_particle(0.0, 0.0)
+        simulation.add_angle(0, 1, 2, 50.0, 1.0)
+        simulation.add_angle(1, 2, 3, 100.0, 2.0)
+        simulation.add_angle(2, 3, 4, 150.0, 3.0)
+        simulation.remove_angle(1)
+        assert simulation.angle_count == 2
+        # Slot 1 now holds the former angle 2
+        assert int(simulation.angle_a[1]) == 2
+        assert float(simulation.angle_k[1]) == pytest.approx(150.0)
+
+    def test_clear_angles_drops_all(self, simulation):
+        for _ in range(3):
+            simulation._add_particle(0.0, 0.0)
+        simulation.add_angle(0, 1, 2, 50.0, 1.0)
+        simulation.clear_angles()
+        assert simulation.angle_count == 0
+
+    def test_clear_drops_angles(self, simulation):
+        for _ in range(3):
+            simulation._add_particle(0.0, 0.0)
+        simulation.add_angle(0, 1, 2, 50.0, 1.0)
+        simulation.clear()
+        assert simulation.angle_count == 0
+
+    def test_resize_grows_capacity(self, simulation):
+        # Fill the default capacity then trigger resize
+        for _ in range(3):
+            simulation._add_particle(0.0, 0.0)
+        for _ in range(100):
+            simulation.add_angle(0, 1, 2, 50.0, 1.0)
+        old_cap = simulation.angle_capacity
+        simulation.add_angle(0, 1, 2, 50.0, 1.0)
+        assert simulation.angle_capacity == old_cap * 2
+        assert simulation.angle_count == 101
+
+
+class TestAngleForceKernel:
+    """Direct invocation of apply_angle_forces — sign, magnitude, Newton's-3rd
+    law on the triplet, equilibrium null, and PBC minimum-image."""
+
+    def _setup(self, theta_deg, k, theta_eq_rad):
+        """Apex b at origin, leg a along +x at distance 1, leg c at angle
+        theta_deg from a. Returns the kernel argument tuple."""
+        theta = math.radians(theta_deg)
+        pos_x = np.array([1.0, 0.0, math.cos(theta)], dtype=np.float32)
+        pos_y = np.array([0.0, 0.0, math.sin(theta)], dtype=np.float32)
+        force_x = np.zeros(3, dtype=np.float32)
+        force_y = np.zeros(3, dtype=np.float32)
+        is_static = np.zeros(3, dtype=np.int32)
+        angle_a = np.array([0], dtype=np.int32)
+        angle_b = np.array([1], dtype=np.int32)
+        angle_c = np.array([2], dtype=np.int32)
+        angle_k = np.array([k], dtype=np.float32)
+        angle_theta_eq = np.array([theta_eq_rad], dtype=np.float32)
+        return (pos_x, pos_y, force_x, force_y, is_static,
+                angle_a, angle_b, angle_c, angle_k, angle_theta_eq)
+
+    def test_force_zero_at_equilibrium(self):
+        from engine.physics_core import apply_angle_forces
+        # Both legs at 90° (θ_eq = π/2), kernel should produce zero forces.
+        args = self._setup(theta_deg=90.0, k=100.0, theta_eq_rad=math.pi / 2)
+        apply_angle_forces(*args, 100.0, 0)
+        fx = args[2]
+        fy = args[3]
+        for i in range(3):
+            assert float(fx[i]) == pytest.approx(0.0, abs=1e-5)
+            assert float(fy[i]) == pytest.approx(0.0, abs=1e-5)
+
+    def test_newton_third_law_on_triplet(self):
+        """Sum of forces on the three atoms must be zero (no net force on
+        the molecule from intramolecular angle constraint)."""
+        from engine.physics_core import apply_angle_forces
+        args = self._setup(theta_deg=70.0, k=100.0, theta_eq_rad=math.radians(120.0))
+        apply_angle_forces(*args, 100.0, 0)
+        fx = args[2]
+        fy = args[3]
+        sum_fx = sum(float(v) for v in fx)
+        sum_fy = sum(float(v) for v in fy)
+        assert sum_fx == pytest.approx(0.0, abs=1e-4)
+        assert sum_fy == pytest.approx(0.0, abs=1e-4)
+
+    def test_angle_too_narrow_pushes_open(self):
+        """θ < θ_eq → angle wants to open. Leg atom forces should have
+        components that increase θ (push legs apart angularly)."""
+        from engine.physics_core import apply_angle_forces
+        # θ = 60°, θ_eq = 120° → too narrow, should open
+        args = self._setup(theta_deg=60.0, k=100.0, theta_eq_rad=math.radians(120.0))
+        apply_angle_forces(*args, 100.0, 0)
+        fx = args[2]
+        fy = args[3]
+        # Atom a at (1, 0); leg vector from apex is (+1, 0). To OPEN θ we
+        # want atom a pushed in -y direction (downward, away from atom c
+        # which sits at +60° above). Actually with c above x-axis, atom a
+        # should be pushed below.
+        # Simpler invariant: when atom c is above atom a (theta=60°), to
+        # open the angle a should move down (-y).
+        assert float(fy[0]) < 0  # atom a pushed away from c
+        # Atom c is at upper-right; to open the angle it should move
+        # upward (away from a).
+        assert float(fy[2]) > 0
+
+    def test_angle_too_wide_pushes_closed(self):
+        """θ > θ_eq → angle wants to close. Inverse of test_too_narrow."""
+        from engine.physics_core import apply_angle_forces
+        # θ = 150°, θ_eq = 90° → too wide, should close.
+        # Apex b at origin; leg a at (1, 0) [angle 0°]; leg c at angle 150°.
+        # To close the angle both legs rotate toward the angular bisector
+        # (at 75°). Atom a (at 0°) rotates CCW toward 75° → vy > 0; atom c
+        # (at 150°) rotates CW toward 75° → still vy > 0 because 75° is
+        # higher-y than 150° on the unit circle.
+        args = self._setup(theta_deg=150.0, k=100.0, theta_eq_rad=math.radians(90.0))
+        apply_angle_forces(*args, 100.0, 0)
+        fy = args[3]
+        # Force on each leg atom is perpendicular to its leg direction.
+        # Atom a at (+1, 0): leg = +x → force is along ±y. Closing means
+        # rotating CCW toward the bisector at 75° → +y.
+        # Atom c at (cos150°, sin150°): leg = upper-left → force is
+        # perpendicular to that. Closing means rotating CW → still
+        # results in +y motion in the lab frame.
+        assert float(fy[0]) > 0
+        assert float(fy[2]) > 0
+
+    def test_linear_equilibrium_stays_finite(self):
+        """Near θ = π (linear), sin θ → 0 but the kernel guards 1/sin θ
+        and applies a finite force."""
+        from engine.physics_core import apply_angle_forces
+        # θ ≈ 179.5° (very close to linear), θ_eq = 180°
+        args = self._setup(theta_deg=179.5, k=500.0, theta_eq_rad=math.pi)
+        apply_angle_forces(*args, 100.0, 0)
+        fx = args[2]
+        fy = args[3]
+        # Forces should be finite — no NaN or Inf
+        for arr in (fx, fy):
+            for v in arr:
+                vv = float(v)
+                assert math.isfinite(vv)
+
+    def test_pbc_minimum_image(self):
+        """A wrapped molecule (one leg crossing the boundary) should still
+        feel the angle force as if the molecule were intact."""
+        from engine.physics_core import apply_angle_forces, BOUNDARY_PERIODIC
+        # World 10 wide. Apex at (0.5, 5); leg a at (9.5, 5) (across the
+        # wrap → min-image dx = +1); leg c at (0.5, 4) (below apex).
+        # Min-image triangle is apex=(0.5,5), a_rel=(+1,0), c_rel=(0,-1) →
+        # right angle (90°). With θ_eq=90°, force should be ~zero.
+        pos_x = np.array([9.5, 0.5, 0.5], dtype=np.float32)
+        pos_y = np.array([5.0, 5.0, 4.0], dtype=np.float32)
+        force_x = np.zeros(3, dtype=np.float32)
+        force_y = np.zeros(3, dtype=np.float32)
+        is_static = np.zeros(3, dtype=np.int32)
+        angle_a = np.array([0], dtype=np.int32)
+        angle_b = np.array([1], dtype=np.int32)
+        angle_c = np.array([2], dtype=np.int32)
+        angle_k = np.array([100.0], dtype=np.float32)
+        angle_theta_eq = np.array([math.pi / 2], dtype=np.float32)
+        apply_angle_forces(
+            pos_x, pos_y, force_x, force_y, is_static,
+            angle_a, angle_b, angle_c, angle_k, angle_theta_eq,
+            10.0, BOUNDARY_PERIODIC,
+        )
+        # With min-image, the configuration is at θ_eq exactly → forces ~0
+        for arr in (force_x, force_y):
+            for v in arr:
+                assert float(v) == pytest.approx(0.0, abs=1e-4)
+
+
+class TestAngleCompactRemap:
+    def test_compact_rewrites_surviving_angle_indices(self, simulation):
+        for _ in range(5):
+            simulation._add_particle(0.0, 0.0)
+        simulation.add_angle(1, 2, 3, k=100.0, theta_eq=math.pi)
+        # Remove atom 0 → atoms 1..4 become 0..3; angle (1,2,3) → (0,1,2)
+        simulation.compact_arrays(np.array([1, 2, 3, 4], dtype=np.int32))
+        assert simulation.angle_count == 1
+        assert int(simulation.angle_a[0]) == 0
+        assert int(simulation.angle_b[0]) == 1
+        assert int(simulation.angle_c[0]) == 2
+
+    def test_compact_drops_angle_when_apex_removed(self, simulation):
+        for _ in range(4):
+            simulation._add_particle(0.0, 0.0)
+        simulation.add_angle(0, 1, 2, k=100.0, theta_eq=math.pi)  # drops (apex 1 removed)
+        simulation.add_angle(0, 2, 3, k=200.0, theta_eq=2.0)       # survives
+        simulation.compact_arrays(np.array([0, 2, 3], dtype=np.int32))
+        assert simulation.angle_count == 1
+        # Surviving angle's atoms: old 0 → new 0, old 2 → new 1, old 3 → new 2
+        assert int(simulation.angle_a[0]) == 0
+        assert int(simulation.angle_b[0]) == 1
+        assert int(simulation.angle_c[0]) == 2
+        assert float(simulation.angle_k[0]) == pytest.approx(200.0)
+
+
+class TestAngleSerializationRoundTrip:
+    def test_snapshot_restore(self, simulation):
+        for _ in range(3):
+            simulation._add_particle(0.0, 0.0)
+        simulation.add_angle(0, 1, 2, k=77.0, theta_eq=math.pi / 3)
+        simulation.snapshot()
+        simulation.remove_angle(0)
+        assert simulation.angle_count == 0
+        simulation._restore_physics_state(simulation.undo_stack[-1])
+        assert simulation.angle_count == 1
+        assert float(simulation.angle_k[0]) == pytest.approx(77.0)
+        assert float(simulation.angle_theta_eq[0]) == pytest.approx(math.pi / 3)
+
+    def test_to_dict_round_trip(self, simulation):
+        for _ in range(3):
+            simulation._add_particle(0.0, 0.0)
+        simulation.add_angle(0, 1, 2, k=99.0, theta_eq=math.pi / 4)
+        data = simulation.to_dict()
+        sim2 = Simulation(skip_warmup=True)
+        sim2.restore(data)
+        assert sim2.angle_count == 1
+        assert int(sim2.angle_b[0]) == 1
+        assert float(sim2.angle_k[0]) == pytest.approx(99.0)
+
+    def test_pre_angle_save_treated_as_no_angles(self, simulation):
+        """Old saves without angle_count default to zero, not KeyError."""
+        legacy = {
+            'count': 0, 'world_size': 50.0,
+            'pos_x': [], 'pos_y': [], 'vel_x': [], 'vel_y': [],
+            'is_static': [], 'atom_sigma': [], 'atom_eps_sqrt': [],
+            'atom_mass': [], 'atom_color': [],
+            'bond_count': 0, 'bond_i': [], 'bond_j': [],
+            'bond_k': [], 'bond_r_eq': [],
+            # no angle_* keys
+        }
+        simulation.restore(legacy)
+        assert simulation.angle_count == 0
+
+
+class TestAngleIntegration:
+    """End-to-end through Simulation.step(): a perturbed triple snaps
+    back toward its equilibrium angle under the spring force."""
+
+    def test_perturbed_triple_relaxes_toward_theta_eq(self, simulation):
+        simulation.world_size = 200.0
+        simulation.gravity = 0.0
+        simulation.paused = False
+        simulation.dt = 0.001
+        simulation.damping = 0.95  # strong damping so it settles quickly
+        simulation.use_boundaries = False
+        # Three atoms: apex b at (100, 100); leg a at (101, 100); leg c
+        # initially BELOW the apex at (100, 99) — perturbed from θ_eq=π.
+        a_idx = simulation._add_particle(101.0, 100.0, is_static=0,
+                                          sigma=0.1, epsilon=0.01, mass=1.0)
+        b_idx = simulation._add_particle(100.0, 100.0, is_static=0,
+                                          sigma=0.1, epsilon=0.01, mass=1.0)
+        c_idx = simulation._add_particle(100.0, 99.0, is_static=0,
+                                          sigma=0.1, epsilon=0.01, mass=1.0)
+        # Bonds hold the leg lengths near 1.0 so the relaxation is
+        # primarily angular, not radial.
+        simulation.add_bond(a_idx, b_idx, k=500.0, r_eq=1.0)
+        simulation.add_bond(b_idx, c_idx, k=500.0, r_eq=1.0)
+        # Angle equilibrium = π (linear). Initial θ = 90°.
+        simulation.add_angle(a_idx, b_idx, c_idx, k=200.0, theta_eq=math.pi)
+
+        def measure_theta():
+            dxba = simulation.pos_x[a_idx] - simulation.pos_x[b_idx]
+            dyba = simulation.pos_y[a_idx] - simulation.pos_y[b_idx]
+            dxbc = simulation.pos_x[c_idx] - simulation.pos_x[b_idx]
+            dybc = simulation.pos_y[c_idx] - simulation.pos_y[b_idx]
+            r_ba = math.hypot(dxba, dyba)
+            r_bc = math.hypot(dxbc, dybc)
+            cos_th = (dxba * dxbc + dyba * dybc) / (r_ba * r_bc)
+            cos_th = max(-1.0, min(1.0, cos_th))
+            return math.acos(cos_th)
+
+        theta_initial = measure_theta()
+        assert theta_initial == pytest.approx(math.pi / 2, abs=0.05)
+
+        for _ in range(2000):
+            simulation.step(steps_to_run=1)
+
+        theta_final = measure_theta()
+        # Should have moved toward π. Loose bound — the damping is strong
+        # enough that we should be well past the midway point.
+        assert theta_final > math.pi / 2 + 0.3, (
+            f"Angle didn't relax toward θ_eq=π (final θ = {math.degrees(theta_final):.1f}°)"
+        )

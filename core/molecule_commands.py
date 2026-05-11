@@ -51,6 +51,7 @@ class AddMoleculeCommand(Command):
         # Captured at execute(); used by undo() to truncate back to pre-state.
         self._pre_atom_count = None
         self._pre_bond_count = None
+        self._pre_angle_count = None
         self.description = f"Add Molecule '{template.name}'"
 
     def execute(self) -> bool:
@@ -63,6 +64,7 @@ class AddMoleculeCommand(Command):
         # Capture pre-state for undo (truncation-based — see module docstring).
         self._pre_atom_count = sim.count
         self._pre_bond_count = sim.bond_count
+        self._pre_angle_count = sim.angle_count
 
         cx, cy = self.world_pos
         cos_r = math.cos(self.rotation)
@@ -111,6 +113,15 @@ class AddMoleculeCommand(Command):
             j = atom_indices[mb.atom_b]
             sim.add_bond(i, j, k=mb.k, r_eq=mb.r_eq)
 
+        # Angles use the same template-local → placement-time index remap.
+        # The template's MoleculeAngle entries index into template.atoms;
+        # we substitute the freshly-assigned simulation indices.
+        for ma in getattr(self.template, 'angles', []):
+            a = atom_indices[ma.atom_a]
+            b = atom_indices[ma.atom_b]
+            c = atom_indices[ma.atom_c]
+            sim.add_angle(a, b, c, k=ma.k, theta_eq=ma.theta_eq)
+
         sim.rebuild_next = True
         return True
 
@@ -118,11 +129,12 @@ class AddMoleculeCommand(Command):
         sim = self.scene.simulation
         if self._pre_atom_count is None:
             return
-        # Truncate atom and bond counts. This is correct when no other
-        # particle-adding operation has happened since execute(); see
-        # module docstring for the limitation.
+        # Truncate atom, bond, and angle counts. This is correct when no
+        # other particle/bond/angle-adding operation has happened since
+        # execute(); see module docstring for the limitation.
         sim.count = max(0, self._pre_atom_count)
         sim.bond_count = max(0, self._pre_bond_count)
+        sim.angle_count = max(0, self._pre_angle_count)
         sim.rebuild_next = True
 
     def redo(self):

@@ -12,8 +12,9 @@ import numpy as np
 import pytest
 
 from model.molecule import (
-    MoleculeAtom, MoleculeBond, MoleculeTemplate,
-    make_diatom, make_water,
+    MoleculeAtom, MoleculeBond, MoleculeAngle, MoleculeTemplate,
+    make_diatom, make_water, make_co2,
+    make_ammonia, make_methane, make_benzene,
 )
 from model.sketch import Sketch
 from core.scene import Scene
@@ -539,3 +540,256 @@ class TestMaxwellBoltzmannPlacementVelocity:
             "was zero — placed molecules had vx=vy=0 and the Berendsen "
             "thermostat couldn't heat from absolute zero."
         )
+
+
+# =============================================================================
+# Angle support: dataclass round-trip, validation, auto-generate, starter
+# helpers (CO2/ammonia/methane/benzene), AddMoleculeCommand places angles
+# with remapped atom indices.
+# =============================================================================
+
+
+class TestMoleculeAngleDataclass:
+    def test_to_from_dict(self):
+        ang = MoleculeAngle(atom_a=0, atom_b=1, atom_c=2,
+                            k=50.0, theta_eq=math.pi / 2)
+        d = ang.to_dict()
+        roundtrip = MoleculeAngle.from_dict(d)
+        assert roundtrip.atom_a == 0
+        assert roundtrip.atom_b == 1
+        assert roundtrip.atom_c == 2
+        assert roundtrip.k == pytest.approx(50.0)
+        assert roundtrip.theta_eq == pytest.approx(math.pi / 2)
+
+
+class TestMoleculeTemplateAngleValidation:
+    def test_template_with_valid_angles_validates(self):
+        assert make_water().validate() is True
+        assert make_co2().validate() is True
+        assert make_methane().validate() is True
+
+    def test_out_of_range_angle_index_fails(self):
+        tpl = MoleculeTemplate(
+            name="Bad",
+            atoms=[MoleculeAtom(0.0, 0.0, "Water"),
+                   MoleculeAtom(1.0, 0.0, "Water"),
+                   MoleculeAtom(0.5, 1.0, "Water")],
+            angles=[MoleculeAngle(atom_a=0, atom_b=1, atom_c=99,
+                                   k=50.0, theta_eq=math.pi / 2)],
+        )
+        assert tpl.validate() is False
+
+    def test_degenerate_angle_indices_fail(self):
+        tpl = MoleculeTemplate(
+            name="Bad",
+            atoms=[MoleculeAtom(0.0, 0.0, "Water"),
+                   MoleculeAtom(1.0, 0.0, "Water"),
+                   MoleculeAtom(0.5, 1.0, "Water")],
+            angles=[MoleculeAngle(atom_a=0, atom_b=1, atom_c=0,
+                                   k=50.0, theta_eq=math.pi / 2)],
+        )
+        assert tpl.validate() is False
+
+
+class TestStarterMoleculesShipWithAngles:
+    """Every multi-atom starter molecule carries explicit angles so its
+    geometry survives thermal motion."""
+
+    def test_water_has_one_angle_near_104_5_deg(self):
+        tpl = make_water()
+        assert len(tpl.angles) == 1
+        assert math.degrees(tpl.angles[0].theta_eq) == pytest.approx(104.5, abs=0.1)
+
+    def test_co2_has_one_angle_at_180_deg(self):
+        tpl = make_co2()
+        assert len(tpl.angles) == 1
+        assert tpl.angles[0].theta_eq == pytest.approx(math.pi)
+
+    def test_ammonia_has_three_angles_at_120_deg(self):
+        tpl = make_ammonia()
+        assert len(tpl.angles) == 3
+        for ang in tpl.angles:
+            assert math.degrees(ang.theta_eq) == pytest.approx(120.0)
+
+    def test_methane_has_four_angles_at_90_deg(self):
+        tpl = make_methane()
+        assert len(tpl.angles) == 4
+        for ang in tpl.angles:
+            assert math.degrees(ang.theta_eq) == pytest.approx(90.0)
+
+    def test_benzene_has_six_atoms_six_bonds_six_angles(self):
+        tpl = make_benzene()
+        assert len(tpl.atoms) == 6
+        assert len(tpl.bonds) == 6
+        assert len(tpl.angles) == 6
+        for ang in tpl.angles:
+            assert math.degrees(ang.theta_eq) == pytest.approx(120.0)
+
+    def test_diatom_has_no_angles(self):
+        """A 2-atom molecule has no angle constraint (no apex with two legs)."""
+        assert len(make_diatom().angles) == 0
+
+
+class TestSketchSeedsAllStarterMolecules(object):
+    def test_all_starters_in_palette(self, sketch):
+        for name in ("Diatom", "Water-mol", "CO2", "Ammonia", "Methane", "Benzene"):
+            assert name in sketch.molecules, f"{name} missing from default palette"
+
+
+class TestAutoGenerateAngles:
+    def test_diatom_generates_no_angles(self):
+        tpl = MoleculeTemplate(
+            name="X",
+            atoms=[MoleculeAtom(-0.5, 0.0, "Water"),
+                   MoleculeAtom(+0.5, 0.0, "Water")],
+            bonds=[MoleculeBond(atom_a=0, atom_b=1, k=100.0, r_eq=1.0)],
+        )
+        n = tpl.auto_generate_angles()
+        assert n == 0
+        assert tpl.angles == []
+
+    def test_two_bonds_at_common_atom_generate_one_angle(self):
+        # Three atoms in an L: apex at origin, leg a at +x, leg c at +y.
+        tpl = MoleculeTemplate(
+            name="L",
+            atoms=[MoleculeAtom(1.0, 0.0, "Water"),
+                   MoleculeAtom(0.0, 0.0, "Water"),  # apex
+                   MoleculeAtom(0.0, 1.0, "Water")],
+            bonds=[
+                MoleculeBond(atom_a=0, atom_b=1, k=100.0, r_eq=1.0),
+                MoleculeBond(atom_a=1, atom_b=2, k=100.0, r_eq=1.0),
+            ],
+        )
+        n = tpl.auto_generate_angles(k=42.0)
+        assert n == 1
+        ang = tpl.angles[0]
+        # The apex is atom 1 (the shared atom in the two bonds)
+        assert ang.atom_b == 1
+        # θ_eq should be 90° (between (+1,0) and (+0,+1))
+        assert ang.theta_eq == pytest.approx(math.pi / 2)
+        assert ang.k == pytest.approx(42.0)
+
+    def test_overwrites_existing_angles(self):
+        tpl = MoleculeTemplate(
+            name="X",
+            atoms=[MoleculeAtom(1.0, 0.0, "Water"),
+                   MoleculeAtom(0.0, 0.0, "Water"),
+                   MoleculeAtom(0.0, 1.0, "Water")],
+            bonds=[
+                MoleculeBond(atom_a=0, atom_b=1, k=100.0, r_eq=1.0),
+                MoleculeBond(atom_a=1, atom_b=2, k=100.0, r_eq=1.0),
+            ],
+            angles=[MoleculeAngle(atom_a=0, atom_b=1, atom_c=2,
+                                   k=999.0, theta_eq=1.0)],
+        )
+        tpl.auto_generate_angles(k=50.0)
+        # Old angle replaced with the auto-generated one (k=50, θ_eq=π/2)
+        assert len(tpl.angles) == 1
+        assert tpl.angles[0].k == pytest.approx(50.0)
+
+
+class TestAddMoleculeCommandPlacesAngles:
+    def test_water_placement_creates_angle(self, scene):
+        scene.simulation.target_temp = 0.0  # suppress MB kick for determinism
+        tpl = make_water()
+        cmd = AddMoleculeCommand(scene, tpl, world_pos=(10.0, 10.0))
+        cmd.execute()
+        assert scene.simulation.angle_count == 1
+        assert float(scene.simulation.angle_theta_eq[0]) == pytest.approx(math.radians(104.5))
+
+    def test_angle_indices_remapped_to_placement_offset(self, scene):
+        """When the molecule is placed after pre-existing atoms, its
+        angles must reference the NEW indices, not the template-local ones."""
+        sim = scene.simulation
+        sim.target_temp = 0.0
+        # Two pre-existing atoms shift the molecule's atom indices to 2,3,4
+        for _ in range(2):
+            sim._add_particle(0.0, 0.0)
+        pre_count = sim.count  # 2
+        tpl = make_water()
+        cmd = AddMoleculeCommand(scene, tpl, world_pos=(10.0, 10.0))
+        cmd.execute()
+        ang_a = int(sim.angle_a[0])
+        ang_b = int(sim.angle_b[0])
+        ang_c = int(sim.angle_c[0])
+        # The angle's atoms must be ≥ pre_count (i.e., they live in the
+        # molecule's slice of the array)
+        assert ang_a >= pre_count
+        assert ang_b >= pre_count
+        assert ang_c >= pre_count
+
+    def test_undo_truncates_angles_too(self, scene):
+        scene.simulation.target_temp = 0.0
+        tpl = make_water()
+        cmd = AddMoleculeCommand(scene, tpl, world_pos=(10.0, 10.0))
+        cmd.execute()
+        assert scene.simulation.angle_count == 1
+        cmd.undo()
+        assert scene.simulation.angle_count == 0
+        assert scene.simulation.bond_count == 0
+        assert scene.simulation.count == 0
+
+    def test_redo_restores_angles(self, scene):
+        scene.simulation.target_temp = 0.0
+        tpl = make_benzene()
+        cmd = AddMoleculeCommand(scene, tpl, world_pos=(15.0, 15.0))
+        cmd.execute()
+        assert scene.simulation.angle_count == 6
+        cmd.undo()
+        assert scene.simulation.angle_count == 0
+        cmd.redo()
+        assert scene.simulation.angle_count == 6
+
+    def test_placed_water_holds_its_v_shape(self, scene):
+        """End-to-end: place a water molecule, run physics with damping
+        to settle, verify the H-O-H angle stays near θ_eq (would
+        collapse to ~0° or 180° without the angle constraint)."""
+        sim = scene.simulation
+        sim.world_size = 200.0
+        sim.gravity = 0.0
+        sim.target_temp = 0.0    # no thermal kick — pure relaxation test
+        sim.damping = 0.95
+        sim.use_boundaries = False
+        sim.paused = False
+        sim.dt = 0.001
+
+        tpl = make_water()
+        cmd = AddMoleculeCommand(scene, tpl, world_pos=(100.0, 100.0))
+        scene.execute(cmd)
+
+        # Atoms placed: 0=O (centre), 1=H1, 2=H2
+        for _ in range(500):
+            sim.step(steps_to_run=1)
+
+        # Measure final H-O-H angle
+        dxoa = sim.pos_x[1] - sim.pos_x[0]
+        dyoa = sim.pos_y[1] - sim.pos_y[0]
+        dxoc = sim.pos_x[2] - sim.pos_x[0]
+        dyoc = sim.pos_y[2] - sim.pos_y[0]
+        r_oa = math.hypot(dxoa, dyoa)
+        r_oc = math.hypot(dxoc, dyoc)
+        cos_th = (dxoa * dxoc + dyoa * dyoc) / (r_oa * r_oc)
+        cos_th = max(-1.0, min(1.0, cos_th))
+        theta = math.acos(cos_th)
+        assert math.degrees(theta) == pytest.approx(104.5, abs=10.0), (
+            f"H-O-H angle drifted from 104.5° to {math.degrees(theta):.1f}°"
+        )
+
+
+class TestBuilderAutoGeneratesAnglesOnSave:
+    def test_dialog_save_creates_angles_from_bonds(self, sketch):
+        """Building an L-shaped 3-atom molecule in the dialog should
+        auto-generate the apex angle on Save."""
+        from ui.molecule_builder_dialog import MoleculeBuilderDialog
+        dlg = MoleculeBuilderDialog(0, 0, sketch)
+        dlg.add_atom_local(-1.0, 0.0)
+        dlg.add_atom_local(0.0, 0.0)
+        dlg.add_atom_local(0.0, 1.0)
+        dlg.begin_bond(0); dlg.complete_bond(1)
+        dlg.begin_bond(1); dlg.complete_bond(2)
+        dlg.in_name.set_value("LMol")
+        dlg.apply_to_sketch(sketch)
+        saved = sketch.molecules["LMol"]
+        assert len(saved.angles) == 1
+        # The apex should be atom 1 (shared in both bonds)
+        assert saved.angles[0].atom_b == 1

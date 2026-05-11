@@ -5,7 +5,11 @@ from model.geometry import Line, Circle, Point
 from model.constraints import create_constraint
 from model.solver import Solver
 from model.properties import Material, PRESET_MATERIALS
-from model.molecule import MoleculeTemplate, make_diatom, make_water
+from model.molecule import (
+    MoleculeTemplate,
+    make_diatom, make_water, make_co2,
+    make_ammonia, make_methane, make_benzene,
+)
 
 class Sketch:
     """
@@ -51,11 +55,18 @@ class Sketch:
 
     def _seed_default_molecules(self):
         """Seed the palette with starter templates. Users author additional
-        molecules via the Molecule Builder dialog (R3)."""
-        diatom = make_diatom()
-        water_mol = make_water()
-        self.molecules[diatom.name] = diatom
-        self.molecules[water_mol.name] = water_mol
+        molecules via the Molecule Builder dialog. Each starter ships with
+        explicit MoleculeAngle entries so its geometry survives thermal
+        motion (angles resist collapse to linear / collapse-onto-each-other)."""
+        for tpl in (
+            make_diatom(),
+            make_water(),
+            make_co2(),
+            make_ammonia(),
+            make_methane(),
+            make_benzene(),
+        ):
+            self.molecules[tpl.name] = tpl
 
     # --- Molecule Palette API ---
 

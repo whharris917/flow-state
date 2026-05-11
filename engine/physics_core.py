@@ -22,6 +22,112 @@ BOUNDARY_REFLECTING = 1
 BOUNDARY_PERIODIC = 2
 
 @njit(fastmath=True)
+def apply_angle_forces(
+    pos_x, pos_y, force_x, force_y, is_static,
+    angle_a, angle_b, angle_c, angle_k, angle_theta_eq,
+    world_size, boundary_mode,
+):
+    """Harmonic three-body angle forces.
+
+    For each triple (a, b, c) with b as the apex, the angle θ is between
+    vectors b→a and b→c. Energy U(θ) = k*(θ - θ_eq)². Forces are the
+    standard analytical gradients:
+
+        F_a = (2k(θ - θ_eq) / sinθ) * [r_bc/(|r_ba||r_bc|) - cosθ * r_ba/|r_ba|²]
+        F_c = (2k(θ - θ_eq) / sinθ) * [r_ba/(|r_ba||r_bc|) - cosθ * r_bc/|r_bc|²]
+        F_b = -(F_a + F_c)        (Newton's 3rd law on the triplet)
+
+    where r_ba = pos_a - pos_b, r_bc = pos_c - pos_b. The cos(θ) is clamped
+    to [-1, 1] before acos (defense against float32 sum errors at the
+    boundary) and sin(θ) is clamped to >= 1e-6 to avoid the 1/sin
+    singularity near collinear configurations. For θ_eq = π (linear
+    geometries like CO2) the kernel stays finite — near θ = π,
+    (θ - π)/sin(θ) → -1 by L'Hôpital, so the prefactor remains O(k).
+
+    Serial: each angle writes to three atoms; would race under prange.
+    Angle count is typically O(N_atoms) — small molecules have a handful
+    of angles per central atom — so the serial cost is minor next to the
+    O(N_pairs) LJ phase. Skips angles where all three atoms are static.
+
+    Under PERIODIC boundaries the r_ba and r_bc vectors use minimum image
+    so a wrapped molecule's angle stays consistent.
+    """
+    A = angle_a.shape[0]
+    half_world = 0.5 * world_size
+    for n in range(A):
+        i_a = angle_a[n]
+        i_b = angle_b[n]
+        i_c = angle_c[n]
+        sa = is_static[i_a]
+        sb = is_static[i_b]
+        sc = is_static[i_c]
+        if sa == 1 and sb == 1 and sc == 1:
+            continue
+
+        dxba = pos_x[i_a] - pos_x[i_b]
+        dyba = pos_y[i_a] - pos_y[i_b]
+        dxbc = pos_x[i_c] - pos_x[i_b]
+        dybc = pos_y[i_c] - pos_y[i_b]
+        if boundary_mode == BOUNDARY_PERIODIC:
+            if dxba > half_world:
+                dxba -= world_size
+            elif dxba < -half_world:
+                dxba += world_size
+            if dyba > half_world:
+                dyba -= world_size
+            elif dyba < -half_world:
+                dyba += world_size
+            if dxbc > half_world:
+                dxbc -= world_size
+            elif dxbc < -half_world:
+                dxbc += world_size
+            if dybc > half_world:
+                dybc -= world_size
+            elif dybc < -half_world:
+                dybc += world_size
+
+        r2_ba = dxba * dxba + dyba * dyba
+        r2_bc = dxbc * dxbc + dybc * dybc
+        if r2_ba < 1e-12 or r2_bc < 1e-12:
+            continue
+        r_ba = math.sqrt(r2_ba)
+        r_bc = math.sqrt(r2_bc)
+
+        dot = dxba * dxbc + dyba * dybc
+        cos_theta = dot / (r_ba * r_bc)
+        if cos_theta > 1.0:
+            cos_theta = 1.0
+        elif cos_theta < -1.0:
+            cos_theta = -1.0
+        theta = math.acos(cos_theta)
+        sin_theta = math.sqrt(1.0 - cos_theta * cos_theta)
+        if sin_theta < 1e-6:
+            sin_theta = 1e-6
+
+        prefactor = 2.0 * angle_k[n] * (theta - angle_theta_eq[n]) / sin_theta
+        inv_rab_rbc = 1.0 / (r_ba * r_bc)
+        inv_r2_ba = 1.0 / r2_ba
+        inv_r2_bc = 1.0 / r2_bc
+
+        fax = prefactor * (dxbc * inv_rab_rbc - cos_theta * dxba * inv_r2_ba)
+        fay = prefactor * (dybc * inv_rab_rbc - cos_theta * dyba * inv_r2_ba)
+        fcx = prefactor * (dxba * inv_rab_rbc - cos_theta * dxbc * inv_r2_bc)
+        fcy = prefactor * (dyba * inv_rab_rbc - cos_theta * dybc * inv_r2_bc)
+        fbx = -(fax + fcx)
+        fby = -(fay + fcy)
+
+        if sa != 1:
+            force_x[i_a] += fax
+            force_y[i_a] += fay
+        if sb != 1:
+            force_x[i_b] += fbx
+            force_y[i_b] += fby
+        if sc != 1:
+            force_x[i_c] += fcx
+            force_y[i_c] += fcy
+
+
+@njit(fastmath=True)
 def apply_spring_bonds(
     pos_x, pos_y, force_x, force_y, is_static,
     bond_i, bond_j, bond_k, bond_r_eq,
@@ -375,6 +481,7 @@ def integrate_n_steps(
     tether_entity_idx,  # For intra-entity force exclusion
     joint_ids,  # For coincident constraint LJ exclusion
     bond_i, bond_j, bond_k, bond_r_eq,  # Harmonic spring bonds (intramolecular)
+    angle_a, angle_b, angle_c, angle_k, angle_theta_eq,  # Three-body angle springs
     dt, gravity, r_cut2_base,
     skin_limit_sq,
     world_size,
@@ -567,6 +674,15 @@ def integrate_n_steps(
             world_size, boundary_mode,
         )
 
+        # 3.6 Three-body angle spring forces (intramolecular) - SERIAL
+        # Same placement contract as bonds. Empty angle arrays cost only
+        # a single header check per substep.
+        apply_angle_forces(
+            pos_x, pos_y, force_x, force_y, is_static,
+            angle_a, angle_b, angle_c, angle_k, angle_theta_eq,
+            world_size, boundary_mode,
+        )
+
         # 4. Integration (Half Vel for Dynamic & Tethered) - PARALLEL
         # Dynamic atoms also take a per-substep medium-drag multiplier
         # (wall_damping). Previously this was applied ONLY at wall bounces,
@@ -608,6 +724,7 @@ def integrate_n_steps_newton3(
     pair_i, pair_j, pair_count,    # half-pair list (i < j); each pair appears once
     tether_entity_idx, joint_ids,
     bond_i, bond_j, bond_k, bond_r_eq,  # Harmonic spring bonds (intramolecular)
+    angle_a, angle_b, angle_c, angle_k, angle_theta_eq,  # Three-body angle springs
     dt, gravity, r_cut2_base,
     skin_limit_sq,
     world_size,
@@ -802,6 +919,13 @@ def integrate_n_steps_newton3(
         apply_spring_bonds(
             pos_x, pos_y, force_x, force_y, is_static,
             bond_i, bond_j, bond_k, bond_r_eq,
+            world_size, boundary_mode,
+        )
+
+        # 4.6 Three-body angle spring forces — same placement contract.
+        apply_angle_forces(
+            pos_x, pos_y, force_x, force_y, is_static,
+            angle_a, angle_b, angle_c, angle_k, angle_theta_eq,
             world_size, boundary_mode,
         )
 
