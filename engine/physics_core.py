@@ -477,6 +477,7 @@ def integrate_n_steps(
     last_x, last_y,
     is_static,
     atom_sigma, atom_eps_sqrt, atom_mass,
+    atom_material_id, eps_ij_matrix,  # Cross-species ε via Sketch.lj_cross_overrides
     nbr_start, nbr_idx,             # atom-centric CSR neighbour list
     tether_entity_idx,  # For intra-entity force exclusion
     joint_ids,  # For coincident constraint LJ exclusion
@@ -509,6 +510,12 @@ def integrate_n_steps(
     half_dt = 0.5 * dt
     half_dt2 = 0.5 * dt * dt
     half_world = 0.5 * world_size
+    # Effective ε lookup uses eps_ij_matrix when both atoms in a pair carry a
+    # valid material_id (>=0 and < n_mat). Otherwise the kernel falls back to
+    # the per-atom ε_sqrt product (legacy L-B). n_mat == 0 disables the matrix
+    # path entirely — the bare-Sim warmup and tests without a Sketch run this
+    # branch.
+    n_mat = eps_ij_matrix.shape[0]
 
     steps_done = 0
 
@@ -618,6 +625,7 @@ def integrate_n_steps(
             fy_i = 0.0
             sigma_i = atom_sigma[i]
             eps_sqrt_i = atom_eps_sqrt[i]
+            mat_i = atom_material_id[i]
             jid_i = joint_ids[i]
             ent_i = tether_entity_idx[i]
             st_i_is_tethered = is_static[i] == 3
@@ -654,7 +662,13 @@ def integrate_n_steps(
                 if r2 < r_cut2_base:
                     s_ij = 0.5 * (sigma_i + atom_sigma[j])
                     s_ij2 = s_ij * s_ij
-                    e_24 = 24.0 * eps_sqrt_i * atom_eps_sqrt[j]
+                    # ε_ij from matrix when both atoms have valid material_id;
+                    # otherwise geometric-mean fallback (the legacy L-B path).
+                    mat_j = atom_material_id[j]
+                    if n_mat > 0 and mat_i >= 0 and mat_j >= 0 and mat_i < n_mat and mat_j < n_mat:
+                        e_24 = 24.0 * eps_ij_matrix[mat_i, mat_j]
+                    else:
+                        e_24 = 24.0 * eps_sqrt_i * atom_eps_sqrt[j]
 
                     f_scal = force_LJ_mixed(r2, s_ij2, e_24)
                     fx_i += f_scal * dx
@@ -721,6 +735,7 @@ def integrate_n_steps_newton3(
     last_x, last_y,
     is_static,
     atom_sigma, atom_eps_sqrt, atom_mass,
+    atom_material_id, eps_ij_matrix,  # Cross-species ε via Sketch.lj_cross_overrides
     pair_i, pair_j, pair_count,    # half-pair list (i < j); each pair appears once
     tether_entity_idx, joint_ids,
     bond_i, bond_j, bond_k, bond_r_eq,  # Harmonic spring bonds (intramolecular)
@@ -761,6 +776,8 @@ def integrate_n_steps_newton3(
     half_dt = 0.5 * dt
     half_dt2 = 0.5 * dt * dt
     half_world = 0.5 * world_size
+    # See classic kernel for n_mat semantics — same matrix-vs-fallback logic.
+    n_mat = eps_ij_matrix.shape[0]
 
     steps_done = 0
 
@@ -882,7 +899,12 @@ def integrate_n_steps_newton3(
             if r2 < r_cut2_base:
                 s_ij = 0.5 * (atom_sigma[i] + atom_sigma[j])
                 s_ij2 = s_ij * s_ij
-                e_24 = 24.0 * atom_eps_sqrt[i] * atom_eps_sqrt[j]
+                mat_i = atom_material_id[i]
+                mat_j = atom_material_id[j]
+                if n_mat > 0 and mat_i >= 0 and mat_j >= 0 and mat_i < n_mat and mat_j < n_mat:
+                    e_24 = 24.0 * eps_ij_matrix[mat_i, mat_j]
+                else:
+                    e_24 = 24.0 * atom_eps_sqrt[i] * atom_eps_sqrt[j]
                 f_scal = force_LJ_mixed(r2, s_ij2, e_24)
                 fx = f_scal * dx
                 fy = f_scal * dy
@@ -953,7 +975,8 @@ def integrate_n_steps_newton3(
 
 @njit(fastmath=True)
 def spatial_sort(pos_x, pos_y, vel_x, vel_y, force_x, force_y, is_static,
-                 atom_sigma, atom_eps_sqrt, atom_mass, world_size, cell_size):
+                 atom_sigma, atom_eps_sqrt, atom_mass, atom_material_id,
+                 world_size, cell_size):
     # Sorting is usually fast enough in serial, and parallel sort is complex to implement.
     N = pos_x.shape[0]
     n_cells = int(world_size // cell_size) + 1
@@ -975,6 +998,7 @@ def spatial_sort(pos_x, pos_y, vel_x, vel_y, force_x, force_y, is_static,
     atom_sigma[:] = atom_sigma[perm]
     atom_eps_sqrt[:] = atom_eps_sqrt[perm]
     atom_mass[:] = atom_mass[perm]
+    atom_material_id[:] = atom_material_id[perm]
 
 @njit(fastmath=True)
 def apply_thermostat(vel_x, vel_y, atom_mass, is_static, target_temp, mix):

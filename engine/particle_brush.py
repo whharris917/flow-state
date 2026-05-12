@@ -50,7 +50,8 @@ class ParticleBrush:
     def paint(self, x: float, y: float, radius: float,
               sigma: float = None, epsilon: float = None,
               mass: float = None,
-              color: tuple = None) -> int:
+              color: tuple = None,
+              material_id: int = -1) -> int:
         """
         Add particles in a circular brush pattern using hexagonal packing.
 
@@ -105,7 +106,7 @@ class ParticleBrush:
 
         for px, py in positions:
             if not self._check_overlap(px, py, overlap_threshold):
-                self._add_particle(px, py, sigma, epsilon, color, mass)
+                self._add_particle(px, py, sigma, epsilon, color, mass, material_id)
                 added += 1
 
         if added > 0:
@@ -156,7 +157,8 @@ class ParticleBrush:
         return len(indices_to_remove)
     
     def _add_particle(self, x: float, y: float, sigma: float, epsilon: float,
-                      color: tuple = (50, 150, 255), mass: float = None):
+                      color: tuple = (50, 150, 255), mass: float = None,
+                      material_id: int = -1):
         """
         Add a single dynamic particle to the simulation.
 
@@ -188,6 +190,7 @@ class ParticleBrush:
         sim.atom_eps_sqrt[idx] = math.sqrt(epsilon)
         sim.atom_mass[idx] = mass
         sim.atom_color[idx] = color
+        sim.atom_material_id[idx] = material_id
         sim.count += 1
     
     def _check_overlap(self, x: float, y: float, threshold: float) -> bool:

@@ -374,6 +374,14 @@ class Source(ProcessObject):
         # Sample velocity from Maxwell-Boltzmann with optional direction bias
         vx, vy = self._sample_velocity(material.mass)
 
+        # Resolve the material's stable id in Sketch.materials. -1 when no
+        # Sketch is reachable (bare-Sim tests) → kernel falls back to per-atom
+        # ε_sqrt. Real spawns carry a valid id so cross-pair ε overrides apply.
+        material_id = -1
+        scene = self._owner_scene
+        if scene is not None and hasattr(scene, 'sketch'):
+            material_id = scene.sketch.get_material_index(self.properties.material_name)
+
         # Add the particle — color, sigma, epsilon, AND mass follow the
         # material so the integrator uses the right inertia per particle
         # (e.g. Mercury atoms feel ~13× more inertia than Water atoms).
@@ -384,6 +392,7 @@ class Source(ProcessObject):
             epsilon=material.epsilon,
             mass=material.mass,
             color=material.color,
+            material_id=material_id,
         )
 
         return True

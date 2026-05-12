@@ -66,6 +66,19 @@ class Simulation:
         self.atom_eps_sqrt = np.zeros(self.capacity, dtype=np.float32)
         self.atom_mass = np.full(self.capacity, config.ATOM_MASS, dtype=np.float32)
         self.atom_color = np.zeros((self.capacity, 3), dtype=np.uint8)  # RGB per particle
+        # Stable per-atom material index into Sketch.materials' insertion-order
+        # key list. -1 means "no material" — the LJ kernel falls back to
+        # per-atom ε_sqrt geometric mean (legacy L-B behaviour). Atoms spawned
+        # from Source/brush/compiler with a known material name carry a real
+        # index, which lets the kernel look up cross-pair ε in eps_ij_matrix.
+        self.atom_material_id = np.full(self.capacity, -1, dtype=np.int32)
+
+        # (M, M) effective LJ ε matrix, indexed by material_id pair. Set by
+        # Scene.rebuild from Sketch.build_eps_ij_matrix(). Zero-shape default
+        # disables the matrix path — kernel falls back to per-atom ε_sqrt for
+        # everyone. Headless tests and the pre-Scene warmup path operate with
+        # this default.
+        self.eps_ij_matrix = np.zeros((0, 0), dtype=np.float32)
 
         # --- Tether Arrays (for Dynamic Two-Way Coupling) ---
         # is_static=3 means tethered atom
@@ -278,6 +291,10 @@ class Simulation:
         empty_ac = np.zeros(0, dtype=np.int32)
         empty_ak = np.zeros(0, dtype=np.float32)
         empty_ate = np.zeros(0, dtype=np.float32)
+        # Warmup with an empty eps_ij_matrix (and material_id slice that's all
+        # -1 from the np.full default in __init__) so the kernel JITs both the
+        # matrix branch and the per-atom ε_sqrt fallback. Pass shape (0, 0).
+        empty_eps_matrix = np.zeros((0, 0), dtype=np.float32)
         integrate_n_steps(
             1, self.pos_x[:2], self.pos_y[:2],
             self.vel_x[:2], self.vel_y[:2],
@@ -286,6 +303,7 @@ class Simulation:
             self.is_static[:2],
             self.atom_sigma[:2], self.atom_eps_sqrt[:2],
             self.atom_mass[:2],
+            self.atom_material_id[:2], empty_eps_matrix,
             self.nbr_start[:3], self.nbr_idx,
             self.tether_entity_idx[:2],  # For intra-entity exclusion
             self.joint_ids[:2],  # For coincident constraint LJ exclusion
@@ -294,11 +312,12 @@ class Simulation:
             f32_vals[1], f32_vals[2], f32_vals[3], f32_vals[4],
             f32_vals[5], np.int32(self.boundary_mode), f32_vals[6]
         )
-        
+
         spatial_sort(
             self.pos_x[:2], self.pos_y[:2], self.vel_x[:2], self.vel_y[:2],
             self.force_x[:2], self.force_y[:2], self.is_static[:2],
             self.atom_sigma[:2], self.atom_eps_sqrt[:2], self.atom_mass[:2],
+            self.atom_material_id[:2],
             self.world_size, self.cell_size
         )
         
@@ -325,6 +344,7 @@ class Simulation:
             'atom_eps_sqrt': np.copy(self.atom_eps_sqrt[:self.count]),
             'atom_mass': np.copy(self.atom_mass[:self.count]),
             'atom_color': np.copy(self.atom_color[:self.count]),
+            'atom_material_id': np.copy(self.atom_material_id[:self.count]),
             'world_size': self.world_size,
             'bond_count': self.bond_count,
             'bond_i': np.copy(self.bond_i[:self.bond_count]),
@@ -362,6 +382,12 @@ class Simulation:
             self.atom_mass[:self.count] = state['atom_mass']
         if 'atom_color' in state:
             self.atom_color[:self.count] = state['atom_color']
+        # Pre-R1 snapshots have no atom_material_id key — fall back to -1
+        # so the kernel uses the per-atom ε_sqrt path for restored atoms.
+        if 'atom_material_id' in state:
+            self.atom_material_id[:self.count] = state['atom_material_id']
+        else:
+            self.atom_material_id[:self.count] = -1
         self.world_size = state['world_size']
         # Bonds (back-compat: snapshots from before R1 won't have these keys —
         # treat absence as "no bonds in the saved state" rather than failing).
@@ -423,6 +449,7 @@ class Simulation:
             'atom_eps_sqrt': np.copy(self.atom_eps_sqrt[:self.count]),
             'atom_mass': np.copy(self.atom_mass[:self.count]),
             'atom_color': np.copy(self.atom_color[:self.count]),
+            'atom_material_id': np.copy(self.atom_material_id[:self.count]),
             'world_size': self.world_size,
             'bond_count': self.bond_count,
             'bond_i': np.copy(self.bond_i[:self.bond_count]),
@@ -511,6 +538,7 @@ class Simulation:
             'atom_eps_sqrt': self.atom_eps_sqrt[:self.count].tolist(),
             'atom_mass': self.atom_mass[:self.count].tolist(),
             'atom_color': self.atom_color[:self.count].tolist(),
+            'atom_material_id': self.atom_material_id[:self.count].tolist(),
             'bond_count': int(self.bond_count),
             'bond_i': self.bond_i[:self.bond_count].tolist(),
             'bond_j': self.bond_j[:self.bond_count].tolist(),
@@ -554,6 +582,12 @@ class Simulation:
         # which doesn't broadcast into atom_color[:0] of shape (0, 3).
         if 'atom_color' in data and self.count > 0:
             self.atom_color[:self.count] = np.array(data['atom_color'], dtype=np.uint8)
+        # Pre-R1 saves predate atom_material_id — default to -1 so restored
+        # atoms use the per-atom ε_sqrt fallback path in the LJ kernel.
+        if 'atom_material_id' in data:
+            self.atom_material_id[:self.count] = np.array(data['atom_material_id'], dtype=np.int32)
+        else:
+            self.atom_material_id[:self.count] = -1
 
         # Bonds (back-compat: pre-R1 saves won't carry them — default to none).
         new_bond_count = data.get('bond_count', 0)
@@ -828,6 +862,7 @@ class Simulation:
         self.atom_eps_sqrt[:new_count] = self.atom_eps_sqrt[indices]
         self.atom_mass[:new_count] = self.atom_mass[indices]
         self.atom_color[:new_count] = self.atom_color[indices]
+        self.atom_material_id[:new_count] = self.atom_material_id[indices]
 
         # Tether arrays
         self.tether_entity_idx[:new_count] = self.tether_entity_idx[indices]
@@ -869,8 +904,25 @@ class Simulation:
     # Low-Level Particle Primitives (Used by ParticleBrush, Compiler, Sources)
     # =========================================================================
 
+    def set_eps_ij_matrix(self, matrix):
+        """Replace the effective LJ ε matrix used by the kernel for atoms
+        with valid material_id. Accepts a (M, M) numpy array (will coerce
+        to float32) or None / empty → matrix-path disabled, kernel falls
+        back to per-atom ε_sqrt for everyone. Called by Scene.rebuild after
+        building the matrix from Sketch.materials + Sketch.lj_cross_overrides.
+        """
+        if matrix is None:
+            self.eps_ij_matrix = np.zeros((0, 0), dtype=np.float32)
+        else:
+            arr = np.asarray(matrix, dtype=np.float32)
+            if arr.ndim != 2 or arr.shape[0] != arr.shape[1]:
+                raise ValueError(
+                    f"eps_ij_matrix must be square 2D; got shape {arr.shape}"
+                )
+            self.eps_ij_matrix = arr
+
     def _add_particle(self, x, y, vx=0.0, vy=0.0, is_static=0, sigma=None, epsilon=None,
-                      mass=None, color=(50, 150, 255)):
+                      mass=None, color=(50, 150, 255), material_id=-1):
         """
         Add a single particle to the simulation.
 
@@ -915,6 +967,7 @@ class Simulation:
         self.atom_eps_sqrt[idx] = math.sqrt(epsilon)
         self.atom_mass[idx] = mass
         self.atom_color[idx] = color
+        self.atom_material_id[idx] = material_id
         self.count += 1
         self.rebuild_next = True
 
@@ -1127,6 +1180,7 @@ class Simulation:
                     self.is_static[:self.count],
                     self.atom_sigma[:self.count], self.atom_eps_sqrt[:self.count],
                     self.atom_mass[:self.count],
+                    self.atom_material_id[:self.count], self.eps_ij_matrix,
                     self.pair_i, self.pair_j, self.pair_count,
                     self.tether_entity_idx[:self.count],
                     self.joint_ids[:self.count],
@@ -1151,6 +1205,7 @@ class Simulation:
                     self.is_static[:self.count],
                     self.atom_sigma[:self.count], self.atom_eps_sqrt[:self.count],
                     self.atom_mass[:self.count],
+                    self.atom_material_id[:self.count], self.eps_ij_matrix,
                     self.nbr_start[:self.count + 1], self.nbr_idx,
                     self.tether_entity_idx[:self.count],  # For intra-entity exclusion
                     self.joint_ids[:self.count],  # For coincident constraint LJ exclusion
@@ -1235,6 +1290,11 @@ class Simulation:
         old_color = self.atom_color
         self.atom_color = np.zeros((self.capacity, 3), dtype=np.uint8)
         self.atom_color[:len(old_color)] = old_color
+        # Per-atom material_id grows alongside the rest; new slots default to
+        # -1 (no material → per-atom ε_sqrt fallback in the LJ kernel).
+        old_material_id = self.atom_material_id
+        self.atom_material_id = np.full(self.capacity, -1, dtype=np.int32)
+        self.atom_material_id[:len(old_material_id)] = old_material_id
         self.last_x = np.resize(self.last_x, self.capacity)
         self.last_y = np.resize(self.last_y, self.capacity)
 

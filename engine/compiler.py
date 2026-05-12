@@ -127,10 +127,16 @@ class Compiler:
             if not mat.physical:
                 continue
 
+            # Resolve material's stable index for cross-pair ε lookups.
+            # The effective material may differ from w.material_id when a
+            # MaterialManager override is active; the override material still
+            # lives in sketch.materials by name (or falls back to -1).
+            material_id = sketch.get_material_index(mat.name)
+
             if isinstance(w, Line):
-                self._compile_line(entity_idx, w, mat)
+                self._compile_line(entity_idx, w, mat, material_id)
             elif isinstance(w, Circle):
-                self._compile_circle(entity_idx, w, mat)
+                self._compile_circle(entity_idx, w, mat, material_id)
             # Note: Regular Point entities could be atomized here if needed
 
         # 3. Assign joint IDs for coincident constraints
@@ -141,7 +147,7 @@ class Compiler:
 
         self.sim.rebuild_next = True
 
-    def _compile_line(self, entity_idx, w, mat):
+    def _compile_line(self, entity_idx, w, mat, material_id=-1):
         """Compile a Line entity into static or tethered atoms."""
         # Skip reference lines
         if w.ref:
@@ -194,11 +200,13 @@ class Compiler:
             if w.dynamic:
                 # Tethered atom for two-way coupling
                 self._add_tethered_atom(pos, entity_idx, t, tether_k,
-                                        mat.sigma, math.sqrt(mat.epsilon), mat.mass, atom_color)
+                                        mat.sigma, math.sqrt(mat.epsilon), mat.mass, atom_color,
+                                        material_id=material_id)
             else:
                 # Static atom (with tether data for position sync)
                 self._add_static_atom(pos, mat.sigma, math.sqrt(mat.epsilon), mat.mass,
-                                      entity_idx=entity_idx, local_t=t, color=atom_color)
+                                      entity_idx=entity_idx, local_t=t, color=atom_color,
+                                      material_id=material_id)
 
             # Track start (pt_idx=0) and end (pt_idx=1) atoms for coincident joints
             if k == 0:
@@ -206,7 +214,7 @@ class Compiler:
             if k == num_atoms - 1:
                 self._vertex_to_atom[(entity_idx, 1)] = atom_idx
 
-    def _compile_circle(self, entity_idx, w, mat):
+    def _compile_circle(self, entity_idx, w, mat, material_id=-1):
         """Compile a Circle entity into static or tethered atoms."""
         circumference = 2 * math.pi * w.radius
         num_atoms = max(3, int(circumference / mat.spacing))
@@ -240,13 +248,16 @@ class Compiler:
             if w.dynamic:
                 # Tethered atom - local_pos stores angle
                 self._add_tethered_atom(pos, entity_idx, angle, tether_k,
-                                        mat.sigma, math.sqrt(mat.epsilon), mat.mass, atom_color)
+                                        mat.sigma, math.sqrt(mat.epsilon), mat.mass, atom_color,
+                                        material_id=material_id)
             else:
                 # Static atom (with tether data for position sync)
                 self._add_static_atom(pos, mat.sigma, math.sqrt(mat.epsilon), mat.mass,
-                                      entity_idx=entity_idx, local_t=angle, color=atom_color)
+                                      entity_idx=entity_idx, local_t=angle, color=atom_color,
+                                      material_id=material_id)
 
-    def _add_tethered_atom(self, pos, entity_idx, local_t, stiffness, sig, eps_sqrt, mass, color):
+    def _add_tethered_atom(self, pos, entity_idx, local_t, stiffness, sig, eps_sqrt, mass, color,
+                           material_id=-1):
         """
         Add a tethered atom for two-way coupling.
 
@@ -275,6 +286,7 @@ class Compiler:
         self.sim.atom_eps_sqrt[idx] = eps_sqrt
         self.sim.atom_mass[idx] = mass
         self.sim.atom_color[idx] = color
+        self.sim.atom_material_id[idx] = material_id
 
         # Tether data
         self.sim.tether_entity_idx[idx] = entity_idx
@@ -284,7 +296,8 @@ class Compiler:
 
         self.sim.count += 1
 
-    def _add_static_atom(self, pos, sig, eps_sqrt, mass, entity_idx=-1, local_t=0.0, color=(100, 100, 120)):
+    def _add_static_atom(self, pos, sig, eps_sqrt, mass, entity_idx=-1, local_t=0.0,
+                         color=(100, 100, 120), material_id=-1):
         """
         Add a single static atom to the simulation.
 
@@ -313,6 +326,7 @@ class Compiler:
         self.sim.atom_eps_sqrt[idx] = eps_sqrt
         self.sim.atom_mass[idx] = mass
         self.sim.atom_color[idx] = color
+        self.sim.atom_material_id[idx] = material_id
 
         # Record tether data for static atom sync (used to teleport atoms when geometry moves)
         self.sim.tether_entity_idx[idx] = entity_idx

@@ -381,3 +381,169 @@ def make_benzene(name="Benzene", c_material="Honey",
             k=k_angle, theta_eq=theta_eq,
         ))
     return MoleculeTemplate(name=name, atoms=atoms, bonds=bonds, angles=angles)
+
+
+# =============================================================================
+# R2 emergent-phenomena molecules (amphiphiles + chain polymer)
+# =============================================================================
+#
+# These coarse-grained molecules pair with the R2 PRESET_MATERIALS additions
+# (Polar / Nonpolar / Heavy / LightGas) and the seeded cross-ε overrides
+# (Sketch._seed_default_lj_overrides). In a Polar-dominant solvent they
+# self-organise:
+#   - Surfactant: heads stay solvent-exposed, tails cluster → micelles
+#   - Lipid: two-tail amphiphile → bilayer-like aggregates / 2D vesicle rings
+#   - Polymer: long Nonpolar chain → coil dynamics; collapses in Polar solvent
+# Bond k's are stiff enough to resist thermal motion at typical T~0.5–1.0;
+# chain angles at 180° (straight) give a mild persistence length without
+# being so stiff the chain can't curl.
+
+
+def make_surfactant(name="Surfactant", head_material="Polar",
+                    tail_material="Nonpolar", n_tail=4,
+                    r_eq=1.0, k=300.0, k_angle=30.0):
+    """Linear amphiphile: 1 Polar head + n_tail Nonpolar atoms in a chain.
+
+    In a Polar solvent the heads stay solvent-exposed (favourable cross-ε
+    with the solvent ≈ 1.0 via L-B on like-Polar) while the tails seek each
+    other out (favourable Nonpolar-Nonpolar) and avoid the solvent (Polar-
+    Nonpolar override ε=0.25). Aggregation produces micelles.
+
+    Geometry: atoms laid out along the local x-axis at spacing r_eq.
+    Head at the left end, tails to the right. Mild angle springs (k_angle
+    small) along the chain give a persistence length without rigid rod
+    behaviour — useful so the surfactant can curve to fit the micelle's
+    surface.
+    """
+    import math
+    n_atoms = 1 + n_tail
+    atoms = []
+    # Head at left end, then n_tail tails marching right. Centre at x=0.
+    for i in range(n_atoms):
+        x = (i - 0.5 * (n_atoms - 1)) * r_eq
+        material = head_material if i == 0 else tail_material
+        atoms.append(MoleculeAtom(x=x, y=0.0, material_name=material))
+    # Series bonds along the chain.
+    bonds = [
+        MoleculeBond(atom_a=i, atom_b=i + 1, k=k, r_eq=r_eq)
+        for i in range(n_atoms - 1)
+    ]
+    # 180° chain angles at every interior atom — keeps the chain extended-ish.
+    angles = [
+        MoleculeAngle(atom_a=i - 1, atom_b=i, atom_c=i + 1,
+                      k=k_angle, theta_eq=math.pi)
+        for i in range(1, n_atoms - 1)
+    ]
+    return MoleculeTemplate(name=name, atoms=atoms, bonds=bonds, angles=angles)
+
+
+def make_lipid(name="Lipid", head_material="Polar", tail_material="Nonpolar",
+               r_eq=1.0, k=300.0, k_angle=40.0,
+               tail_branch_angle_deg=60.0):
+    """Two-tail amphiphile: 1 head + 1 neck (both Polar) + 2 Nonpolar chains
+    of 2 atoms each branching from the neck. 6 atoms, 5 bonds, 5 angles.
+
+    Structure (local coords, head at top, tails splayed downward):
+        idx 0: head    (Polar)   at (0, +r_eq)
+        idx 1: neck    (Polar)   at (0,  0.0)
+        idx 2: tail1a  (Nonpolar) branching down-left from neck
+        idx 3: tail1b  (Nonpolar) further along the down-left chain
+        idx 4: tail2a  (Nonpolar) branching down-right from neck
+        idx 5: tail2b  (Nonpolar) further along the down-right chain
+
+    The two tails splay apart at the neck by `tail_branch_angle_deg`
+    (default 60°, total opening 120°). With the R2 cross-ε defaults this
+    self-assembles into bilayer-like structures where the Polar heads
+    bookend the Nonpolar interior. In 2D the bilayer looks like two
+    parallel ribbons of heads facing the solvent and tails packed in
+    between, or curls into a "2D vesicle" ring.
+
+    Why split head and neck (both Polar): the neck atom acts as a flex
+    pivot — the lipid can hinge at the head–neck bond, which improves
+    packing into curved bilayer surfaces vs a rigid 3-armed star.
+    """
+    import math
+    half_branch = math.radians(tail_branch_angle_deg) / 2.0  # half-opening from -y
+    cos_b = math.cos(half_branch)
+    sin_b = math.sin(half_branch)
+    # tail1a sits at (-sin_b·r_eq, -cos_b·r_eq) from the neck.
+    t1a_x = -sin_b * r_eq
+    t1a_y = -cos_b * r_eq
+    t2a_x = +sin_b * r_eq
+    t2a_y = -cos_b * r_eq
+    # tail1b/tail2b continue in the SAME direction as the branch (down and
+    # outward) so the chain straightens.
+    t1b_x = 2.0 * t1a_x
+    t1b_y = 2.0 * t1a_y
+    t2b_x = 2.0 * t2a_x
+    t2b_y = 2.0 * t2a_y
+    atoms = [
+        MoleculeAtom(x=0.0, y=+r_eq, material_name=head_material),         # 0 head
+        MoleculeAtom(x=0.0, y=0.0,   material_name=head_material),         # 1 neck
+        MoleculeAtom(x=t1a_x, y=t1a_y, material_name=tail_material),       # 2 tail1a
+        MoleculeAtom(x=t1b_x, y=t1b_y, material_name=tail_material),       # 3 tail1b
+        MoleculeAtom(x=t2a_x, y=t2a_y, material_name=tail_material),       # 4 tail2a
+        MoleculeAtom(x=t2b_x, y=t2b_y, material_name=tail_material),       # 5 tail2b
+    ]
+    bonds = [
+        MoleculeBond(atom_a=0, atom_b=1, k=k, r_eq=r_eq),  # head–neck
+        MoleculeBond(atom_a=1, atom_b=2, k=k, r_eq=r_eq),  # neck–tail1a
+        MoleculeBond(atom_a=2, atom_b=3, k=k, r_eq=r_eq),  # tail1a–tail1b
+        MoleculeBond(atom_a=1, atom_b=4, k=k, r_eq=r_eq),  # neck–tail2a
+        MoleculeBond(atom_a=4, atom_b=5, k=k, r_eq=r_eq),  # tail2a–tail2b
+    ]
+    # Angles at neck (1): hold the head-up + tails-down + tail-branch geometry.
+    # Two straightening angles along the tail chains (180°).
+    head_to_tail_angle = math.pi - half_branch  # head→neck→tail1a opening
+    angles = [
+        # head–neck–tail1a: 180° - half_branch (head up, tail1a down-left)
+        MoleculeAngle(atom_a=0, atom_b=1, atom_c=2,
+                      k=k_angle, theta_eq=head_to_tail_angle),
+        # head–neck–tail2a: same opening on the other side
+        MoleculeAngle(atom_a=0, atom_b=1, atom_c=4,
+                      k=k_angle, theta_eq=head_to_tail_angle),
+        # tail1a–neck–tail2a: 2·half_branch (the tail-branch angle)
+        MoleculeAngle(atom_a=2, atom_b=1, atom_c=4,
+                      k=k_angle, theta_eq=2.0 * half_branch),
+        # neck–tail1a–tail1b: 180° (chain extension)
+        MoleculeAngle(atom_a=1, atom_b=2, atom_c=3,
+                      k=k_angle, theta_eq=math.pi),
+        # neck–tail2a–tail2b: 180° (chain extension)
+        MoleculeAngle(atom_a=1, atom_b=4, atom_c=5,
+                      k=k_angle, theta_eq=math.pi),
+    ]
+    return MoleculeTemplate(name=name, atoms=atoms, bonds=bonds, angles=angles)
+
+
+def make_polymer(name="Polymer", material="Nonpolar", n=15,
+                 r_eq=1.0, k=300.0, k_angle=20.0):
+    """Long bonded chain of `n` atoms (all the same material) — useful for
+    Rouse / reptation dynamics demos and as a high-molecular-weight contrast
+    to the diatomic / small-molecule entries in the palette.
+
+    Default material is Nonpolar so the polymer collapses in a Polar solvent
+    (a "bad solvent" — the chain coils to minimise solvent contact, mimicking
+    real polymer θ-conditions). Override `material` to "Polar" for a soluble
+    chain that swells into the solvent.
+
+    Atoms are laid out along the local x-axis at spacing r_eq, centred on
+    the origin. Bond k is stiff (300); chain angles are gentle (k_angle=20)
+    to let the chain coil under bad-solvent conditions without being
+    floppy enough to self-overlap.
+    """
+    import math
+    atoms = [
+        MoleculeAtom(x=(i - 0.5 * (n - 1)) * r_eq, y=0.0,
+                     material_name=material)
+        for i in range(n)
+    ]
+    bonds = [
+        MoleculeBond(atom_a=i, atom_b=i + 1, k=k, r_eq=r_eq)
+        for i in range(n - 1)
+    ]
+    angles = [
+        MoleculeAngle(atom_a=i - 1, atom_b=i, atom_c=i + 1,
+                      k=k_angle, theta_eq=math.pi)
+        for i in range(1, n - 1)
+    ]
+    return MoleculeTemplate(name=name, atoms=atoms, bonds=bonds, angles=angles)

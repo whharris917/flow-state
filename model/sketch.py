@@ -9,6 +9,7 @@ from model.molecule import (
     MoleculeTemplate,
     make_diatom, make_water, make_co2,
     make_ammonia, make_methane, make_benzene,
+    make_surfactant, make_lipid, make_polymer,
 )
 
 class Sketch:
@@ -39,7 +40,18 @@ class Sketch:
         # sigma-based geometry when a pair has no override.
         self.bond_defaults: dict = {}
 
+        # Per-material-pair LJ ε overrides: frozenset({matA, matB}) → ε_AB.
+        # Breaks Berthelot's geometric-mean mixing rule (ε_ij = √(ε_i·ε_j))
+        # so cross-species interactions can be tuned independently of the
+        # like-species cohesion. This is the load-bearing mechanism for the
+        # interesting emergent phenomena (oil-water demixing, surfactant
+        # micelles, wetting): set ε_AB < √(ε_AA·ε_BB) to make A and B
+        # immiscible. Empty by default → L-B everywhere. σ_ij continues to
+        # use Lorentz arithmetic-mean mixing (not overridden in R1).
+        self.lj_cross_overrides: dict = {}
+
         self._seed_default_molecules()
+        self._seed_default_lj_overrides()
 
         # Solver Configuration (runtime toggles for benchmarking)
         self.use_numba = False          # Default to legacy OOP path for safety
@@ -65,8 +77,35 @@ class Sketch:
             make_ammonia(),
             make_methane(),
             make_benzene(),
+            # R2 emergent-phenomena molecules — coarse-grained amphiphiles
+            # and a chain polymer. With the R2 cross-ε defaults seeded
+            # below, these should self-organise: Surfactant → micelles,
+            # Lipid → bilayer-like aggregates, Polymer → conformational
+            # dynamics in either solvent.
+            make_surfactant(),
+            make_lipid(),
+            make_polymer(),
         ):
             self.molecules[tpl.name] = tpl
+
+    def _seed_default_lj_overrides(self):
+        """Seed Berthelot-breaking cross-pair ε values so the R2 emergent-
+        phenomena species (Polar / Nonpolar / Heavy / LightGas) ship with
+        recognisable immiscibility relationships out of the box. A fresh
+        Sketch + a placed Surfactant in a Polar solvent should immediately
+        demonstrate aggregation, with no further user setup. Values follow
+        the recipe in the design doc:
+          - Polar / Nonpolar  → 0.25 (immiscible, the workhorse "oil-water" pair)
+          - Polar / LightGas  → 0.15 (gas barely dissolves in polar liquid)
+          - Heavy / LightGas  → 0.20 (gas doesn't dissolve in dense fluid)
+          - Nonpolar / Heavy  → 1.5  (oil dissolves heavy nonpolar species)
+        Pre-R1 / pre-R2 saves with no overrides recorded restore as empty
+        and the user gets pure L-B everywhere — the seed only fires on
+        fresh Sketch __init__, not on Sketch.restore."""
+        self.set_lj_cross_override("Polar", "Nonpolar", 0.25)
+        self.set_lj_cross_override("Polar", "LightGas", 0.15)
+        self.set_lj_cross_override("Heavy", "LightGas", 0.20)
+        self.set_lj_cross_override("Nonpolar", "Heavy", 1.5)
 
     # --- Molecule Palette API ---
 
@@ -246,6 +285,69 @@ class Sketch:
 
     def get_material(self, material_id):
         return self.materials.get(material_id, self.materials.get("Water", self.materials.get("Wall")))
+
+    # --- LJ Cross-Interaction API ---
+
+    def get_lj_epsilon(self, name_a, name_b):
+        """Return the effective LJ ε for the pair (name_a, name_b).
+
+        If an override is registered for this pair, return it; otherwise
+        fall back to Berthelot's geometric-mean rule on the two materials'
+        own ε values. Frozenset key makes the lookup order-independent so
+        get_lj_epsilon('A', 'B') == get_lj_epsilon('B', 'A').
+
+        Unknown material names fall back via get_material (which returns
+        Water-as-default), so this never raises.
+        """
+        key = frozenset((name_a, name_b))
+        if key in self.lj_cross_overrides:
+            return self.lj_cross_overrides[key]
+        mat_a = self.get_material(name_a)
+        mat_b = self.get_material(name_b)
+        return math.sqrt(mat_a.epsilon * mat_b.epsilon)
+
+    def set_lj_cross_override(self, name_a, name_b, epsilon):
+        """Register an override for the (name_a, name_b) LJ ε.
+
+        Setting ε_AB < √(ε_AA·ε_BB) makes A and B less attractive than
+        Berthelot predicts → demixing / phase separation. Setting
+        ε_AB > √(ε_AA·ε_BB) makes them more attractive → mutual solvent.
+        """
+        self.lj_cross_overrides[frozenset((name_a, name_b))] = float(epsilon)
+
+    def remove_lj_cross_override(self, name_a, name_b):
+        """Drop the override for (name_a, name_b). No-op if not set."""
+        self.lj_cross_overrides.pop(frozenset((name_a, name_b)), None)
+
+    def build_eps_ij_matrix(self):
+        """Return (M, M) numpy float32 matrix of effective LJ ε for every
+        pair of currently-registered materials. M is len(self.materials);
+        the i-th row/column corresponds to the i-th key in self.materials
+        (insertion order, stable across Python dict semantics).
+
+        Atoms record their material's index into this list at spawn time
+        (Simulation.atom_material_id) and the LJ kernel indexes the matrix
+        directly to get the effective ε for the pair. Per-atom ε_sqrt
+        remains the fallback for atoms with material_id < 0 (legacy
+        bare-Sim paths, brushes without a material).
+        """
+        names = list(self.materials.keys())
+        n = len(names)
+        matrix = np.zeros((n, n), dtype=np.float32)
+        for i, a in enumerate(names):
+            for j, b in enumerate(names):
+                matrix[i, j] = self.get_lj_epsilon(a, b)
+        return matrix
+
+    def get_material_index(self, name):
+        """Return the integer index of `name` in self.materials, or -1 if
+        the material is not registered. Atoms store this as their stable
+        material_id so the LJ kernel can index into build_eps_ij_matrix
+        output."""
+        try:
+            return list(self.materials.keys()).index(name)
+        except ValueError:
+            return -1
 
     # --- Constraint API ---
 
@@ -435,12 +537,22 @@ class Sketch:
                 names = [names[0], names[0]]
             bond_defaults_list.append([names[0], names[1], float(k), float(r_eq)])
 
+        # Same trick for lj_cross_overrides — list of [name_a, name_b, eps]
+        # triples, JSON-friendly.
+        lj_overrides_list = []
+        for key, eps in self.lj_cross_overrides.items():
+            names = sorted(key)
+            if len(names) == 1:
+                names = [names[0], names[0]]
+            lj_overrides_list.append([names[0], names[1], float(eps)])
+
         return {
             'entities': [e.to_dict() for e in self.entities],
             'constraints': [c.to_dict() for c in self.constraints],
             'materials': {k: v.to_dict() for k, v in self.materials.items()},
             'molecules': {name: tpl.to_dict() for name, tpl in self.molecules.items()},
             'bond_defaults': bond_defaults_list,
+            'lj_cross_overrides': lj_overrides_list,
         }
 
     def restore(self, data):
@@ -494,3 +606,17 @@ class Sketch:
                 self.bond_defaults[frozenset({name_a, name_b})] = (float(k), float(r_eq))
         else:
             self.bond_defaults = {}
+
+        if 'lj_cross_overrides' in data:
+            self.lj_cross_overrides = {}
+            for entry in data['lj_cross_overrides']:
+                if isinstance(entry, dict):
+                    name_a = entry['mat_a']
+                    name_b = entry['mat_b']
+                    eps = entry['epsilon']
+                else:
+                    name_a, name_b, eps = entry
+                self.lj_cross_overrides[frozenset({name_a, name_b})] = float(eps)
+        else:
+            # Pre-R1 save: no overrides → empty dict, L-B applies everywhere.
+            self.lj_cross_overrides = {}

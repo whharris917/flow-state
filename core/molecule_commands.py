@@ -95,6 +95,12 @@ class AddMoleculeCommand(Command):
         atom_indices = []
         for ma in self.template.atoms:
             mat = sketch.get_material(ma.material_name)
+            # Stable material id so cross-pair ε overrides apply to molecule
+            # atoms. Templates may carry material names that aren't currently
+            # in sketch.materials (e.g. a saved template referencing a
+            # since-deleted material); get_material_index returns -1 in that
+            # case → kernel falls back to per-atom ε_sqrt for that atom.
+            material_id = sketch.get_material_index(ma.material_name)
             # Rotate local → world. Standard 2D rotation matrix:
             #   wx = cos*x - sin*y; wy = sin*x + cos*y
             wx = cx + cos_r * ma.x - sin_r * ma.y
@@ -105,6 +111,7 @@ class AddMoleculeCommand(Command):
                 epsilon=getattr(mat, 'epsilon', None),
                 mass=getattr(mat, 'mass', None),
                 color=getattr(mat, 'color', (50, 150, 255)),
+                material_id=material_id,
             )
             atom_indices.append(idx)
 

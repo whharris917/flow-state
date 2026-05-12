@@ -95,6 +95,13 @@ class Scene:
 
         # Connect material manager rebuild callback now that self.rebuild exists
         self.material_manager.on_rebuild = self.rebuild
+
+        # Push the default ε matrix to the simulation up front so the LJ
+        # kernel has a valid (small) matrix even if no rebuild fires (e.g.
+        # brush-only scenes never call Scene.rebuild — the brush spawns
+        # atoms with valid material_id, and they need the matrix populated
+        # to see overrides).
+        self.simulation.set_eps_ij_matrix(self.sketch.build_eps_ij_matrix())
     
     # =========================================================================
     # Convenience Aliases (for common access patterns)
@@ -427,6 +434,12 @@ class Scene:
         # Snap tethered atoms to exact anchor positions for cold start
         # This prevents oscillation from floating-point precision differences
         self.simulation.snap_tethered_atoms_to_anchors()
+        # Push the current (Sketch-derived) effective LJ ε matrix to the
+        # Simulation so the kernel sees any cross-pair overrides in effect
+        # for atoms compiled this rebuild — plus the dynamic atoms that
+        # persist from prior steps (their material_id remains valid since
+        # we don't reorder sketch.materials).
+        self.simulation.set_eps_ij_matrix(self.sketch.build_eps_ij_matrix())
     
     def mark_dirty(self, topology=False):
         """
@@ -466,12 +479,19 @@ class Scene:
             Number of particles added
         """
         if material:
+            # Resolve stable material id by name so cross-pair ε overrides
+            # apply to brush-painted atoms. Material dicts without a 'name'
+            # key (legacy / test paths) get material_id = -1 → per-atom
+            # ε_sqrt fallback in the kernel.
+            mat_name = material.get('name')
+            material_id = self.sketch.get_material_index(mat_name) if mat_name else -1
             return self._brush.paint(
                 world_x, world_y, radius,
                 sigma=material.get('sigma'),
                 epsilon=material.get('epsilon'),
                 mass=material.get('mass'),
                 color=material.get('color'),
+                material_id=material_id,
             )
         return self._brush.paint(world_x, world_y, radius)
 

@@ -62,13 +62,29 @@ class Material:
         )
 
 
-# Preset material library
+# Preset material library.
+#
+# Legacy species (Water, Oil, Mercury, Honey, Wall) shipped pre-R1 and stay
+# unchanged for back-compat with saved scenes.
+#
+# Emergent-phenomena species (Polar, Nonpolar, Heavy, LightGas) added in R2:
+# all share σ=1.0 (so Lorentz mixing gives clean unit length) while ε and
+# mass are tuned to give a recognisable phase-diagram. The matched σ across
+# Polar/Nonpolar is intentional: it isolates the cross-pair ε mechanism from
+# size-mismatch packing effects when demonstrating demixing. The
+# corresponding cross-ε overrides are seeded by Sketch._seed_default_lj_overrides
+# so a fresh Sketch ships with immiscibility baked in.
 PRESET_MATERIALS = {
     'Water': Material('Water', sigma=1.0, epsilon=1.0, mass=1.0, color=(50, 150, 255)),
     'Oil': Material('Oil', sigma=1.2, epsilon=0.8, mass=0.9, color=(180, 140, 60)),
     'Mercury': Material('Mercury', sigma=0.8, epsilon=2.0, mass=13.5, color=(180, 180, 190)),
     'Honey': Material('Honey', sigma=1.5, epsilon=1.5, mass=1.4, color=(255, 180, 50)),
     'Wall': Material('Wall', sigma=1.0, epsilon=1.0, mass=1.0, color=(100, 100, 120)),
+    # R2 phase-diagram species
+    'Polar': Material('Polar', sigma=1.0, epsilon=1.0, mass=1.0, color=(80, 200, 255)),
+    'Nonpolar': Material('Nonpolar', sigma=1.0, epsilon=1.0, mass=1.0, color=(240, 180, 80)),
+    'Heavy': Material('Heavy', sigma=1.2, epsilon=2.0, mass=3.0, color=(110, 110, 130)),
+    'LightGas': Material('LightGas', sigma=0.8, epsilon=0.3, mass=0.5, color=(200, 240, 220)),
 }
 
 
