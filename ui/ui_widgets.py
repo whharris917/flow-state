@@ -1015,10 +1015,15 @@ class SmartSlider(UIElement):
 class MenuBar(UIElement):
     def __init__(self, w, h=30):
         super().__init__(0, 0, w, h)
-        self.items = {"File": [], "Tools": [], "Help": []} 
-        self.active_menu = None 
+        # Default categories. Callers populate by name (UIManager sets
+        # File, Tools, Demos). Empty categories are skipped at render
+        # and hit-detection time so unfilled placeholders don't render
+        # as ghost-clickable items in the bar — pre-fix, the default
+        # `Help: []` rendered as an empty label that absorbed clicks.
+        self.items = {"File": []}
+        self.active_menu = None
         self.dropdown_rect = None
-        self.hover_item_idx = -1 
+        self.hover_item_idx = -1
         self.item_rects = {}
 
     def resize(self, w):
@@ -1026,13 +1031,14 @@ class MenuBar(UIElement):
 
     def handle_event(self, event):
         if not self.visible: return False
-        
-        curr_x = self.rect.x + 15
-        self.item_rects = {}
-        for key in self.items:
-            width = 60 # approx
-            self.item_rects[key] = pygame.Rect(curr_x, self.rect.y, width, self.rect.height)
-            curr_x += width + 5
+
+        # NOTE: do NOT rebuild item_rects here. The previous implementation
+        # rebuilt it with a fixed 60px width per item, but draw() rebuilds
+        # it with the actual text width. The two diverged: hit-rects ended
+        # up offset to the right of the visible labels, so clicking on
+        # "Demos" landed on the "Help" hit-rect (which was rendered to
+        # the left). We trust draw()'s item_rects — render runs before
+        # input every frame, so they're always current by click time.
 
         if event.type == pygame.MOUSEMOTION:
             if self.active_menu and self.dropdown_rect:
@@ -1077,55 +1083,80 @@ class MenuBar(UIElement):
         return False
 
     def draw(self, screen, font):
+        """Draw the menu BAR only. Dropdown (if any active_menu) is drawn
+        separately via draw_dropdown_overlay() during UIManager's overlay
+        phase so it renders on top of panels and viewport — otherwise the
+        tree-order rendering paints panels over the dropdown and the user
+        can't see what they're clicking.
+        """
         if not self.visible: return
-        
+
         pygame.draw.rect(screen, config.PANEL_BG_COLOR, self.rect)
         pygame.draw.line(screen, config.PANEL_BORDER_COLOR, (0, self.rect.bottom-1), (self.rect.width, self.rect.bottom-1))
-        
+
+        # Re-derive item_rects every frame, skipping empty categories so
+        # placeholder entries (e.g. "Help" with no items) don't render as
+        # ghost-clickable labels in the bar.
+        self.item_rects = {}
         curr_x = self.rect.x + 15
-        for key in self.items:
+        for key, opts in self.items.items():
+            if not opts:
+                continue
             ts = font.render(key, True, config.COLOR_TEXT)
             width = ts.get_width() + 20
             r = pygame.Rect(curr_x, self.rect.y, width, self.rect.height)
             self.item_rects[key] = r
-            
+
             if self.active_menu == key:
                 pygame.draw.rect(screen, (50, 50, 55), r)
-            
+
             screen.blit(ts, (curr_x + 10, r.centery - ts.get_height()//2))
             curr_x += width + 5
-            
-        if self.active_menu:
-            opts = self.items[self.active_menu]
+
+        # Keep dropdown_rect up-to-date every frame so the next frame's
+        # MOUSEMOTION / MOUSEBUTTONDOWN handlers can hit-test correctly,
+        # even though the actual rendering happens in draw_dropdown_overlay.
+        if self.active_menu and self.active_menu in self.item_rects:
             r = self.item_rects[self.active_menu]
-            
+            opts = self.items[self.active_menu]
             dd_w = 180
             dd_h = len(opts) * 30 + 10
             self.dropdown_rect = pygame.Rect(r.x, r.height + 2, dd_w, dd_h)
-            
-            # Shadow
-            s = self.dropdown_rect.copy(); s.x+=4; s.y+=4
-            s_surf = pygame.Surface((s.width, s.height), pygame.SRCALPHA)
-            pygame.draw.rect(s_surf, (0, 0, 0, 80), s_surf.get_rect(), border_radius=4)
-            screen.blit(s_surf, s)
-            
-            # Body
-            pygame.draw.rect(screen, config.PANEL_BG_COLOR, self.dropdown_rect, border_radius=4)
-            pygame.draw.rect(screen, config.PANEL_BORDER_COLOR, self.dropdown_rect, 1, border_radius=4)
-            
-            for i, opt in enumerate(opts):
-                if i == self.hover_item_idx and opt != "---":
-                    h_rect = pygame.Rect(self.dropdown_rect.x + 2, self.dropdown_rect.y + 5 + i*30, self.dropdown_rect.width - 4, 30)
-                    pygame.draw.rect(screen, (60, 60, 65), h_rect, border_radius=2)
+        elif not self.active_menu:
+            self.dropdown_rect = None
 
-                if opt == "---":
-                    y = self.dropdown_rect.y + 5 + i*30 + 15
-                    pygame.draw.line(screen, (60, 60, 60), (self.dropdown_rect.x + 10, y), (self.dropdown_rect.right - 10, y))
-                else:
-                    col = config.COLOR_TEXT
-                    if i == self.hover_item_idx: col = (255, 255, 255)
-                    otxt = font.render(opt, True, col)
-                    screen.blit(otxt, (self.dropdown_rect.x + 15, self.dropdown_rect.y + 5 + i*30 + 5))
+    def draw_dropdown_overlay(self, screen, font):
+        """Draw the active dropdown (if any) on top of the rest of the UI.
+        UIManager._draw_overlays calls this after all other overlay providers
+        so the menu dropdown is always the topmost UI surface.
+        """
+        if not self.visible or not self.active_menu or self.dropdown_rect is None:
+            return
+        opts = self.items[self.active_menu]
+
+        # Shadow
+        s = self.dropdown_rect.copy(); s.x += 4; s.y += 4
+        s_surf = pygame.Surface((s.width, s.height), pygame.SRCALPHA)
+        pygame.draw.rect(s_surf, (0, 0, 0, 80), s_surf.get_rect(), border_radius=4)
+        screen.blit(s_surf, s)
+
+        # Body
+        pygame.draw.rect(screen, config.PANEL_BG_COLOR, self.dropdown_rect, border_radius=4)
+        pygame.draw.rect(screen, config.PANEL_BORDER_COLOR, self.dropdown_rect, 1, border_radius=4)
+
+        for i, opt in enumerate(opts):
+            if i == self.hover_item_idx and opt != "---":
+                h_rect = pygame.Rect(self.dropdown_rect.x + 2, self.dropdown_rect.y + 5 + i*30, self.dropdown_rect.width - 4, 30)
+                pygame.draw.rect(screen, (60, 60, 65), h_rect, border_radius=2)
+
+            if opt == "---":
+                y = self.dropdown_rect.y + 5 + i*30 + 15
+                pygame.draw.line(screen, (60, 60, 60), (self.dropdown_rect.x + 10, y), (self.dropdown_rect.right - 10, y))
+            else:
+                col = config.COLOR_TEXT
+                if i == self.hover_item_idx: col = (255, 255, 255)
+                otxt = font.render(opt, True, col)
+                screen.blit(otxt, (self.dropdown_rect.x + 15, self.dropdown_rect.y + 5 + i*30 + 5))
 
 class StatusBar(UIElement):
     """

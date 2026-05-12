@@ -310,9 +310,13 @@ class FlowStateApp:
     def render(self):
         self.renderer.draw_app(self, self.layout, [])
         self.ui.draw(self.screen, self.font, self.session.mode)
-        self.actions.draw_overlays(self.screen, self.font)
-        # Draw UI overlays (dropdowns, tooltips) last so they appear above modals
+        # UI overlays (right-panel Dropdown lists, MenuBar dropdown) draw
+        # ABOVE the tree but BELOW modals — so a Source Properties dialog
+        # or the LJ override editor still hides the menu when active.
+        # If the menu is open at the same time as a modal, the modal wins
+        # visually because it's also blocking input via the Modal layer.
         self.ui._draw_overlays(self.screen, self.font)
+        self.actions.draw_overlays(self.screen, self.font)
         pygame.display.flip()
 
     # =========================================================================

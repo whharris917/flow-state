@@ -383,7 +383,12 @@ class InputHandler:
                 self._dispatch_menu(menu_result)
             return True
 
-        # 2. Generic Tree Delegation
+        # 2. Overlay-first dispatch. See UIManager.try_dispatch_to_overlay
+        # for rationale.
+        if self.ui.try_dispatch_to_overlay(event):
+            return True
+
+        # 3. Generic Tree Delegation
         # This propagates to panels -> SceneViewport -> Scene
         if self.ui.root.handle_event(event):
             # Check if we should acquire focus for MaterialPropertyWidget
@@ -430,3 +435,13 @@ class InputHandler:
             self.controller.save_scene()
         elif selection == "Import Geometry":
             self.controller.import_geometry()
+        # Tools menu — opens the LJ cross-ε editor dialog
+        elif selection == "Cross-ε Overrides...":
+            self.controller.actions.open_lj_override_dialog()
+        # Demos menu — one-click R3 emergent-phenomena scenarios
+        elif selection == "Demixing":
+            self.controller.actions.run_demo_preset('demixing')
+        elif selection == "Micelles":
+            self.controller.actions.run_demo_preset('micelles')
+        elif selection == "Crystal Anneal":
+            self.controller.actions.run_demo_preset('crystal_anneal')

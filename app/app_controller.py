@@ -550,6 +550,76 @@ class AppController:
         )
         self.sound_manager.play_sound('click')
 
+    # =========================================================================
+    # R3 Demo Presets (Menu: Demos → ...)
+    # =========================================================================
+
+    def run_demo_preset(self, preset_name: str) -> None:
+        """Run a demo preset by name. Clears the simulation, seeds the
+        initial state, and ensures the app is in simulation mode so the
+        user can hit Play and watch.
+
+        Recognised names: 'demixing', 'micelles', 'crystal_anneal'.
+        """
+        from core import demo_presets
+
+        # Ensure we're in simulation mode so the user can see the physics
+        # immediately. switch_mode lives on FlowStateApp.
+        if self.session.mode != config.MODE_SIM:
+            self.app.switch_mode(config.MODE_SIM)
+
+        if preset_name == 'demixing':
+            info = demo_presets.preset_demixing(self.scene)
+            self.session.status.set(
+                f"Demixing demo: {info['n_polar']} Polar + "
+                f"{info['n_nonpolar']} Nonpolar — hit Play"
+            )
+        elif preset_name == 'micelles':
+            info = demo_presets.preset_micelles(self.scene)
+            self.session.status.set(
+                f"Micelles demo: {info['n_solvent']} Polar solvent + "
+                f"{info['n_surfactant_molecules']} surfactant molecules — hit Play"
+            )
+        elif preset_name == 'crystal_anneal':
+            info = demo_presets.preset_crystal_anneal(self.scene)
+            self.session.status.set(
+                f"Crystal anneal: {info['n_atoms']} {info['material']} atoms at T="
+                f"{self.sim.target_temp:.1f} — lower target_temp to crystallise"
+            )
+        else:
+            self.session.status.set(f"Unknown preset: {preset_name}")
+            return
+        self.sound_manager.play_sound('click')
+
+    # =========================================================================
+    # Cross-ε Override Dialog (Menu: Tools → Cross-ε Overrides...)
+    # =========================================================================
+
+    def open_lj_override_dialog(self) -> None:
+        """Open the LJ cross-ε override editor. Lets the user view and
+        tune the per-pair ε table that the LJ kernel uses for cross-species
+        interactions. Saving an override calls
+        sketch.set_lj_cross_override(...) and pushes the updated matrix
+        to the simulation so the change takes effect immediately.
+        """
+        from ui.lj_override_dialog import LjOverrideDialog
+
+        mx = self.app.layout['W'] // 2 - 240
+        my = self.app.layout['H'] // 2 - 220
+        dialog = LjOverrideDialog(mx, my, self.sketch)
+        self.push_modal(dialog, 'lj_override_dialog')
+
+    def apply_lj_override_dialog(self, dialog) -> None:
+        """After the LJ override dialog closes, push the updated eps_ij_matrix
+        from the sketch to the simulation so the kernel sees the changes
+        on the next step. The dialog mutates sketch.lj_cross_overrides
+        directly; we just rebuild the matrix here."""
+        if not getattr(dialog, 'apply', False):
+            return
+        self.sim.set_eps_ij_matrix(self.sketch.build_eps_ij_matrix())
+        self.session.status.set("Cross-ε overrides updated")
+        self.sound_manager.play_sound('click')
+
     def open_rotation_dialog(self):
         # Legacy rotation dialog - show message about using constraint drivers
         self.session.status.set("Use constraint drivers for animation (right-click constraint > Animate)")
@@ -815,6 +885,11 @@ class AppController:
             # Molecule Builder dialog: apply on Save, dismiss on Cancel
             if modal_type == 'molecule_builder_dialog' and hasattr(modal, 'done') and modal.done:
                 self.apply_molecule_builder_dialog(modal)
+                self.close_modal(modal)
+                break  # Modal stack was modified, exit loop
+            # LJ cross-ε override dialog: push updated matrix to sim on close
+            if modal_type == 'lj_override_dialog' and hasattr(modal, 'done') and modal.done:
+                self.apply_lj_override_dialog(modal)
                 self.close_modal(modal)
                 break  # Modal stack was modified, exit loop
 

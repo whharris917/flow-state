@@ -10,8 +10,29 @@ for the current headless harness. Tests below were renamed accordingly.
 import pygame
 import pytest
 
-from ui.ui_widgets import ConfirmDialog, Button, UIContainer
+from ui.ui_widgets import ConfirmDialog, Button, UIContainer, Dropdown, InputField
+from ui.ui_manager import UIManager
 from tests.conftest import make_event
+
+
+class _OverlayHarness:
+    """Minimal harness binding UIManager.try_dispatch_to_overlay to a thin
+    object that only carries an `overlays` list plus the (un)register API.
+    Avoids the full UIManager construction cost (which needs a layout dict
+    and a controller)."""
+
+    def __init__(self):
+        self.overlays = []
+
+    def register_overlay(self, provider):
+        if provider not in self.overlays:
+            self.overlays.append(provider)
+
+    def unregister_overlay(self, provider):
+        if provider in self.overlays:
+            self.overlays.remove(provider)
+
+    try_dispatch_to_overlay = UIManager.try_dispatch_to_overlay
 
 
 class TestConfirmDialogAbsorption:
@@ -66,3 +87,122 @@ class TestResetInteractionStateRecursion:
 
         walk_reset(root)
         assert btn.clicked is False
+
+
+class TestOverlayDispatch:
+    """A Dropdown's expanded overlay draws above the rest of the UI tree;
+    clicks landing inside the overlay rect must be routed to the Dropdown
+    before the tree's reverse-iteration order lets a sibling widget
+    underneath the overlay steal the click. The reported bug:
+    bottom-most molecule-palette dropdown items fell through to the
+    material widget below in the right panel.
+    """
+
+    def _make_dropdown(self, options):
+        dd = Dropdown(100, 50, 200, 30, options, selected_index=0)
+        dd.expanded = True  # registers as an overlay; option_height = 30
+        return dd
+
+    def test_overlay_consumes_click_in_expanded_rect(self):
+        """Direct case: a click inside the dropdown's expanded list rect is
+        claimed by the dropdown, even with no siblings registered."""
+        harness = _OverlayHarness()
+        dd = self._make_dropdown(["A", "B", "C"])
+        harness.overlays.append(dd)
+
+        # Bottom-most option C sits at y in [50+30+60, 50+30+90) = [140, 170)
+        click = make_event(pygame.MOUSEBUTTONDOWN, pos=(150, 155), button=1)
+        consumed = harness.try_dispatch_to_overlay(click)
+
+        assert consumed is True
+        # Dropdown selected option C and collapsed
+        assert dd.selected_index == 2
+        assert dd.expanded is False
+
+    def test_overlay_dispatch_runs_before_tree_for_click_under_overlay(self):
+        """The bug-pinning test: a Dropdown's expanded overlay covers a
+        sibling widget below it. A click landing in the overlay rect (and
+        in the sibling's rect) is claimed by the dropdown, not the sibling.
+
+        Without overlay-first dispatch, the right-panel tree iterates in
+        reverse and the sibling steals the click — exactly the molecule-
+        palette-vs-material-widget bug.
+        """
+        harness = _OverlayHarness()
+        dd = self._make_dropdown(["First", "Second", "Last"])
+        harness.overlays.append(dd)
+
+        # Sibling input field positioned directly below the dropdown's
+        # expanded list — at y in [140, 180). This is where the bottom
+        # option of the expanded dropdown lives (140-170).
+        sibling = InputField(100, 140, 200, 40, "")
+
+        # Click on the bottom-most overlay option, which also lies inside
+        # the sibling's rect.
+        click_pos = (150, 155)
+        assert dd.get_expanded_rect().collidepoint(click_pos)
+        assert sibling.rect.collidepoint(click_pos)
+
+        click = make_event(pygame.MOUSEBUTTONDOWN, pos=click_pos, button=1)
+        consumed = harness.try_dispatch_to_overlay(click)
+
+        assert consumed is True
+        # Dropdown selected the bottom option ("Last")
+        assert dd.selected_index == 2
+        assert dd.get_selected() == "Last"
+        # Sibling was never activated
+        assert sibling.active is False
+
+    def test_overlay_dispatch_skips_click_outside_overlay_rect(self):
+        """Clicks landing outside any overlay rect must NOT be claimed by
+        the overlay dispatch — they fall through to the tree as normal."""
+        harness = _OverlayHarness()
+        dd = self._make_dropdown(["A", "B"])
+        harness.overlays.append(dd)
+
+        # Way below the expanded list (which ends at y=110+60=170... wait)
+        # Expanded list spans y in [80, 140). Click at y=300 is far below.
+        click = make_event(pygame.MOUSEBUTTONDOWN, pos=(150, 300), button=1)
+        consumed = harness.try_dispatch_to_overlay(click)
+
+        assert consumed is False
+        # Dropdown didn't fire on_change
+        assert dd.selected_index == 0
+
+    def test_overlay_dispatch_only_routes_mousebuttondown(self):
+        """MOUSEMOTION/MOUSEBUTTONUP still flow through the tree so hover
+        state on overlay items keeps working via tree dispatch."""
+        harness = _OverlayHarness()
+        dd = self._make_dropdown(["A", "B", "C"])
+        harness.overlays.append(dd)
+
+        motion = make_event(
+            pygame.MOUSEMOTION, pos=(150, 155), rel=(0, 0), buttons=(0, 0, 0)
+        )
+        assert harness.try_dispatch_to_overlay(motion) is False
+
+        up = make_event(pygame.MOUSEBUTTONUP, pos=(150, 155), button=1)
+        assert harness.try_dispatch_to_overlay(up) is False
+
+    def test_overlay_dispatch_safe_when_overlays_list_mutates(self):
+        """Selecting an option causes the Dropdown to unregister itself
+        mid-iteration (the @property setter calls _unregister_overlay).
+        The dispatch must iterate a snapshot so it doesn't trip a
+        list-changed-during-iteration error."""
+        harness = _OverlayHarness()
+        dd = self._make_dropdown(["A", "B", "C"])
+        harness.overlays.append(dd)
+
+        # Bind the overlay registration to the harness so the unregister
+        # call lands on our list.
+        from ui.ui_widgets import OverlayProvider
+        prev_manager = OverlayProvider._ui_manager
+        OverlayProvider.set_ui_manager(harness)
+        try:
+            click = make_event(pygame.MOUSEBUTTONDOWN, pos=(150, 155), button=1)
+            consumed = harness.try_dispatch_to_overlay(click)
+            assert consumed is True
+            # The Dropdown unregistered itself when it collapsed
+            assert dd not in harness.overlays
+        finally:
+            OverlayProvider.set_ui_manager(prev_manager)

@@ -101,8 +101,21 @@ class UIManager:
         self.menu = MenuBar(layout['W'], config.TOP_MENU_H)
         self.menu.items["File"] = [
             "New Simulation", "New Model", "---",
-            "Open...", "Save", "Save As...", "---", 
+            "Open...", "Save", "Save As...", "---",
             "Import Geometry"
+        ]
+        self.menu.items["Tools"] = [
+            "Cross-ε Overrides...",
+        ]
+        # Demos menu — one-click setups for the R3 emergent-phenomena
+        # scenarios. Each item clears the simulation and seeds the
+        # corresponding initial state; see core/demo_presets.py. Short
+        # names so they fit the 180px dropdown; status bar carries the
+        # detail when the preset runs.
+        self.menu.items["Demos"] = [
+            "Demixing",
+            "Micelles",
+            "Crystal Anneal",
         ]
         self.root.add_child(self.menu)
         
@@ -334,6 +347,33 @@ class UIManager:
         if provider in self.overlays:
             self.overlays.remove(provider)
 
+    def try_dispatch_to_overlay(self, event):
+        """Give registered OverlayProviders first crack at a mouse event.
+
+        Overlays draw above the rest of the UI tree, so a click landing
+        inside an overlay rect must be handled by that overlay first —
+        otherwise the tree's reverse-iteration order can let a sibling
+        widget underneath the overlay (e.g. the brush radius slider sitting
+        below the molecule palette's expanded dropdown) steal the click.
+
+        Only MOUSEBUTTONDOWN is routed here; MOUSEMOTION/MOUSEBUTTONUP still
+        flow through the tree as before (hover state on overlay items relies
+        on tree dispatch reaching the Dropdown).
+
+        Returns True if an overlay claimed the event.
+        """
+        import pygame
+        if event.type != pygame.MOUSEBUTTONDOWN:
+            return False
+        # list() the overlays so a provider that unregisters itself during
+        # handle_event (Dropdown does this when an item is selected) doesn't
+        # mutate the list mid-iteration.
+        for provider in list(self.overlays):
+            if provider.get_overlay_rect().collidepoint(event.pos):
+                if provider.handle_event(event):
+                    return True
+        return False
+
     # =========================================================================
     # Update & Draw
     # =========================================================================
@@ -354,6 +394,16 @@ class UIManager:
         self.root.draw(screen, font)
 
     def _draw_overlays(self, screen, font):
-        """Draw all registered overlay providers above the UI tree."""
+        """Draw all registered overlay providers above the UI tree.
+
+        The MenuBar's dropdown is drawn LAST (after registered overlays)
+        so it sits on top of every other UI surface — including expanded
+        Dropdowns from the right panel. Without this lift, the dropdown
+        would be obscured by panels and the viewport, since they draw
+        after the menu in the tree-order pass and paint over its location.
+        """
         for provider in self.overlays:
             provider.draw_overlay(screen, font)
+        # Menu dropdown is topmost — see MenuBar.draw_dropdown_overlay docstring.
+        if hasattr(self, 'menu') and self.menu is not None:
+            self.menu.draw_dropdown_overlay(screen, font)
