@@ -789,6 +789,80 @@ class TestPeriodicNeighbourList:
         assert self._build(simulation) == 3
 
 
+class TestPeriodicCellListBoundaryDepth:
+    """The wrap arithmetic in build_neighbor_list must land on the populated
+    cell across the periodic boundary, not on a phantom empty cell (exact
+    world_size/cell_size divisibility) or a cell shallower than the true
+    spatial neighbor (non-exact divisibility).
+
+    Regression tests for the n_cells off-by-one bug:
+
+        n_cells = int(world_size // cell_size) + 1
+
+    inflated the wrap modulus so cell 0's dx=-1 wrap landed on n_cells-1,
+    which is empty (exact case) or only partly populated (non-exact case).
+    The result was a missing strip of cross-boundary LJ partners producing a
+    persistent inward force on atoms within ~cell_size of either edge — over
+    time, a visible low-density layer at the boundary."""
+
+    def _build(self, simulation):
+        from engine.physics_core import build_neighbor_list
+        n = simulation.count
+        return build_neighbor_list(
+            simulation.pos_x[:n], simulation.pos_y[:n],
+            simulation.r_list2, simulation.cell_size, simulation.world_size,
+            simulation.pair_i, simulation.pair_j,
+            np.int32(simulation.boundary_mode),
+        )
+
+    def test_wrap_pair_found_at_exact_divisibility(self, simulation):
+        """world_size = 10 * cell_size (= 28.0) places the wrap target in a
+        completely empty phantom cell under the old formula. Without the
+        fix, all cross-boundary pairs are missed."""
+        simulation.resize_world(28.0)  # 10 * cell_size (2.8)
+        L = simulation.world_size
+        simulation._add_particle(0.5, L / 2, is_static=0)
+        simulation._add_particle(L - 0.5, L / 2, is_static=0)
+        simulation.boundary_mode = BOUNDARY_PERIODIC
+        # Min-image dx = 1.0, well within r_list ≈ 2.8 → exactly one pair.
+        assert self._build(simulation) == 1
+
+    def test_wrap_pair_found_beyond_last_cell_under_default(self, simulation):
+        """A partner sitting one cell deeper than the wrap-search target
+        (cell n_cells-2 rather than n_cells-1) must still pair via wrap
+        when the min-image distance is < r_list. Default ws=50, cs=2.8 puts
+        cell 16 at [44.8, 47.6); a partner at x=47.5 sits in cell 16; wrap
+        distance from x=0.1 is 2.6 < r_list=2.8."""
+        L = simulation.world_size  # 50.0
+        simulation._add_particle(0.1, L / 2, is_static=0)
+        simulation._add_particle(47.5, L / 2, is_static=0)
+        simulation.boundary_mode = BOUNDARY_PERIODIC
+        assert self._build(simulation) == 1
+
+    def test_wrap_pair_found_at_exact_divisibility_corner(self, simulation):
+        """Diagonal wrap at exact divisibility — wrap target lands on phantom
+        cell in BOTH axes. The corner pair must still be found."""
+        simulation.resize_world(28.0)
+        L = simulation.world_size
+        simulation._add_particle(0.5, 0.5, is_static=0)
+        simulation._add_particle(L - 0.5, L - 0.5, is_static=0)
+        simulation.boundary_mode = BOUNDARY_PERIODIC
+        # Min-image distance = √2 ≈ 1.41 < r_list.
+        assert self._build(simulation) == 1
+
+    def test_no_double_count_at_exact_divisibility(self, simulation):
+        """At exact divisibility, fixing the wrap must NOT introduce
+        double-counting. Three atoms in the interior — same pair count as
+        at default ws."""
+        simulation.resize_world(28.0)
+        L = simulation.world_size
+        simulation._add_particle(L / 2, L / 2, is_static=0)
+        simulation._add_particle(L / 2 + 0.5, L / 2, is_static=0)
+        simulation._add_particle(L / 2, L / 2 + 0.5, is_static=0)
+        simulation.boundary_mode = BOUNDARY_PERIODIC
+        assert self._build(simulation) == 3
+
+
 class TestPeriodicForceMinimumImage:
     """Two atoms on opposite sides of the periodic boundary must feel an
     LJ force pulling them across the wrap (and away from each other in the

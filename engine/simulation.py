@@ -230,8 +230,15 @@ class Simulation:
 
     def _pbc_safe(self):
         """True iff the cell list has at least 3 cells along each axis, the
-        minimum for non-double-counting cell-neighbour walks under PBC."""
-        n_cells = int(self.world_size // self.cell_size) + 1
+        minimum for non-double-counting cell-neighbour walks under PBC.
+
+        Under PBC the cell list tiles [0, L) exactly with n_cells = floor(L/cs)
+        — the padding cell that OPEN/REFLECTING uses is dropped (see
+        build_neighbor_list). The safety floor of 3 cells is the same; the
+        formula is stricter than the old `floor(L/cs) + 1 >= 3` because the
+        old form's padding cell was an empty phantom under PBC and broke the
+        wrap arithmetic when used as a cell-count modulus."""
+        n_cells = int(self.world_size // self.cell_size)
         return n_cells >= 3
 
     def _ensure_local_force_buffers(self):

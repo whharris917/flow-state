@@ -13,8 +13,17 @@ MAX_TETHER_FORCE = config.MAX_TETHER_FORCE
 # OPEN: dynamic atoms can leave [0, world_size]^2 (escape filter trims them in step()).
 # REFLECTING: dynamic + tethered atoms reflect off the world walls with wall_damping.
 # PERIODIC: dynamic atoms wrap; pair distances use minimum-image; cell list wraps.
-#           Requires n_cells >= 3 along each axis (i.e. world_size >= 3 * cell_size)
-#           to avoid the cell-list double-counting same pair via wrap and direct
+#           Under PBC the cell list tiles [0, world_size) exactly with
+#           n_cells = floor(world_size / cell_size) cells whose effective width
+#           is world_size / n_cells (>= cell_size since floor rounds down). The
+#           extra "padding" cell that OPEN/REFLECTING uses for atoms briefly
+#           outside the domain is dropped — under PBC the wrap brings them back
+#           inside [0, world_size) before the next neighbour-list build, so the
+#           padding cell would be empty and the wrap arithmetic (nx += n_cells)
+#           would land on it instead of on the populated cell across the
+#           boundary, missing cross-wrap pairs and producing a low-density
+#           boundary layer. Requires floor(world_size / cell_size) >= 3 to
+#           avoid the cell-list double-counting same pair via wrap and direct
 #           neighbour. Tethered atoms (is_static==3) do NOT wrap under PERIODIC —
 #           their positions are driven by spring forces toward in-domain anchors.
 BOUNDARY_OPEN = 0
@@ -256,16 +265,26 @@ def build_neighbor_list(pos_x, pos_y, r_list2, cell_size, world_size, pair_i, pa
     resize and retry — same contract as the previous serial version.
 
     boundary_mode: BOUNDARY_OPEN/REFLECTING (0/1) — neighbour cells are clipped
-    at the domain edge. BOUNDARY_PERIODIC (2) — neighbour cells wrap and pair
-    distances use the minimum-image convention. Caller must ensure
-    n_cells >= 3 along each axis when using PERIODIC, otherwise a single
-    neighbour cell can be reached from two (dx, dy) offsets and pairs will
-    be double-counted.
+    at the domain edge; n_cells = floor(L/cs) + 1 (extra padding cell holds
+    atoms briefly straying outside [0, L)). BOUNDARY_PERIODIC (2) — n_cells =
+    floor(L/cs) so cells tile [0, L) exactly with effective width L/n_cells
+    (>= cs); the wrap arithmetic (nx += n_cells) then lands on the populated
+    cell across the boundary instead of an empty padding cell. Caller must
+    ensure floor(L/cs) >= 3 under PERIODIC, otherwise a single neighbour cell
+    can be reached from two (dx, dy) offsets and pairs will be double-counted.
     """
     N = pos_x.shape[0]
-    n_cells = int(world_size // cell_size) + 1
+    if boundary_mode == BOUNDARY_PERIODIC:
+        # Exact tiling — cells span [0, world_size) with width world_size/n_cells.
+        n_cells = int(world_size // cell_size)
+        if n_cells < 3:
+            n_cells = 3
+        inv_cell = np.float32(n_cells / world_size)
+    else:
+        # Padding cell at the top for atoms briefly outside [0, world_size).
+        n_cells = int(world_size // cell_size) + 1
+        inv_cell = np.float32(1.0 / cell_size)
     n_cells2 = n_cells * n_cells
-    inv_cell = np.float32(1.0 / cell_size)
     max_pairs = pair_i.shape[0]
     half_world = np.float32(0.5 * world_size)
 
