@@ -554,12 +554,60 @@ class AppController:
     # R3 Demo Presets (Menu: Demos → ...)
     # =========================================================================
 
+    def _sync_sim_controls_to_ui(self) -> None:
+        """Push the simulation's current physics knobs out to the left-panel
+        sliders / buttons. Mirror image of the per-frame UI→sim read in
+        flow_state_app.update (which reads the sliders into sim each frame
+        in MODE_SIM). For one-shot demo presets the preset is the source of
+        truth — without this call, the next frame's UI read would silently
+        clobber any sim attribute the preset wrote (gravity, target_temp,
+        damping, use_thermostat) using whatever value the slider happened
+        to hold from the previous session. boundary_mode is special-cased:
+        the `boundaries` button is a bool, so we leave it set True if any
+        non-OPEN mode is active and rely on the use_boundaries setter's
+        no-downgrade-from-PERIODIC semantics to preserve PBC across frames.
+
+        Safe no-op if the controller's app has no `ui` attribute (test
+        stub path).
+        """
+        ui = getattr(self.app, 'ui', None)
+        if ui is None:
+            return
+        sliders = getattr(ui, 'sliders', None) or {}
+        buttons = getattr(ui, 'buttons', None) or {}
+
+        def _set_slider(key, val):
+            sld = sliders.get(key)
+            if sld is None:
+                return
+            # set_val honours hard walls + expands the soft range to fit.
+            sld.set_val(float(val))
+
+        def _set_button(key, active):
+            btn = buttons.get(key)
+            if btn is None:
+                return
+            btn.active = bool(active)
+
+        _set_slider('gravity', self.sim.gravity)
+        _set_slider('temp', self.sim.target_temp)
+        _set_slider('damping', self.sim.damping)
+        _set_slider('dt', self.sim.dt)
+        _set_slider('skin', self.sim.skin_distance)
+        _set_button('thermostat', self.sim.use_thermostat)
+        # `boundaries` is a bool; PERIODIC (==2) reads as truthy via the
+        # use_boundaries property and the setter refuses to downgrade
+        # PERIODIC when given True, so this preserves the preset's choice
+        # of OPEN/REFLECTING/PERIODIC unambiguously.
+        _set_button('boundaries', self.sim.boundary_mode != 0)
+
     def run_demo_preset(self, preset_name: str) -> None:
         """Run a demo preset by name. Clears the simulation, seeds the
         initial state, and ensures the app is in simulation mode so the
         user can hit Play and watch.
 
-        Recognised names: 'demixing', 'micelles', 'crystal_anneal'.
+        Recognised names: 'demixing', 'micelles', 'crystal_anneal',
+        'pbc_sparse', 'pbc_liquid', 'pbc_dense', 'pbc_packed'.
         """
         from core import demo_presets
 
@@ -577,8 +625,9 @@ class AppController:
         elif preset_name == 'micelles':
             info = demo_presets.preset_micelles(self.scene)
             self.session.status.set(
-                f"Micelles demo: {info['n_solvent']} Polar solvent + "
-                f"{info['n_surfactant_molecules']} surfactant molecules — hit Play"
+                f"Micelles demo: {info['n_micelles']} pre-arranged proto-"
+                f"micelles ({info['n_surfactant_molecules']} surfactants) "
+                f"in {info['n_solvent']} Polar solvent — hit Play"
             )
         elif preset_name == 'crystal_anneal':
             info = demo_presets.preset_crystal_anneal(self.scene)
@@ -586,9 +635,46 @@ class AppController:
                 f"Crystal anneal: {info['n_atoms']} {info['material']} atoms at T="
                 f"{self.sim.target_temp:.1f} — lower target_temp to crystallise"
             )
+        # PBC density-spectrum demos. Same physics (Polar LJ fluid, periodic
+        # walls, thermostat on), four canonical reduced densities. Lead asked
+        # for "a dense liquid that fills the entire space at different
+        # densities" — these cover gas → liquid → dense → overcompressed.
+        # T bumped to 1.2 at ρ*=1.0 so the packed run doesn't freeze on
+        # contact; the other three share T=0.7 (typical LJ liquid range).
+        elif preset_name == 'pbc_sparse':
+            info = demo_presets.preset_pbc_liquid(
+                self.scene, density=0.20, target_temp=0.7)
+            self.session.status.set(
+                f"PBC sparse: {info['n_atoms']} {info['material']} atoms "
+                f"at ρ*={info['density_achieved']:.2f}, T={self.sim.target_temp:.1f}"
+            )
+        elif preset_name == 'pbc_liquid':
+            info = demo_presets.preset_pbc_liquid(
+                self.scene, density=0.50, target_temp=0.7)
+            self.session.status.set(
+                f"PBC liquid: {info['n_atoms']} {info['material']} atoms "
+                f"at ρ*={info['density_achieved']:.2f}, T={self.sim.target_temp:.1f}"
+            )
+        elif preset_name == 'pbc_dense':
+            info = demo_presets.preset_pbc_liquid(
+                self.scene, density=0.80, target_temp=0.7)
+            self.session.status.set(
+                f"PBC dense: {info['n_atoms']} {info['material']} atoms "
+                f"at ρ*={info['density_achieved']:.2f}, T={self.sim.target_temp:.1f}"
+            )
+        elif preset_name == 'pbc_packed':
+            info = demo_presets.preset_pbc_liquid(
+                self.scene, density=1.00, target_temp=1.2)
+            self.session.status.set(
+                f"PBC packed: {info['n_atoms']} {info['material']} atoms "
+                f"at ρ*={info['density_achieved']:.2f}, T={self.sim.target_temp:.1f}"
+            )
         else:
             self.session.status.set(f"Unknown preset: {preset_name}")
             return
+        # Push the preset's physics knobs out to the UI so the next
+        # MODE_SIM frame doesn't read stale slider values back over them.
+        self._sync_sim_controls_to_ui()
         self.sound_manager.play_sound('click')
 
     # =========================================================================

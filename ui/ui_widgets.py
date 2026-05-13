@@ -919,6 +919,17 @@ class SmartSlider(UIElement):
         # Update input field for cursor blinking
         self.in_val.update(dt)
 
+    def set_val(self, new_val):
+        """Programmatically set the slider value. Honours the same hard
+        walls / soft-range expansion semantics as user-typed input, and
+        refreshes the input-field text so the value is visible without
+        waiting for the next drag/edit. Used by controller code that
+        drives the UI from outside (e.g., demo presets pushing physics
+        knobs out to the left-panel sliders)."""
+        self._apply_value_with_expansion(float(new_val))
+        if not self.in_val.active:
+            self.in_val.set_value(self.val)
+
     def _apply_value_with_expansion(self, new_val):
         """Set self.val to new_val, auto-expanding the soft range
         [min_val, max_val] when needed. The hard walls hard_min /

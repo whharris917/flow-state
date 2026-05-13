@@ -116,6 +116,10 @@ class UIManager:
             "Demixing",
             "Micelles",
             "Crystal Anneal",
+            "PBC Sparse",
+            "PBC Liquid",
+            "PBC Dense",
+            "PBC Packed",
         ]
         self.root.add_child(self.menu)
         

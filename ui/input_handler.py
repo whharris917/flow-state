@@ -445,3 +445,14 @@ class InputHandler:
             self.controller.actions.run_demo_preset('micelles')
         elif selection == "Crystal Anneal":
             self.controller.actions.run_demo_preset('crystal_anneal')
+        # PBC density-spectrum demos — same Polar LJ fluid, four reduced
+        # densities under periodic boundaries. See app_controller for the
+        # ρ* / T pairing of each item.
+        elif selection == "PBC Sparse":
+            self.controller.actions.run_demo_preset('pbc_sparse')
+        elif selection == "PBC Liquid":
+            self.controller.actions.run_demo_preset('pbc_liquid')
+        elif selection == "PBC Dense":
+            self.controller.actions.run_demo_preset('pbc_dense')
+        elif selection == "PBC Packed":
+            self.controller.actions.run_demo_preset('pbc_packed')
